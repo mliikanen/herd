@@ -82,6 +82,7 @@ final_approval:
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
   human_after: false                          # container only: also require a person's pass afterwards
 e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
+  harness: e2e/                               # the whole harness, always run from the default branch
   tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
   prepare: ./e2e/prepare.sh                   # (re)builds and installs the app, boots the emulator if needed
   select: ./e2e/select.sh                     # select <base sha>: relevant tests as JSON lines {id, files}
@@ -715,12 +716,15 @@ The commands' contract, so the orchestrator can handle ids and results determini
   at least one fail). A violation means the script is broken, not the test: it's a failed attempt with reason
   `e2e-contract`, so a script that keeps breaking escalates instead of passing a change by accident.
 
-**The commands come from the default branch, never the change branch.** They are what decides whether the loop can go
-red at all, so an implementer that rewrote `select` to print nothing, or `run` to report success, would switch the
-safety net off. So the herd runs the scripts as they are on the default branch (copied into the unit from there, like
-`.herd/`), against the change's working tree; the paths the manifest names under `e2e` are built-in guarded paths, so a
-change that edits them declares it; and an edit takes effect only once it's merged. What the scripts depend on in the
-repository (the test files, the build configuration) is guarded as well (see Who commits, who pushes).
+**The harness comes from the default branch, never the change branch.** It decides whether the loop can go red at all,
+so an implementer that rewrote `select` to print nothing, or `run` (or any helper either loads) to report success, would
+switch the safety net off. So the harness is a directory, `e2e.harness`, which the herd copies **whole** from the
+default branch into the unit, like `.herd/`, and the three commands must live in it. They may load code only from that
+copy, from the toolchain image (which is built from the default branch too), and from the working tree's `e2e.tests`,
+the test definitions under test; the change contributes the app being tested and its tests, nothing that decides
+selection or reads results. Everything under `e2e.harness` is a built-in guarded path, so a change that edits the
+harness declares it, and an edit takes effect only once it's merged. `herd doctor` runs the harness from its copy with
+the working tree's own harness directory removed, which shows it doesn't reach outside its boundary.
 
 The layers:
 
@@ -759,15 +763,17 @@ The layers:
    there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes there, this change
    caused the failure: go on to 3. If it fails there too, the test was already broken, and fixing it isn't this change's
    job. So that can't loop, the triager escalates to `needs-human` ("fails on the default branch too"), and the person
-   either fixes the default branch in a separate change and resolves the stop once it's merged, or waives the test for
-   this change with `herd-resolve`, which records `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming
-   the default-branch commit the test was found failing on and a digest of the test's `files`; the herd's own e2e runs
-   for the change then skip it. The waiver covers exactly that failure and lapses on its own when either changes: once
-   the test's files on the branch no longer match the digest (a later task touched the test, so it's change-local again
-   and owes its red/green proof), or once the change merges a newer default branch (the baseline moved, so the
-   comparison runs again). A lapsed waiver means the test runs, and if it still fails on the default branch, a fresh
-   escalation. A waiver doesn't touch CI: the required check still fails until the default branch is fixed, which keeps
-   the merge blocked on the real problem.
+   either fixes the default branch in a separate change and resolves the stop once it's merged, (resolving that stop
+   makes update-branch the next action before any retry, whatever the change's state, so the retry runs against a branch
+   that contains the fix; without it the stale branch would still fail and, the test now passing on the default branch,
+   look like a regression), or waives the test for this change with `herd-resolve`, which records
+   `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming the default-branch commit the test was found
+   failing on and a digest of the test's `files`; the herd's own e2e runs for the change then skip it. The waiver covers
+   exactly that failure and lapses on its own when either changes: once the test's files on the branch no longer match
+   the digest (a later task touched the test, so it's change-local again and owes its red/green proof), or once the
+   change merges a newer default branch (the baseline moved, so the comparison runs again). A lapsed waiver means the
+   test runs, and if it still fails on the default branch, a fresh escalation. A waiver doesn't touch CI: the required
+   check still fails until the default branch is fixed, which keeps the merge blocked on the real problem.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
@@ -791,9 +797,11 @@ whole workflow run and doesn't record which job uploaded one, so a listed artifa
 workflow file shows that exactly one job uploads an artifact by that name and it's the listed, secret-free job; an
 artifact that can't be attributed that way is never mounted. `herd doctor` checks all of this against the default
 branch's workflows, and the orchestrator re-checks it against the workflow file of the very run it fetches from.
-Downloads are capped in size and extracted safely, with no symlinks and no path that escapes the mount. Any other failed
-check reaches triage only as its name and conclusion; without the artifacts the triager reasons from far less, which is
-why the project's end-to-end CI job should be one it can list.
+Downloads are capped in size, and extraction is bounded while it streams, since a small, highly compressed artifact
+could otherwise fill the disk: total extracted bytes and file count are capped, only regular files are written (no
+symlinks, hard links or devices), and no entry's path may escape the mount. Hitting a limit drops that artifact and
+tells the triager it was too large. Any other failed check reaches triage only as its name and conclusion; without the
+artifacts the triager reasons from far less, which is why the project's end-to-end CI job should be one it can list.
 
 **Emulators in workers.** The project's toolchain image includes what `prepare` needs (an emulator and a system image,
 for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container by
