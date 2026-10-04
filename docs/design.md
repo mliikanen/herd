@@ -533,31 +533,30 @@ silently dropped — comes from two rules together, not from the scan alone:
      action: none; a human merges. A later bookkeeping push (a clean update-branch merge, say) moves the change back to
      *archived-pending* until checks pass on the new tip; its review of the content tip still stands.
 
-  **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so
-  "for the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is
-  **bookkeeping** (a final-approval pass follows its own rule, the effective record below):
-  - a commit that touches only `review-notes.md` (verdict lines, failed-attempt lines, final-approval records,
-    PR triage notes) or only `inputs.md`;
-  - the validated archive commit, whose content `openspec archive` determines (see Who commits, who pushes);
-  - an update-branch merge from the default branch that merged cleanly **and** brought in no change to a file the
-    change itself touches. Default-branch changes elsewhere can still interact with the change, but CI re-runs
-    the gate on the merge; changes to the change's own files are close enough to need another look.
+  **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so "for
+  the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is **bookkeeping**
+  (a final-approval pass follows its own rule, the effective record below): - a commit that touches only
+  `review-notes.md` (verdict lines, failed-attempt lines, final-approval records, PR triage notes) or only `inputs.md`;
+  - the validated archive commit, whose content `openspec archive` determines (see Who commits, who pushes); - an
+  update-branch merge from the default branch that merged cleanly **and** brought in no change to a file the change
+  itself touches. Default-branch changes elsewhere can still interact with the change, but CI re-runs the gate on the
+  merge; changes to the change's own files are close enough to need another look.
 
   Any other commit (a fix task's code, a person's content push, an update-branch merge that touches the change's files)
   makes the holistic-accept stale, so the change returns to *holistic-review-pending*, and once archived, to
-  *archived-pending* with the merge treated as a review finding. A final-approval pass isn't made stale by later
-  fixes on its own: the holistic review that follows them records `final-approval: rerun` when the fixes touch what
+  *archived-pending* with the merge treated as a review finding. A final-approval pass isn't made stale by later fixes
+  on its own: the holistic review that follows them records `final-approval rerun: <reason>` when the fixes touch what
   final approval covers.
 
   **The effective final-approval record** is kept per **phase**: each final-approval record names its phase, `container`
   (written by an `e2e` unit) or `human` (written through `herd-resolve`), and a phase's effective record is its latest
-  record in git order: a `pass`, a `fail`, or a `rerun` (the one exception is `final-approval: rerun`, which names no
-  phase: it applies to every phase the change requires). A project requires the `human` phase with `kind: human`, the
-  `container` phase with `kind: container`, and both, container first, with `kind: container` and `human_after: true`;
-  *awaiting-approval* holds until every required phase's effective record is a pass, and states 7 and 8's "the effective
-  final-approval record a pass" means every required phase. History is additive, so an old pass stays in
-  `review-notes.md`, but only a pass that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes
-  back to *awaiting-approval* until each required phase has a new pass. The records are single lines in
+  record in git order: a `pass`, a `fail`, or a `rerun` (the one exception is `final-approval rerun: <reason>`, which
+  names no phase: it applies to every phase the change requires). A project requires the `human` phase with
+  `kind: human`, the `container` phase with `kind: container`, and both, container first, with `kind: container` and
+  `human_after: true`; *awaiting-approval* holds until every required phase's effective record is a pass, and states 7
+  and 8's "the effective final-approval record a pass" means every required phase. History is additive, so an old pass
+  stays in `review-notes.md`, but only a pass that's newer than any `rerun` or `fail` counts; after a `rerun`, the
+  change goes back to *awaiting-approval* until each required phase has a new pass. The records are single lines in
   `review-notes.md` with a fixed syntax, so the scan never interprets prose:
   `final-approval <phase> <pass|fail> <tested sha>: <detail>` (phase `container`, written by an `e2e` unit, or `human`,
   written through `herd-resolve`; the detail is free text after the colon), `final-approval rerun: <reason>`,
@@ -719,12 +718,16 @@ The commands' contract, so the orchestrator can handle ids and results determini
 **The harness comes from the default branch, never the change branch.** It decides whether the loop can go red at all,
 so an implementer that rewrote `select` to print nothing, or `run` (or any helper either loads) to report success, would
 switch the safety net off. So the harness is a directory, `e2e.harness`, which the herd copies **whole** from the
-default branch into the unit, like `.herd/`, and the three commands must live in it. They may load code only from that
-copy, from the toolchain image (which is built from the default branch too), and from the working tree's `e2e.tests`,
-the test definitions under test; the change contributes the app being tested and its tests, nothing that decides
-selection or reads results. Everything under `e2e.harness` is a built-in guarded path, so a change that edits the
-harness declares it, and an edit takes effect only once it's merged. `herd doctor` runs the harness from its copy with
-the working tree's own harness directory removed, which shows it doesn't reach outside its boundary.
+default branch into the unit, like `.herd/`, at a pinned revision: the default-branch commit the change's branch is
+currently based on (its merge-base with the default branch), not the moving tip. Every unit of the change uses that same
+harness, so an implementer and the reviewer who checks its `E2E:` section run the same `select` and `run`, and the pin
+moves only when update-branch merges a newer default branch into the change, and the three commands must live in it.
+They may load code only from that copy, from the toolchain image (which is built from the default branch too), and from
+the working tree's `e2e.tests`, the test definitions under test; the change contributes the app being tested and its
+tests, nothing that decides selection or reads results. Everything under `e2e.harness` is a built-in guarded path, so a
+change that edits the harness declares it, and an edit takes effect only once it's merged. `herd doctor` runs the
+harness from its copy with the working tree's own harness directory removed, which shows it doesn't reach outside its
+boundary.
 
 The layers:
 
@@ -808,10 +811,13 @@ for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `k
 `GroupAdd=keep-groups`, as for the GPU). Each such unit boots its own emulator and throws it away with the unit, like
 its clone: sharing one would carry app data and device state from one unit into the next. Emulators are heavy (a few GB
 of memory and a few cores each, on the host that also serves the desktop and the local model server), so host config
-caps how many run at once (`e2e.max_emulators`, default 1); a unit that needs one waits for capacity, and its wait
-doesn't count against its timeouts. Whether emulators in rootless containers are stable enough on the host is measured
-before a project enables any of this (Build plan step 2's reality check gains an emulator probe); until then, and on a
-host without KVM, a project keeps `final_approval.kind: human` and relies on CI.
+caps how many run at once (`e2e.max_emulators`); a unit that needs one waits for capacity, and its wait doesn't count
+against its timeouts. That capacity is also the switch: `e2e.max_emulators` defaults to **0**, and the operator raises
+it only once the emulator probe in Build plan step 2's reality check passes on the host. While it's 0 (and on a host
+without KVM, where it must stay 0), no e2e layer runs at all, whatever a project's `e2e` block says: no per-task loop,
+no red/green proof, no `e2e` units. A project with an `e2e` block then gets no emulator work, relies on CI and on
+`final_approval.kind: human`, and a project with `kind: container` is inactive with that reason until the host has
+capacity.
 
 ## Following up on PR review
 
@@ -1388,7 +1394,8 @@ logs:
 disk:
   warn_below: 50GB
 e2e:
-  max_emulators: 1                     # emulators running at once across all units (see End-to-end tests)
+  max_emulators: 0                     # emulators at once across all units; 0 (the default) turns e2e off
+                                       # until the emulator probe passes (see End-to-end tests)
 ```
 
 The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
