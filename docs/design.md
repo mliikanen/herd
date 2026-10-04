@@ -548,6 +548,8 @@ Changes sometimes grow tasks during apply, so the pipeline allows it, narrowly:
   tasks for GitHub review comments, under "(added during review)" (see *in-review*).
 - Added tasks count toward the per-proposal cap (`caps.added_tasks`); appending past it escalates to
   `needs-human` instead, since that much scope drift means the proposal itself needs revisiting.
+- Fix tasks for failing checks, under "(added for CI)", are bounded by `caps.gate_fixes` instead of
+  `caps.added_tasks`, so that dedicated cap is what governs CI retries.
 - Tasks added during review are bounded by `caps.pr_review_rounds` instead of `caps.added_tasks`: one review round
   can raise several findings, and a finding fixed by class is still one task, so the count of rounds is what shows
   a change isn't converging.
@@ -636,9 +638,10 @@ work like any other, derived from git and GitHub on each scan, never remembered.
    posts the reply the reviewer wrote, naming the fixing commit, and resolves the thread. A finding with no thread is
    answered in one PR comment per review round. Workers hold no GitHub credentials, so replies are always posted by
    the orchestrator, from text in `review-notes.md`.
-5. **Repeat.** The push of the fixes triggers the next round. Only pushes with non-bookkeeping commits count as rounds,
-   so bookkeeping update-branch merges (see Current records) and the herd's own records don't use up
-   `caps.pr_review_rounds`; a merge that touches the change's own files counts. A change past that many
+5. **Repeat.** A round is counted once each time the change comes back to *in-review* with a new content tip, after
+   the whole batch of fixes from the previous round has been implemented and accepted, not per commit along the way.
+   Bookkeeping update-branch merges (see Current records) and the herd's own records don't move the content tip, so
+   they don't count; a merge that touches the change's own files does. A change past that many
    rounds without coming clean, or a finding the reviewer can't map to a task, escalates to `needs-human`.
 
 Feedback from a person is handled the same way. A request to change the proposal's scope rather than its
@@ -785,13 +788,15 @@ from a per-project, per-role image:
     itself rather than trusting the implementer's claim. The holistic review's prompt includes a security
     checklist; there's no separate security-review unit. A project that wants static analysis (Semgrep, say)
     adds it to its gate, where it runs on every task.
-- **Local model server** — when a backend is local: Ollama (or similar) as its own container on an internal
-  network shared only with the network proxy, never with workers, with no egress of its own (the operator pulls
-  models). Workers reach it only through the model gateway, like any backend. It's the only container given the GPU,
-  however the vendor exposes it to rootless Podman. An Intel or AMD card is `--device /dev/dri`, and since the
-  device usually belongs to the `render` group, which a rootless container doesn't keep by default, also
-  `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in
-  `render`. An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
+- **Local model server** — when a backend is local: Ollama (or similar) as its own container on an internal network
+  shared only with the network proxy, never with workers, with no egress of its own. Models get onto it only through an
+  orchestrator-run request, `herd models pull <model>`, which runs a one-off pull container whose only egress is the
+  model registry and writes into the server's models volume; the operator never touches the `herd` user's Podman or
+  storage. Workers reach it only through the model gateway, like any backend. It's the only container given the GPU,
+  however the vendor exposes it to rootless Podman. An Intel or AMD card is `--device /dev/dri`, and since the device
+  usually belongs to the `render` group, which a rootless container doesn't keep by default, also
+  `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in `render`.
+  An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
 - **Network proxy** — one container on every unit's internal network (see Network and secrets), the model server's, and
   the outside one, with two parts. The **model gateway** is the herd's own small component, not a generic proxy: the
   model and output limit are fields in the request body (for Anthropic and Ollama alike), and metering needs the usage
@@ -880,9 +885,11 @@ belongs to:
   orchestrator.
 - **`/var/lib/herd/shared/`**: written by the orchestrator, readable by `herd-ops`. It holds the event log, each
   running unit's log, and a heartbeat file the `herd` CLI checks.
-- **`/var/lib/herd/requests/`**: writable by `herd-ops`. The `herd` CLI drops a request here (rescan now, run
-  `doctor` for a project, import provided inputs, remove a project's volumes) and reads the result from
-  `shared/`. Requests ask the orchestrator to act; they're never state, so losing one loses only that request.
+- **`/var/lib/herd/requests/`**: writable by `herd-ops`. The `herd` CLI drops a request here (rescan now, run `doctor`
+  for a project, import provided inputs, pull a model, remove a project's volumes) and reads the result from `shared/`.
+  A request is staged complete, files included, under a temporary name the orchestrator ignores (`.tmp-<id>/`), synced,
+  and only then renamed into place, so the orchestrator never sees a half-copied file and can't hash and commit a
+  truncated one. Requests ask the orchestrator to act; they're never state, so losing one loses only that request.
 
 Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator,
 the model keys the proxy.
@@ -1015,6 +1022,7 @@ log is only for history and the unit panes' timeline. Like the log, the orchestr
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
 - `herd budget set --spent <amount>`: sets this month's spend after the counter was lost (see Monitoring).
+- `herd models pull <model>`: puts a model on the local model server (see Containers).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
 
@@ -1071,14 +1079,15 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an alert; at the budget,
   the orchestrator stops dispatching units to cloud backends and refuses new reservations, running units' in-flight
   calls finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the
-  operator's call to raise the budget or wait for the month to turn. The budget is the one control that reads something
-  besides git: the orchestrator's monthly counter, kept in the herd's own files. It decides only whether cloud calls go
-  out, never a change's state. A reservation refused because it would cross the budget pauses cloud dispatch the same
-  way, so units aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason,
-  which counts neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If
-  the counter is lost, cloud dispatch pauses until the operator sets this month's spend with
-  `herd budget set --spent <amount>` (read from the provider's billing), a request the orchestrator records in the event
-  log before dispatch resumes.
+  operator's call to raise the budget or wait for the month to turn. Besides the monthly counter, the orchestrator keeps
+  a usage ledger, totals per project and change, so the status snapshot's spend per proposal survives a restart. Counter
+  and ledger are the one control state that reads something besides git, kept in the herd's own files and allowed as
+  recovery input. They decide only whether cloud calls go out, never a change's state. A reservation refused because it
+  would cross the budget pauses cloud dispatch the same way, so units aren't dispatched only to have their first call
+  refused; the refused unit ends with a `budget` reason, which counts neither as a failed attempt nor as an
+  infrastructure failure, and is retried once dispatch resumes. If the counter is lost, cloud dispatch pauses until the
+  operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's billing), a request
+  the orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
   warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after` all
   raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like the budget
