@@ -567,7 +567,8 @@ from a per-project, per-role image:
     itself rather than trusting the implementer's claim.
 - **Local model server** — when a backend is local: Ollama (or similar) as its own container on the workers'
   internal network, with no egress of its own (the operator pulls models). It's the only container given the GPU,
-  through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
+  however the vendor exposes it to rootless Podman: an Intel or AMD card as `--device /dev/dri` (the user in the
+  `render` group), an NVIDIA card through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container
   lifecycle, commit validation, push, `gh pr create`/update-branch/mark-ready. Needs a GitHub token (scoped to the
   registered repos), the user's rootless Podman API socket, and the host config read-only; no LLM key. It's the one
@@ -715,10 +716,13 @@ Steps marked **(manual)** need a human.
 
 1. ~~Create the herd repository~~: done (`herd`, starting with this file).
 2. ~~Local vs. cloud for the implementer~~: decided 2026-10-04. Backends are per worker slot and can be mixed (see
-   Models). The first host starts cloud only: Sonnet 5.5 implements, Opus 5.5 reviews. Its GPU (RTX 3080, 10 GB)
-   fits only small coder models, too weak to trust unattended without evidence. A local slot comes later, after
-   replaying accepted tasks on a candidate model shows it holds up; that needs Ollama as a container and the NVIDIA
-   Container Toolkit for CDI. The runtime is rootless Podman, already on the host.
+   Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for
+   a pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel
+   Arc Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context.
+   It's gated by replaying the smoke test's accepted tasks on the candidate model (see Models), and bounded by
+   the rule that a task's last review round goes to a different backend. The B70 runs under official Ollama's
+   Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as `/dev/dri`. The
+   runtime is rootless Podman, already on the host.
 3. Role layers and generic `SYSTEM_PROMPT.md` per role; the toolchain-image + role-layer build.
 4. The orchestrator: per-project bare mirror and per-unit clone lifecycle, worker container lifecycle, intake from
    `ready: true`, round-robin assignment to worker slots, the state derivation above, commit validation and
@@ -739,7 +743,8 @@ Steps marked **(manual)** need a human.
 
 - Implementer harness: Aider or OpenHands headless (see Containers), compared on the same tasks; something custom
   only if neither fits.
-- Which local coder model, if any, earns a slot: decide by replaying accepted tasks (see Models).
+- Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
+  too: decide by replaying accepted tasks (see Models).
 - Whether the herd runs as a dedicated `herd` user instead of the operator's account. Rootless Podman keeps the
   orchestrator's socket off root, but under the operator's account it could still mount their home. A dedicated
   user closes that, at the cost of the `herd` command and `herd watch` having to reach another user's Podman.
