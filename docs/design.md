@@ -62,7 +62,7 @@ branch_prefix: change/
 toolchain:
   dockerfile: .herd/toolchain.Dockerfile     # Debian/Ubuntu-based; the herd adds its role layer on top
   caches: [/home/agent/.gradle]              # per-project, per-role volumes
-  egress:                                    # host[:port], 443 when no port is given
+  egress:                                    # host[:port] (443 by default), TLS; prefix tcp: for non-TLS
     [repo.maven.apache.org, maven.google.com, dl.google.com, plugins.gradle.org, services.gradle.org]
 gate:                                         # implementer runs it before committing; reviewer re-runs it
   - ./gradlew check
@@ -267,16 +267,17 @@ status file on exit. The orchestrator then validates the commit before pushing i
   implementer commit must not touch `review-notes.md` or flip a checkbox to `[x]`; no worker commit may touch
   `.herd/`);
 - the status file agrees with the commit;
-- the commit doesn't touch anything under `.github/` (workflows, local actions, CODEOWNERS and the like). CI is the
-  independent second net, so the herd's App isn't granted GitHub's `workflows` permission, and a task that needs a
-  CI change escalates. CI still runs the repository's own build, though, so anything outside `.github/` that defines
-  what the gate checks can weaken both nets at once: scripts a workflow calls, and the build configuration itself (for
-  Gradle, the build scripts, settings, wrapper and lint configuration, since editing `build.gradle.kts` can drop tests
-  without touching a test file). All of it belongs in the project's `guarded.paths`, so changing it is allowed but
-  needs a declared reason and the reviewer's explicit acceptance. `herd init` proposes that coverage for the build
-  tool it detects, and `herd doctor` warns, best effort per toolchain, about a workflow-referenced script or build
-  configuration file that isn't covered. CI is independent of the herd's own infrastructure, then, and of the
-  repository only as far as the guard covers it;
+- the commit doesn't touch what defines CI on GitHub: `.github/workflows/` and `.github/actions/` (local actions the
+  workflows use). Other `.github/` files (issue templates, Dependabot configuration, CODEOWNERS) are allowed but guarded
+  by default, needing a declared reason like any `guarded.paths` file. CI is the independent second net, so the herd's
+  App isn't granted GitHub's `workflows` permission, and a task that needs a CI change escalates. CI still runs the
+  repository's own build, though, so anything outside `.github/` that defines what the gate checks can weaken both nets
+  at once: scripts a workflow calls, and the build configuration itself (for Gradle, the build scripts, settings,
+  wrapper and lint configuration, since editing `build.gradle.kts` can drop tests without touching a test file). All of
+  it belongs in the project's `guarded.paths`, so changing it is allowed but needs a declared reason and the reviewer's
+  explicit acceptance. `herd init` proposes that coverage for the build tool it detects, and `herd doctor` warns, best
+  effort per toolchain, about a workflow-referenced script or build configuration file that isn't covered. CI is
+  independent of the herd's own infrastructure, then, and of the repository only as far as the guard covers it;
 - **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying
   a file matching the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a
   `guarded.paths` file (a lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the
@@ -524,14 +525,15 @@ silently dropped — comes from two rules together, not from the scan alone:
   content here: it's bookkeeping for keeping the holistic-accept current, but its generated spec changes still need an
   awaited reviewer to see them, so after the archive the content tip is the archive commit (or a later non-bookkeeping
   one). Checks are judged on the current tip, since GitHub runs them on every push, but awaited reviews are judged on
-  the content tip: a review of it, or of any later commit, counts. Otherwise review couldn't converge, because recording
-  a review's classification is itself a push that the automated reviewer reviews again, which would need classifying in
-  turn. Reviews of later bookkeeping-only tips don't block anything; a thread they open is still an open thread (that
-  needs no model to see), but a finding only in such a review's summary isn't waited for, before the archive or after
-  it, including in *ready-to-merge*: an accepted trade-off since it reviews the same content, and triaging every such
-  review would bring back the loop above. So after the archive, what escalates is an open thread, a finding in a review
-  of the content tip, a failed check or a non-bookkeeping commit; a summary-only finding in a later review of a
-  bookkeeping tip doesn't.
+  the content tip: a review of it, or of any later commit, counts, and the first such review from each awaited reviewer
+  is the one that's classified, even when it's attached to a later bookkeeping commit. Otherwise review couldn't
+  converge, because recording a review's classification is itself a push that the automated reviewer reviews again,
+  which would need classifying in turn. Later reviews of bookkeeping-only tips, after that first one, don't block
+  anything; a thread they open is still an open thread (that needs no model to see), but a finding only in such a
+  review's summary isn't waited for, before the archive or after it, including in *ready-to-merge*: an accepted
+  trade-off since it reviews the same content, and triaging every such review would bring back the loop above. So after
+  the archive, what escalates is an open thread, a finding in a review of the content tip, a failed check or a
+  non-bookkeeping commit; a summary-only finding in a later review of a bookkeeping tip doesn't.
 
   **The review window** for an awaited reviewer opens at the later of two moments: the content tip's push, and the PR
   being marked ready for review. A draft PR isn't reviewed, so a content tip pushed during holistic review or final
@@ -880,17 +882,22 @@ worker's only way out is the proxy, which serves two purposes:
   the model its slot assigns, at the price its reservation assumed. Local backends go through the gateway too, which
   keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
-  the destinations on the unit's list, each a host and port (`host[:port]`, 443 when no port is given; a `CONNECT`
-  tunnel carries arbitrary TCP, so a hostname alone would open every port on it): the manifest's `egress`, which a role
-  can narrow. The proxy serves every unit's network, so the tunnel authenticates with the same unit token
-  (`Proxy-Authorization`, set through the standard proxy variables), and the proxy rejects a request without a valid
-  one, or one arriving on a network other than its unit's; that's what tells it whose list applies. A hostname alone
-  doesn't keep a tunnel out of the herd's own networks, since an allowed name could resolve, or be rebound, to an
-  internal address. So the proxy resolves each destination itself, connects to exactly the address it validated (never
-  resolving the name again for the connection), repeats the check on every retry or reconnect, and then checks what goes
-  through the tunnel: on an HTTPS port it reads the TLS ClientHello and requires its SNI to match the `CONNECT` host,
-  rejecting a missing SNI, Encrypted Client Hello and anything that isn't TLS, so a worker can't connect to an allowed
-  name and then ask the same CDN address for another site. It rejects loopback, link-local and every herd network (unit
+  the destinations on the unit's list, each a host and port (`host[:port]`, 443 when no port is given, and TLS unless
+  the entry is prefixed `tcp:`; a `CONNECT` tunnel carries arbitrary TCP, so a hostname alone would open every port on
+  it): the manifest's `egress`, which a role can narrow. The proxy serves every unit's network, so the tunnel
+  authenticates with the same unit token (`Proxy-Authorization`, set through the standard proxy variables), and the
+  proxy rejects a request without a valid one, or one arriving on a network other than its unit's; that's what tells it
+  whose list applies. A hostname alone doesn't keep a tunnel out of the herd's own networks, since an allowed name could
+  resolve, or be rebound, to an internal address. So the proxy resolves each destination itself, connects to exactly the
+  address it validated (never resolving the name again for the connection), repeats the check on every retry or
+  reconnect, and then checks what goes through the tunnel: for every entry not marked `tcp:`, whatever its port, it
+  reads the TLS ClientHello and requires its SNI to match the `CONNECT` host, rejecting a missing SNI, Encrypted Client
+  Hello and anything that isn't TLS, so a worker can't connect to an allowed name and then ask the same CDN address for
+  another site by name. A `tcp:` entry gets no such check and is a deliberately weaker, explicit choice. What the SNI
+  check can't see, since the proxy doesn't terminate TLS, is the HTTP `Host` inside the tunnel, so domain fronting (an
+  allowed SNI with another site's `Host`) is stopped only where the allowed host's CDN enforces SNI and `Host`
+  consistency, as the major CDNs do. That's a residual trust in the registries' hosting, accepted here rather than
+  putting a herd CA into every worker to terminate TLS. It rejects loopback, link-local and every herd network (unit
   networks, the model server's), whatever the name; another private range (a company registry, say) is reachable only if
   host config allows it, which is the operator's decision, never the project manifest's. The proxy doesn't break TLS. A
   tool that ignores the proxy settings can't connect at all, so a mistake fails closed; `herd doctor` proves the real
@@ -1018,9 +1025,9 @@ directory. A project without a checkout gets its workspace without a planner pan
 context its pane inherits (`HERDR_PANE_ID`), and the orchestrator never needs herdr's socket. Every few seconds it
 reconciles the layout against the status snapshot and the unit logs (see The status snapshot): it creates missing
 project workspaces (with their planner panes), splits off and closes unit and attention panes
-(`herdr pane split --no-focus`, `herdr pane run`), and reports their state and title. It only ever closes panes it
-created, and never a planner pane. It's stateless, like the orchestrator: after a herdr restart or a reboot it rebuilds
-what's missing on its next pass, and herdr brings back the planner panes' sessions.
+(`herdr pane split --direction right --no-focus`, `herdr pane run`), and reports their state and title. It only ever
+closes panes it created, and never a planner pane. It's stateless, like the orchestrator: after a herdr restart or a
+reboot it rebuilds what's missing on its next pass, and herdr brings back the planner panes' sessions.
 
 **Desktop alerts come from the bridge.** The bridge runs in the operator's herdr, under the operator's account, so it's
 the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence number, to a queue

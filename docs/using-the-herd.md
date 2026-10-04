@@ -94,7 +94,7 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
 - the holistic review raised something that doesn't map to a task;
 - PR review didn't come clean within the allowed rounds, or a reviewer asked for a change of scope;
 - a task needs something the pipeline doesn't have (a device, a credential, a missing capability, or a change to
-  the project's CI workflows, which the herd isn't allowed to make);
+  the project's CI workflows or the local actions they use, which the herd isn't allowed to make);
 - something went wrong after the change was archived (a failed check, a review finding, or a new commit that
   needs review), when fixing it would mean un-archiving;
 - a task needs a file from outside the project.
@@ -137,10 +137,11 @@ its implementation, comes back to you as a `needs-human` stop, because scope is 
 Once review is done, the herd archives the change (syncing its spec deltas into the main specs) as the last change to
 the proposal's own files. Normally only the herd's own notes, or a clean merge of the default branch that leaves the
 proposal's files alone, follow it; anything else after the archive (a merge that touches the proposal's files, a
-failed check, a review finding, or any other push) stops the change at `needs-human`, because fixing it would mean
-un-archiving. When the checks pass and the archive has been reviewed (or the automated reviewer didn't answer within
-the configured timeout), the change is ready to merge, and **you merge it**. If the default branch has moved on, the
-herd merges it into the change branch first. A conflict there stops at `needs-human`.
+failed check, a review finding, or any other commit that changes content; a notes-only commit, yours included, doesn't
+count) stops the change at `needs-human`, because fixing it would mean un-archiving. When the checks pass and the
+archive has been reviewed (or the automated reviewer didn't answer within the configured timeout), the change is ready
+to merge, and **you merge it**. If the default branch has moved on, the herd merges it into the change branch first. A
+conflict there stops at `needs-human`.
 
 ## After merge
 
