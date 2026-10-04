@@ -580,8 +580,9 @@ silently dropped — comes from two rules together, not from the scan alone:
   change goes back to *awaiting-approval* until each required phase has a new pass. The records are single lines in
   `review-notes.md` with a fixed syntax, so the scan never interprets prose:
   `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also names the merge-base it
-  was tested against before the colon (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`) and
-  is current only while the change's merge-base is unchanged (phase `container`, written by an `e2e` unit, or `human`,
+  was tested against before the colon (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`)
+  and, before the archive, is current only while the change's merge-base is unchanged (from the archive on, the pin is
+  frozen and a later merge doesn't invalidate it; see The pin) (phase `container`, written by an `e2e` unit, or `human`,
   written through `herd-resolve`; the detail is free text after the colon), `final-approval rerun: <reason>`,
   `final-approval-triaged <sha of the commit that added the fail record>`, and
   `e2e-waive <test id> <default sha> <files digest>: <reason>`.
@@ -733,7 +734,7 @@ un-archiving.
 The gate proves a task compiles and its unit tests pass; it can't prove the feature works end to end. For projects whose
 end-to-end tests can run on an emulator in a worker (Driving Log's Maestro flows, say), the herd closes a red/green loop
 around the agents with them, in layers that get broader and more independent as the change matures. A project opts in
-with an `e2e` block in the manifest: three commands of its own, which the herd treats as opaque, like the gate. The
+with an `e2e` block in the manifest: four commands of its own, which the herd treats as opaque, like the gate. The
 block, together with emulator capacity on the host (see Emulators in workers), is what turns on the per-task layers (1
 to 3 below) for every change, whatever the project's final-approval kind; `final_approval.kind` only chooses the
 whole-change approval phase, and `kind: container` adds layer 4. `container` requires the block; manifest validation
@@ -782,11 +783,11 @@ so an implementer that rewrote `select` to print nothing, or `run` (or any helpe
 switch the safety net off. So:
 
 - **A pinned, separate copy runs.** `e2e.harness` names a directory; the herd copies it whole from the default branch
-  and mounts it read-only at `/herd/harness/` in the unit. The three commands must live in it, and their manifest paths
-  are resolved against that copy (with `harness: e2e/`, `run: ./e2e/run.sh` runs `/herd/harness/run.sh`), still with the
-  repository root as working directory. The working tree's own harness directory stays editable, since a task may need
-  to change it, but it's never executed: everything under `e2e.harness` is a built-in guarded path, so an edit is
-  declared, and it takes effect only once it's merged.
+  and mounts it read-only at `/herd/harness/` in the unit. All four commands (`boot`, `prepare`, `select` and `run`)
+  must live in it, and their manifest paths are resolved against that copy (with `harness: e2e/`, `run: ./e2e/run.sh`
+  runs `/herd/harness/run.sh`), still with the repository root as working directory. The working tree's own harness
+  directory stays editable, since a task may need to change it, but it's never executed: everything under `e2e.harness`
+  is a built-in guarded path, so an edit is declared, and it takes effect only once it's merged.
 
 - **The boundary is enforced, not just checked.** `boot`, `select` and `run` run in a sandbox whose filesystem holds
   only the harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
@@ -876,12 +877,12 @@ from evidence rather than taste:
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
    `E2E:` section (`- <test id> flaky`), a task review or `triage` unit adds `e2e-flaky <test id> <sha>` to its verdict
    commit, and CI triage records `ci-triage "<check>" <sha> <check run id> "<test id>": flaky`. Flaky outcomes are
-   counted from those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the
-   change escalates to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't
-   cycle forever; the person fixes the test or its environment in a separate change and resolves the stop once that's
-   merged (update-branch comes first, as for a "fails on the default branch too" stop), and the test's flake count
-   starts over from that resolution. A flaky test can't be waived: a waiver needs a failure on the merge-base to point
-   at, and a flake may not have one.
+   counted from those records per test per change (CI's included, since its records are per test too), and when the
+   count reaches `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying again, so
+   an intermittently failing test can't cycle forever; the person fixes the test or its environment in a separate change
+   and resolves the stop once that's merged (update-branch comes first, as for a "fails on the default branch too"
+   stop), and the test's flake count starts over from that resolution. A flaky test can't be waived: a waiver needs a
+   failure on the merge-base to point at, and a flake may not have one.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
    the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
    branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
