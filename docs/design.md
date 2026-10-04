@@ -621,7 +621,7 @@ silently dropped — comes from two rules together, not from the scan alone:
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
   next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
   outcomes in `review-notes.md`, one line per failed test (a full-suite run can fail several, for different reasons):
-  `ci-triage "<check>" <sha> <run key> "<test id>": fix | flaky | preexisting | unsettled | waived`, with the check's
+  `ci-triage "<check>" <sha> <run key> "<test id>": fix | flaky xN | preexisting | unsettled | waived`, with the check's
   and the test's names as JSON strings since they may contain spaces (a failure that isn't a test's, a build step say,
   takes the test id `"-"`). The run key names the exact failed run, since a re-run keeps the check's name and commit:
   `check:<check run id>` for a check run, or `status:<status id>` for a legacy commit status, whose every update is a
@@ -635,22 +635,25 @@ silently dropped — comes from two rules together, not from the scan alone:
   only `flaky` and `waived`, no task is added and the change stays in its state: if any flaky test's count has reached
   `caps.flaky_retries`, the triage unit escalates ("flaky test") instead; otherwise, with at least one `flaky` line, the
   commit that records them, itself a push, runs the check again on the new tip (required workflows run on every push;
-  see Requirements on a project). Flakes count per test, as everywhere. A later failed run of the same check whose tip
-  differs from the triaged one only by bookkeeping, while every line of that triage was `waived`, is the same failure,
-  and the scan doesn't dispatch triage for it again, so recording a waiver can't loop. The required check stays red, so
-  the change carries on through its other work but can't become *ready-to-merge* (the status pane shows "waiting for a
-  default-branch fix"); the next update-branch merge that brings the fix in clears it. A triage unit that can't rerun
-  the test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts alone,
-  and records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person
-  decides rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator
-  escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no
-  update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
-  by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next
-  action is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path
-  for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
-  still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
-  wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
-  since a stuck CI is for a person to look at.
+  see Requirements on a project). Flakes count per test, as everywhere. `flaky xN` counts every flaky outcome the triage
+  saw for that test (its reruns and merge-base runs included), like the other flake records. A run whose every failure
+  is in a waived test needs no triage at all, so nothing is committed for it and a waiver can't loop: the orchestrator
+  reads the run's failed ids itself from its `results.jsonl` (the CI end-to-end job uploads one in `run`'s format, in an
+  artifact listed in `e2e.ci_artifacts`) and, when each has an effective `e2e-waive`, treats the run as waived without a
+  unit or a record. A run whose results it can't read, or with any other failure, goes to triage as usual. The required
+  check stays red, so the change carries on through its other work but can't become *ready-to-merge* (the status pane
+  shows "waiting for a default-branch fix"); the next update-branch merge that brings the fix in clears it. A triage
+  unit that can't rerun the test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the
+  job's artifacts alone, and records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle
+  it, so a person decides rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the
+  orchestrator escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default
+  branch, that no update-branch merge has followed yet, comes before everything else in every state before the archive
+  (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to
+  merge): the next action is update-branch, so the retry runs against a branch that contains the default branch's fix.
+  This is the path for a CI failure after an update-branch merge too (see Keeping up with the default branch). A
+  required check that still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely
+  expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the
+  archive or after it, since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -739,15 +742,16 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   emulator capacity, the triage unit) run it on the merge-base build `caps.flaky_retries` + 1 times, as step 1 of the
   rule requires: stable there means this change made it intermittent, a regression that goes on to the spec step and
   becomes a fix task like any other. A check that fails there at least once, or that passes on the second merge-base try
-  after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> x1`) and it counts toward
-  `caps.flaky_retries` like any other, so the next action is the person's check again until the count reaches the cap. A
-  failure on both merge-base tries, or one the spec doesn't settle, escalates to `needs-human` as it would anywhere
-  else, and otherwise the triage unit turns the failure into appended task(s) under "(added during final approval)", and
-  the proposal goes back to *implementing*. Either way its verdict commit records
-  `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the stop (a waiver,
-  say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once those tasks are
-  accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail` already
-  triaged, and the next action is the human again. The draft PR stays open throughout and simply gets more commits.
+  after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, N counting every
+  flaky outcome seen, the merge-base runs' included) and it counts toward `caps.flaky_retries` like any other, so the
+  next action is the person's check again until the count reaches the cap. A failure on both merge-base tries, or one
+  the spec doesn't settle, escalates to `needs-human` as it would anywhere else, and otherwise the triage unit turns the
+  failure into appended task(s) under "(added during final approval)", and the proposal goes back to *implementing*.
+  Either way its verdict commit records `final-approval-triaged <sha of the fail record>`, escalation included, so once
+  a person resolves the stop (a waiver, say) the same fail isn't triaged and escalated again; the same goes for a
+  `container`-phase fail. Once those tasks are accepted and the holistic review is current again, the change returns to
+  *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR stays open
+  throughout and simply gets more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
@@ -925,9 +929,9 @@ from evidence rather than taste:
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
    `E2E:` section (`- <test id> flaky xN`), a task review or `triage` unit adds `e2e-flaky <test id> <sha> xN` to its
    verdict commit, N counting every flaky outcome in the unit, not just whether there was one, and CI triage records
-   `ci-triage "<check>" <sha> <run key> "<test id>": flaky`. Flaky outcomes are counted from those records per test per
-   change, summing the Ns (CI's keyed by check and test id together, so a non-test failure, `"-"`, in one check never
-   shares a count with another check's), and when the count reaches `caps.flaky_retries` the change escalates to
+   `ci-triage "<check>" <sha> <run key> "<test id>": flaky xN`. Flaky outcomes are counted from those records per test
+   per change, summing the Ns (CI's keyed by check and test id together, so a non-test failure, `"-"`, in one check
+   never shares a count with another check's), and when the count reaches `caps.flaky_retries` the change escalates to
    `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever. Units
    enforce the cap as they go, since reruns happen inside one unit: the change's recorded count plus the unit's own
    flakes so far must stay below the cap before another rerun, and when it doesn't, the unit stops retrying (an
