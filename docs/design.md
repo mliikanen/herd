@@ -1116,15 +1116,19 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   the herd start and stop the machine itself through the provider's API, on demand, is an open question.
 - **Cost.** A rented backend's `price` is `per_hour`, not per token, in `budget.currency`. The budget counts its hours
   from the health checks: while the herd sees the endpoint up, the counter accrues the hourly rate, so the monthly
-  budget covers rented hours alongside cloud tokens. That's an approximation of the provider's bill, which the operator
-  reconciles. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, its
-  time is split evenly among them, and their share goes to their change; time with no call in flight goes to the
-  backend's own idle bucket, never to a change. **The budget can't stop a rented machine yet**, since the herd doesn't
-  control it: at the limit the herd stops dispatching to rented slots like any paid backend, but the machine keeps
-  billing, so the herd raises an urgent alert asking the operator to stop it, the counter keeps accruing, and the status
-  pane shows "over budget: rented machine still up" until it's down. For per-token backends the budget is a hard limit;
-  for rented ones it's a hard stop on dispatch and an alert on spend, until the herd can stop the machine itself (see
-  Open questions).
+  budget covers rented hours alongside cloud tokens. That's an approximation of the provider's bill: health checks miss
+  time (while the orchestrator is down, say), so the operator reconciles against the bill with
+  `herd budget set --spent <amount>`, the same command that restores a lost counter, which sets this month's total and
+  records the old total, the new one and the reason in the event log. Hours are attributed for the usage ledger by time,
+  not tokens: while units are calling the machine, its time is split evenly among them, and their share goes to their
+  change; time with no call in flight goes to the backend's own idle bucket, never to a change. **The budget can't stop
+  a rented machine yet**, since the herd doesn't control it: at the limit the herd stops dispatching to rented slots
+  like any paid backend, and running rented units stop too: rented calls make no per-call reservation, so the gateway
+  asks the orchestrator for a zero-cost authorization on every one and is refused while paid dispatch is paused, ending
+  the unit with a `budget` reason (not `infra`, and not a failed attempt). But the machine keeps billing, so the herd
+  raises an urgent alert asking the operator to stop it, the counter keeps accruing, and the status pane shows "over
+  budget: rented machine still up" until it's down. For per-token backends the budget is a hard limit; for rented ones
+  it's a hard stop on dispatch and an alert on spend, until the herd can stop the machine itself (see Open questions).
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
   Models). Cost per accepted task is measured in an exclusive window, with the machine serving only the replay, so idle
@@ -1311,7 +1315,8 @@ the unit panes' timeline. Like the log, the orchestrator never reads it back.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
-- `herd budget set --spent <amount>`: sets this month's spend after the counter was lost (see Monitoring).
+- `herd budget set --spent <amount>`: sets this month's spend, after the counter was lost or to reconcile it with
+  the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
