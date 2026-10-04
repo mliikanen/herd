@@ -1152,19 +1152,21 @@ endpoint must reach that machine alone (the operator's assertion, like the model
 - **Lifecycle.** At first the operator starts and stops the machine. The herd dispatches a unit to a rented backend only
   while that backend is ready: its machine's endpoint answers health checks **and** the machine's model list still
   contains the backend's own `<model>@<revision>` (one machine may serve several models, and one can disappear while the
-  endpoint stays up), and a unit whose machine disappears mid-call (spot and marketplace machines can be reclaimed) ends
-  as an `infra` failure and is retried. **Endpoint health decides dispatch, never whether billing stopped**: an expired
-  key, a broken tunnel, a crashed model server or a network blip look exactly like a stopped machine while the provider
-  keeps billing. Only the operator can say a machine is stopped, with `herd machines stopped <machine or snapshot id>`
-  (a request; see The herd's own account). Requests are consumed asynchronously and a name can be repointed in between,
-  so the CLI resolves a machine name to its current definition id when it's run (from the status snapshot) and the
-  request carries that id; a request whose id is no longer the named machine's current definition, or a retained one, is
-  rejected and reported, never applied to whatever the name points at now. The orchestrator records the confirmation in
-  the persisted machine definitions, against the exact current definition or snapshot id, before it consumes the
-  request, so a restart doesn't lose it; it closes that machine's billing-related alerts until its endpoint answers
-  again. Since unhealthy may still mean billing, an active machine whose health checks fail for longer than
-  `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns
-  or the operator confirms it stopped.
+  endpoint stays up), a backend that stays unready past `alerts.infra_after` while its machine is healthy (its model
+  gone from the list, say) raises an "unready backend" alert episode, since its units would otherwise just wait without
+  any other alert noticing; and a unit whose machine disappears mid-call (spot and marketplace machines can be
+  reclaimed) ends as an `infra` failure and is retried. **Endpoint health decides dispatch, never whether billing
+  stopped**: an expired key, a broken tunnel, a crashed model server or a network blip look exactly like a stopped
+  machine while the provider keeps billing. Only the operator can say a machine is stopped, with
+  `herd machines stopped <machine or snapshot id>` (a request; see The herd's own account). Requests are consumed
+  asynchronously and a name can be repointed in between, so the CLI resolves a machine name to its current definition id
+  when it's run (from the status snapshot) and the request carries that id; a request whose id is no longer the named
+  machine's current definition, or a retained one, is rejected and reported, never applied to whatever the name points
+  at now. The orchestrator records the confirmation in the persisted machine definitions, against the exact current
+  definition or snapshot id, before it consumes the request, so a restart doesn't lose it; it closes that machine's
+  billing-related alerts until its endpoint answers again. Since unhealthy may still mean billing, an active machine
+  whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert
+  episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
@@ -1213,21 +1215,23 @@ endpoint must reach that machine alone (the operator's assertion, like the model
   name, since names can be renamed and repointed (the command accepts a current name or a definition id too, resolved to
   the `instance` when it's run), and every ledger entry records its source, since bills from different providers arrive
   with different cutoffs. The orchestrator doesn't overwrite the counter with it, which could lose or double-count work
-  in flight: in one atomic step, it replaces all settled spend for that source dated up to the cutoff, the herd's own
-  accrual (from the ledger's timestamped entries) and any earlier reconciliation of it alike, with the billed amount,
-  which is the bill's running total for the billing month up to that cutoff. The billed amount becomes a ledger entry of
-  its own, dated at the cutoff, so a later reconciliation replaces it rather than adding to it, and a cutoff earlier
-  than the source's last one is refused. Every other source's spend is left alone, and every accrual and reservation
-  after the cutoff stays, along with every reservation still unresolved, whatever its timestamp: a call in flight at the
-  cutoff may or may not be on the bill, so its reservation stays in the counter until it settles and is replaced by the
-  reported usage as usual, dated at the call's start. That can count such a call twice (once in the bill, once settled),
-  never zero times, the same direction the counter errs in everywhere else, and the next reconciliation, with its later
-  cutoff, replaces the settled entry along with the rest. The old total, the new one, the cutoff and the reason go to
-  the event log. Restoring a lost counter is the one aggregate case: the same command without `--source`, with the
-  cutoff at now, giving the month's total across every bill, while paid dispatch is paused anyway. Hours are attributed
-  for the usage ledger by time, not tokens: while units are calling the machine, through any of its backends, its time
-  is split evenly among them, and their share goes to their change; time with no call in flight goes to the machine's
-  own idle bucket, never to a change.
+  in flight: in one atomic step, it adds an adjustment for that source, dated at the cutoff: the billed amount (the
+  bill's running total for the billing month up to that cutoff) minus everything already counted for the source up to
+  the cutoff, the herd's own settled accrual (from the ledger's timestamped entries) and any earlier adjustment alike,
+  so the source's total up to the cutoff becomes the billed amount, and a later reconciliation corrects it rather than
+  adding to it. A cutoff earlier than the source's last one is refused. Nothing is deleted: the detailed entries keep
+  their project, change and idle attribution, so spend per proposal is still what the herd measured, and the adjustment
+  is attributed to the source alone, shown separately as reconciliation. Every other source's spend is left alone, and
+  every accrual and reservation after the cutoff stays, along with every reservation still unresolved, whatever its
+  timestamp: a call in flight at the cutoff may or may not be on the bill, so its reservation stays in the counter until
+  it settles and is replaced by the reported usage as usual, dated at the call's start. That can count such a call twice
+  (once in the bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the
+  next reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new
+  one, the cutoff and the reason go to the event log. Restoring a lost counter is the one aggregate case: the same
+  command without `--source`, with the cutoff at now, giving the month's total across every bill, while paid dispatch is
+  paused anyway. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine,
+  through any of its backends, its time is split evenly among them, and their share goes to their change; time with no
+  call in flight goes to the machine's own idle bucket, never to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
@@ -1516,20 +1520,21 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   billing), a request the orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
-  `alerts.infra_after`, an idle rented machine (see Rented GPU backends), a rented machine not confirmed stopped after
-  the budget limit, a retained rented machine not confirmed stopped, and an unhealthy rented machine not confirmed
-  stopped all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like
-  the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's
-  state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert
-  about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing
-  condition (a project inactive, low disk, the budget, infrastructure failures, an idle rented machine, a rented machine
-  not confirmed stopped after the budget limit, a retained rented machine not confirmed stopped, an unhealthy rented
-  machine not confirmed stopped) is an **episode**: the scan that first sees it appends an opening entry, the scan that
-  sees it gone appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second
-  outage on the same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the
-  episode and the day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels
-  is at-least-once: push delivery is recorded per id after the service accepts it, so a crash in between sends that one
-  again, never none. Alerts go out on two channels from two accounts:
+  `alerts.infra_after`, an idle rented machine, an unready rented backend on a healthy machine (see Rented GPU
+  backends), a rented machine not confirmed stopped after the budget limit, a retained rented machine not confirmed
+  stopped, and an unhealthy rented machine not confirmed stopped all raise an alert. The queue doubles as the
+  orchestrator's own record of alerts, an operational control like the budget counter: unlike the event log, the
+  orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id derived from
+  facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of
+  its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget,
+  infrastructure failures, an idle rented machine, an unready rented backend, a rented machine not confirmed stopped
+  after the budget limit, a retained rented machine not confirmed stopped, an unhealthy rented machine not confirmed
+  stopped) is an **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone appends a
+  `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the same day
+  alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the day.
+  Losing the queue costs at most one repeated alert per open condition. Delivery on both channels is at-least-once: push
+  delivery is recorded per id after the service accepts it, so a crash in between sends that one again, never none.
+  Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
