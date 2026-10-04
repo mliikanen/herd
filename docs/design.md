@@ -445,20 +445,22 @@ silently dropped — comes from two rules together, not from the scan alone:
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
   6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
-     (see below) isn't a pass, change not archived. Next action: if the effective record is a `fail` not yet triaged, a
-     `triage` unit (see Final approval); otherwise ensure a PR exists (a **draft**, unless it was already marked ready
-     before a `rerun`; it isn't turned back into one), and the human runs the project's final approval. Skipped entirely
-     when `final_approval.kind: none`.
+     (see below) isn't a pass, change not archived. Next action, the first that applies: a required check failed on the
+     current tip, so CI triage (see Failing checks before the archive); the effective record is a `fail` not yet
+     triaged, so a `triage` unit (see Final approval); otherwise ensure a PR exists (a **draft**, unless it was already
+     marked ready before a `rerun`; it isn't turned back into one), and the human runs the project's final approval.
+     Skipped entirely when `final_approval.kind: none`.
   7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
      archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
      finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip (see
      below) yet while its review window (see below) hasn't timed out, or an awaited reviewer's first review of the
      content tip that no `triage` unit has classified yet. The orchestrator runs no model and can't tell a clean review
      from one with findings only in its free-form summary, so every such review is classified (`clean`, or findings
-     triaged), before the archive as after it. Next action: mark the PR ready for review if it's still a draft, then
-     follow up as Following up on PR review describes. A triaged finding becomes a task under "(added during review)",
-     which sends the change back to *implementing*. Review comes before archiving, because a fix after the archive would
-     mean editing the synced main specs by hand.
+     triaged), before the archive as after it. Next action, the first that applies: a required check failed on the
+     current tip, so CI triage (see Failing checks before the archive); otherwise mark the PR ready for review if it's
+     still a draft, then follow up as Following up on PR review describes. A triaged finding becomes a task under
+     "(added during review)", which sends the change back to *implementing*. Review comes before archiving, because a
+     fix after the archive would mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
      open thread or untriaged finding, and every awaited reviewer's first review of the content tip classified clean, or
      timed out), change not yet archived on the branch. Next action, the first that applies: a required check failed on
@@ -497,7 +499,7 @@ silently dropped — comes from two rules together, not from the scan alone:
     change itself touches. Default-branch changes elsewhere can still interact with the change, but CI re-runs
     the gate on the merge; changes to the change's own files are close enough to need another look.
 
-  Any other commit (a fix task's code, a person's push, an update-branch merge that touches the change's files)
+  Any other commit (a fix task's code, a person's content push, an update-branch merge that touches the change's files)
   makes the holistic-accept stale, so the change returns to *holistic-review-pending*, and once archived, to
   *archived-pending* with the merge treated as a review finding. A final-approval pass isn't made stale by later
   fixes on its own: the holistic review that follows them records `final-approval: rerun` when the fixes touch what
@@ -1031,9 +1033,9 @@ current task, review round, waiting reason and spend. It carries `generated_at`,
 past twice `scan_interval`, the status pane, `herd status` and the bridge show it as **stale** (orchestrator not
 scanning) in place of presenting old state as current, alongside the heartbeat check. It's rewritten whole from the
 scan, never appended, and replaced atomically (written to a temporary file, synced, renamed over the old one), so a
-reader never sees half of it, and so it can't go stale or grow. The status pane, `herd status`, and the bridge's
-attention panes read the snapshot; the event log is only for history and the unit panes' timeline. Like the log, the
-orchestrator never reads it back.
+reader never sees half of it, and no stale entries accumulate or make it grow; whether the snapshot itself is current is
+what `generated_at` tells. The status pane, `herd status`, and the bridge's attention panes read the snapshot; the event
+log is only for history and the unit panes' timeline. Like the log, the orchestrator never reads it back.
 
 **The `herd` CLI.** The herd repo installs `herd` on the host:
 - `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
@@ -1075,6 +1077,7 @@ timeouts:                              # per unit kind; a unit past either is ki
   archive:   { wall: 10m, quiet: 5m }
 budget:
   currency: USD                        # every cloud backend's price is in this currency
+  timezone: UTC                        # where a billing month starts and ends
   monthly: 200                         # cloud backends only
   warn_at: 80%
 alerts:
@@ -1113,16 +1116,19 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an alert; at the budget,
   the orchestrator stops dispatching units to cloud backends and refuses new reservations, running units' in-flight
   calls finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the
-  operator's call to raise the budget or wait for the month to turn. Besides the monthly counter, the orchestrator keeps
-  a usage ledger, totals per project and change, so the status snapshot's spend per proposal survives a restart. Counter
-  and ledger are the budget's control state, kept in the herd's own files and allowed as recovery input; with the alert
-  queue (below), they're the only state the orchestrator reads back besides git. They decide only whether cloud calls go
-  out, never a change's state. A reservation refused because it would cross the budget pauses cloud dispatch the same
-  way, so units aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason,
-  which counts neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If
-  the counter is lost, cloud dispatch pauses until the operator sets this month's spend with
-  `herd budget set --spent <amount>` (read from the provider's billing), a request the orchestrator records in the event
-  log before dispatch resumes.
+  operator's call to raise the budget or wait for the month to turn. The counter is keyed by billing period, the
+  calendar month in `budget.timezone` (`2026-10`, say), so a new month starts from zero on its own and lifts a budget
+  pause without anyone acting, and a restart near the boundary reads the right period's total. A reservation is charged
+  to the period it was made in, and settled there even if the call finishes after the month turns, so a boundary can't
+  move spend between months. Besides the counter, the orchestrator keeps a usage ledger, totals per project and change,
+  so the status snapshot's spend per proposal survives a restart. Counter and ledger are the budget's control state,
+  kept in the herd's own files and allowed as recovery input; with the alert queue (below), they're the only state the
+  orchestrator reads back besides git. They decide only whether cloud calls go out, never a change's state. A
+  reservation refused because it would cross the budget pauses cloud dispatch the same way, so units aren't dispatched
+  only to have their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed
+  attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is lost, cloud dispatch
+  pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's
+  billing), a request the orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after` all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational
