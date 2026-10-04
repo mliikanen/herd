@@ -801,10 +801,10 @@ say which backend runs which kind of unit:
 ```yaml
 backends:
   opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY,
-                 account: anthropic:<org id>,                         # the bill this backend's spend is on
+                 account: anthropic:<workspace id>,                   # a billing scope used by the herd alone
                  price: { input: <per Mtok>, output: <per Mtok> } }   # budget.currency; input = highest input rate
   sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY,
-                 account: anthropic:<org id>,
+                 account: anthropic:<workspace id>,
                  price: { input: <per Mtok>, output: <per Mtok> } }
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
   local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
@@ -1225,8 +1225,10 @@ retained snapshot would charge the new machine's traffic to the old one.
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
   provider's bill: health checks miss time (while the orchestrator is down, say), so the operator reconciles against the
   bill with `herd budget set --spent <amount> --as-of <time> --source <source>`, giving what one bill charged up to its
-  cutoff. A source is what one bill covers: a cloud billing account, named by the backend's `account`
-  (`<provider>:<account id>`, say `anthropic:<org id>`; backends billed to one account share it whatever keys they use,
+  cutoff. A source is what one bill covers: a cloud billing scope that carries the herd's traffic alone, named by the
+  backend's `account` (`<provider>:<scope id>`: a dedicated account, or a workspace or project within one whose usage
+  the provider reports separately, say `anthropic:<workspace id>`; a scope shared with other use would put that use's
+  spend in the herd's budget and could never reconcile; backends billed to one account share it whatever keys they use,
   and a key's rotation or rename doesn't change it) or a rented machine, keyed by its qualified `instance`, never by its
   name, since names can be renamed and repointed (the command also accepts a current name, resolved when it's run, with
   the request carrying both the name and the definition it resolved to, and accepted only if the name still points at
