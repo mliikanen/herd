@@ -666,11 +666,13 @@ describe.
 ## Final approval
 
 The gate runs inside the workers. Some checks don't fit there — typically end-to-end tests that need an emulator, a
-device or a GUI. A project picks one of three `final_approval.kind`s: `none`; `human`, where a person runs them, and
-tasks that *write* those tests are implemented and reviewed like any other task while *running* them is deferred to the
-person; or `container`, where the herd runs them itself on an emulator in a worker, during implementation as well as at
-the end (see End-to-end tests: the red/green loop), optionally followed by a person's check (`human_after`). What
-follows describes the `human` phase; the `container` phase is recorded the same way, by an `e2e` unit.
+device or a GUI. `final_approval.kind` chooses only who performs the **whole-change** approval: `none`; `human`, a
+person; or `container`, an `e2e` unit on an emulator in a worker, optionally followed by a person's check
+(`human_after`). It doesn't decide whether end-to-end tests run during implementation: with an `e2e` block and emulator
+capacity, the per-task loop runs for every kind, `human` included (see End-to-end tests: the red/green loop); without
+them, tasks that *write* those tests are implemented and reviewed like any other task, and *running* them is left to the
+whole-change approval and CI. What follows describes the `human` phase; the `container` phase is recorded the same way,
+by an `e2e` unit.
 
 When a proposal reaches *awaiting-approval*, the orchestrator makes sure its **draft** PR exists (normally opened by
 `herd-propose` at proposal time) and puts in its body the
@@ -809,10 +811,13 @@ The layers:
 **Test or implementation?** When a test fails, whoever triages it (the implementer in its own loop, the reviewer, or a
 `triage` unit after the final e2e or CI) follows the same order, so the answer comes from evidence rather than taste:
 
-1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Flaky outcomes are counted per
-   test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change escalates to `needs-human`
-   ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever; the person fixes the
-   test or its environment in a separate change, or waives it like a pre-existing failure.
+1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
+   record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
+   `E2E:` section (`- <test id> flaky`), a task review, `e2e` or `triage` unit adds `e2e-flaky <test id> <sha>` to its
+   verdict commit, and CI triage records `ci-triage <check> <sha>: flaky`. Flaky outcomes are counted from those records
+   per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change escalates to
+   `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever; the
+   person fixes the test or its environment in a separate change, or waives it like a pre-existing failure.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, the same one
    the harness is pinned to), but only if the same test definition exists unchanged there. Not the default branch's
    current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like this
