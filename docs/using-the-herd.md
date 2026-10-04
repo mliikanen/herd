@@ -138,8 +138,8 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
     which behavior is right, it stops and asks you; otherwise it turns the failure into new tasks, and the draft PR just
     gets more commits. `/herd-resolve` asks for the rerun when you record a fail, and for an end-to-end test the change
     didn't add or change, a try on the commit the change branched from, which it checks out for you (not the default
-    branch's latest, which may already have an unrelated fix; a test the change did add or change is expected to fail
-    there).
+    branch's latest, which may already have an unrelated fix). A test the change added or changed isn't compared there:
+    the old commit has a different version of it, or none.
 
 ## Review
 

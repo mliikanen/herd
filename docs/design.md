@@ -84,7 +84,8 @@ final_approval:
 e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
   harness: e2e/                               # the whole harness, always run from the default branch
   tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
-  prepare: ./e2e/prepare.sh                   # (re)builds and installs the app, boots the emulator if needed
+  boot: ./e2e/boot.sh                         # starts the unit's emulator, once; the herd keeps it running
+  prepare: ./e2e/prepare.sh                   # (re)builds and installs the app on it
   select: ./e2e/select.sh                     # changed paths on stdin; relevant tests as JSON lines {id, files}
   run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
   ci_artifacts:                               # what triage may see from CI; the jobs must be secret-free
@@ -742,10 +743,12 @@ The commands' contract, so the orchestrator can handle ids and results determini
 
 - Every command runs in the repository root of the unit's clone, against the unit's own emulator, and `select` and `run`
   with `$HERD_E2E_ARTIFACTS` naming an empty directory they may write to (`prepare` gets none; see below).
-- **`prepare`** takes no arguments and is idempotent: it rebuilds the app from the working tree and installs it, booting
-  the emulator first only if it isn't already running, and exits 0 once tests can run; any other exit fails the unit.
-  The herd runs it before every `run`, so a rerun after an edit always tests the edited code, never the previously
-  installed build.
+- **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
+  part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
+  that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
+- **`prepare`** takes no arguments and is idempotent: it rebuilds the app from the working tree and installs it on the
+  unit's emulator, and exits 0 once tests can run; any other exit fails the unit. The herd runs it before every `run`,
+  so a rerun after an edit always tests the edited code, never the previously installed build.
 - **`select`** takes no arguments. It reads, on stdin, the paths that differ between a base commit and the working tree,
   committed or not, one JSON string per line (a Git path may contain a newline, so a raw path per line would be
   ambiguous), which the herd computes itself (so the implementer can run it before its commit exists, and a reviewer
@@ -785,20 +788,21 @@ switch the safety net off. So:
   to change it, but it's never executed: everything under `e2e.harness` is a built-in guarded path, so an edit is
   declared, and it takes effect only once it's merged.
 
-- **The boundary is enforced, not just checked.** `select` and `run` run in a sandbox whose filesystem holds only the
-  harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
-  `e2e.tests` files, the test definitions under test, and `$HERD_E2E_ARTIFACTS`; `run` also gets the connection to the
-  unit's emulator. Nothing else of the change is readable to them, so they can't source a helper or load configuration
-  from a branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed paths itself and
-  passes them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts.
-  `prepare` is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its
-  wrapper and build scripts), which is the change's code, so it runs with the whole working tree, in the unit's
-  container but outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). So it can't
-  touch what's trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results
-  directory in existence; when it exits, the herd kills everything left in that cgroup (a background process it started
-  included), and only then creates the artifacts directory for `run`, mounted into the sandbox alone, which runs as a
-  different user that the build's user can't write as. The change contributes the app being tested and its tests,
-  nothing that decides selection or reads results.
+- **The boundary is enforced, not just checked.** `boot`, `select` and `run` run in a sandbox whose filesystem holds
+  only the harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
+  `e2e.tests` files, the test definitions under test, and, for `select` and `run`, `$HERD_E2E_ARTIFACTS`; `boot` and
+  `run` also get the unit's emulator. Nothing else of the change is readable to them, so they can't source a helper or
+  load configuration from a branch-controlled path. `select` doesn't need the tree: the orchestrator computes the
+  changed paths itself and passes them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read
+  outside those mounts. `prepare` is the exception by nature: building the app means running the working tree's own
+  build (`./gradlew`, its wrapper and build scripts), which is the change's code, so it runs with the whole working
+  tree, in the unit's container but outside that sandbox; its build inputs are guarded paths (see Who commits, who
+  pushes). So it can't touch what's trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS`
+  unset and no results directory in existence; when it exits, the herd kills everything left in that cgroup (a
+  background process it started included; the emulator isn't among them, since `boot` started it in its own), and only
+  then creates the artifacts directory for `run`, mounted into the sandbox alone, which runs as a different user that
+  the build's user can't write as. The change contributes the app being tested and its tests, nothing that decides
+  selection or reads results.
 
 - **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
   default-branch version; manifest validation rejects a manifest where they do.
@@ -933,21 +937,21 @@ symlinks, hard links or devices), and no entry's path may escape the mount. Hitt
 tells the triager it was too large. Any other failed check reaches triage only as its name and conclusion; without the
 artifacts the triager reasons from far less, which is why the project's end-to-end CI job should be one it can list.
 
-**Emulators in workers.** The project's toolchain image includes what `prepare` needs (an emulator and a system image,
-for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container by
-`GroupAdd=keep-groups`, as for the GPU). Each such unit boots its own emulator and throws it away with the unit, like
-its clone: sharing one would carry app data and device state from one unit into the next. Emulators are heavy (a few GB
-of memory and a few cores each, on the host that also serves the desktop and the local model server), so host config
-caps how many run at once (`e2e.max_emulators`); a unit that needs one waits for capacity, and its wait doesn't count
-against its timeouts. That capacity is also the switch: `e2e.max_emulators` defaults to **0**, and the operator raises
-it only once the emulator probe in Build plan step 2's reality check passes on the host. While it's 0 (and on a host
-without KVM, where it must stay 0), no e2e layer runs at all, whatever a project's `e2e` block says: no per-task loop,
-no red/green proof, no `e2e` units. Capacity is re-read every scan, but a change can't switch mode halfway: whether its
-e2e layers apply is decided once, when its first unit is dispatched, from the manifest **at the change's pinned
-merge-base** (see The pin), not the current default branch, so the mode never names an `e2e` block, harness or image the
-pinned commit doesn't have (no block there means `off`), and recorded by the orchestrator as a bookkeeping line in
-`review-notes.md`, which holds for the change's life. The line fixes the final-approval kind at the same moment, since
-the two must agree (an "off" change can't take a container pass):
+**Emulators in workers.** The project's toolchain image includes what `boot` and `prepare` need (an emulator and a
+system image, for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container
+by `GroupAdd=keep-groups`, as for the GPU). Each such unit boots its own emulator (with `boot`) and throws it away with
+the unit, like its clone: sharing one would carry app data and device state from one unit into the next. Emulators are
+heavy (a few GB of memory and a few cores each, on the host that also serves the desktop and the local model server), so
+host config caps how many run at once (`e2e.max_emulators`); a unit that needs one waits for capacity, and its wait
+doesn't count against its timeouts. That capacity is also the switch: `e2e.max_emulators` defaults to **0**, and the
+operator raises it only once the emulator probe in Build plan step 2's reality check passes on the host. While it's 0
+(and on a host without KVM, where it must stay 0), no e2e layer runs at all, whatever a project's `e2e` block says: no
+per-task loop, no red/green proof, no `e2e` units. Capacity is re-read every scan, but a change can't switch mode
+halfway: whether its e2e layers apply is decided once, when its first unit is dispatched, from the manifest **at the
+change's pinned merge-base** (see The pin), not the current default branch, so the mode never names an `e2e` block,
+harness or image the pinned commit doesn't have (no block there means `off`), and recorded by the orchestrator as a
+bookkeeping line in `review-notes.md`, which holds for the change's life. The line fixes the final-approval kind at the
+same moment, since the two must agree (an "off" change can't take a container pass):
 `e2e-mode <on|off> approval <none|human|container|container+human>`. A later change to the manifest's `final_approval`
 applies to new changes only, so a change in flight never finds itself owing a phase it can't run. A change started with
 e2e on keeps owing its red/green proofs and its reviews' reruns: if capacity later drops to 0, its units that need an
