@@ -1265,11 +1265,13 @@ retained snapshot would charge the new machine's traffic to the old one.
   reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new one, the
   cutoff and the reason go to the event log. Restoring a lost counter works the same way, one source at a time, so a
   later reconciliation never double-counts an unscoped total: the operator gives each source's month-to-date bill with
-  the cutoff at now, and paid dispatch, paused anyway, resumes once every source the config names (every cloud billing
-  account and every rented machine, current or retained) has one. Hours are attributed for the usage ledger by time, not
-  tokens: while units are calling the machine, through any of its backends, its time is split evenly among them, and
-  their share goes to their change; time with no call in flight goes to the machine's own idle bucket, never to a
-  change.
+  the cutoff at now, and paid dispatch, paused anyway, resumes once every source that may have spend this period has
+  one: every source the config names (every cloud billing account and every rented machine, current or retained), plus
+  every source in the period's source list, a small record kept with the persisted machine definitions, apart from the
+  counter, of every source that has accrued anything this billing period, so an account removed or a machine retired
+  earlier in the month is still asked for. Hours are attributed for the usage ledger by time, not tokens: while units
+  are calling the machine, through any of its backends, its time is split evenly among them, and their share goes to
+  their change; time with no call in flight goes to the machine's own idle bucket, never to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
