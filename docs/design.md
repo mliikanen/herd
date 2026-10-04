@@ -440,13 +440,16 @@ silently dropped — comes from two rules together, not from the scan alone:
      *implementing*. Review comes before archiving, because a fix after the archive would mean editing the synced main
      specs by hand.
   8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
-     open thread or untriaged finding, and every awaited reviewer has reviewed the content tip or timed out), change not
-     yet archived on the branch. Next action: the reviewer runs the archive and commits. A crash mid-archive never gets
+     open thread or untriaged finding, and every awaited reviewer has reviewed the content tip or timed out), no
+     required check failed on the current tip, change not yet archived on the branch. Next action: while a required
+     check is still running, none; wait (a failure then goes through Failing checks before the archive, never past it).
+     Once every required check has passed, the reviewer runs the archive and commits. A crash mid-archive never gets
      pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action follows from why:
      - checks still running on the current tip, or an awaited reviewer hasn't reviewed the content tip and
        `pr_review.timeout` hasn't passed: none; wait;
+     - the branch is behind the default branch: update-branch (see Keeping up with the default branch);
      - an awaited reviewer's first review of the content tip, not yet classified: a `triage` unit, which records it as
        `clean` or as a finding in `review-notes.md` (a bookkeeping commit, so the content tip doesn't move). The
        orchestrator runs no model, so it can't tell a clean review from one with findings in its free-form summary; only
@@ -454,11 +457,11 @@ silently dropped — comes from two rules together, not from the scan alone:
      - a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
        orchestrator commits a mechanical `needs-human` marker (state 1 then matches). None of these can become a
        task, because fixing anything after the archive would mean un-archiving.
-  10. *ready-to-merge* — archive commit pushed, checks passing on the current tip, every awaited reviewer's review of
-     the content tip classified clean (or timed out), no open thread, and the holistic-accept still current (see
-     Current records). Next action: none; a human merges. A later bookkeeping push (a clean update-branch merge, say)
-     moves the change back to *archived-pending* until checks pass on the new tip; its review of the content tip still
-     stands.
+  10. *ready-to-merge* — archive commit pushed, branch up to date with the default branch, checks passing on the current
+     tip, every awaited reviewer's review of the content tip classified clean (or timed out), no open thread, and the
+     holistic-accept still current (see Current records). Next action: none; a human merges. A later bookkeeping push
+     (a clean update-branch merge, say) moves the change back to *archived-pending* until checks pass on the new tip;
+     its review of the content tip still stands.
 
   **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so
   "for the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is
@@ -1041,11 +1044,16 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   billing), a request the orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
   warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after` all
-  raise an alert. The orchestrator keeps no memory between scans, so each alert gets a stable id derived from current
-  facts, and the queue adds only ids it doesn't already hold: an alert about a waiting change is keyed by the commit of
-  its `needs-human` marker or final-approval state, and an ongoing condition (a project inactive, low disk, the budget)
-  by the condition and the day, which also makes it a daily reminder while it lasts. Push delivery is recorded per id in
-  the queue, so a restart neither repeats nor drops one. Alerts go out on two channels from two accounts:
+  raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like the budget
+  counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's state. Each
+  alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert about a
+  waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing condition (a
+  project inactive, low disk, the budget, infrastructure failures) is an **episode**: the scan that first sees it
+  appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after a `cleared`
+  one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the episode, and a
+  daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated alert per open
+  condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the service accepts it,
+  so a crash in between sends that one again, never none. Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
