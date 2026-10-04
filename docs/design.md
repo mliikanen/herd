@@ -845,11 +845,12 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
 - **Any capable slot can take any unit.** Every unit starts from a fresh clone, so a task implemented on one slot can
   be revised or reviewed on another.
-- **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots.
-  Backend names are only labels, so two backends naming the same model (same `kind` and `model`) count as the same
-  model for this rule and the ones below. A holistic review spans commits that may come from several models, so
-  excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable
-  slot has one.
+- **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots. Backend
+  names are only labels, so models are compared by their normalized `Herd-Model` value (kind, model and, for a rented
+  backend, revision): two backends naming the same model count as the same model for this rule and the ones below, and
+  two revisions of one model, being different weights, count as different models. A holistic review spans commits that
+  may come from several models, so excluding all of them could leave no reviewer; it prefers a model that wrote none of
+  the change, when a capable slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
   and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
   different model. A project with `locality: host` may use only slots whose every backend is local, for every role and
@@ -1164,12 +1165,14 @@ revision below).
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
   provider's bill: health checks miss time (while the orchestrator is down, say), so the operator reconciles against the
-  bill with `herd budget set --spent <amount>`, the same command that restores a lost counter, which sets this month's
-  total and records the old total, the new one and the reason in the event log. Hours are attributed for the usage
-  ledger by time, not tokens: while units are calling the machine, through any of its backends, its time is split evenly
-  among them, and their share goes to their change; time with no call in flight goes to the machine's own idle bucket,
-  never to a change.
-
+  bill with `herd budget set --spent <amount> --as-of <time>`, giving what the providers billed up to a cutoff (a bill's
+  own cutoff, typically). The orchestrator doesn't overwrite the counter with it, which could lose or double-count work
+  in flight: in one atomic step, it replaces only what the herd itself had accrued up to that cutoff (from the ledger's
+  timestamped entries) with the billed amount, and keeps every accrual and reservation after the cutoff. The old total,
+  the new one, the cutoff and the reason go to the event log. Restoring a lost counter is the same command with the
+  cutoff at now, while paid dispatch is paused anyway. Hours are attributed for the usage ledger by time, not tokens:
+  while units are calling the machine, through any of its backends, its time is split evenly among them, and their share
+  goes to their change; time with no call in flight goes to the machine's own idle bucket, never to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
@@ -1371,8 +1374,8 @@ the unit panes' timeline. Like the log, the orchestrator never reads it back.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
-- `herd budget set --spent <amount>`: sets this month's spend, after the counter was lost or to reconcile it with
-  the providers' bills (see Monitoring and Rented GPU backends).
+- `herd budget set --spent <amount> [--as-of <time>]`: sets this month's spend, after the counter was lost or to
+  reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
 - `herd machines stopped <machine or snapshot id>`: confirms a rented machine is stopped (see Rented GPU backends).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
