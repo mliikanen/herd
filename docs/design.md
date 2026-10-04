@@ -14,8 +14,8 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 
 - **Proposer**: a human with an interactive cloud SOTA agent. Unchanged, plus one step: marking the proposal ready
   (see The hand-off).
-- **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot, local
-  (Ollama or similar), a rented GPU, or a cloud API, and one host can mix them (see Models).
+- **Implementer**: an LLM run non-interactively, one task at a time. Host config sets which model each worker slot runs:
+  a local one (Ollama or similar), one on a rented GPU, or a cloud API, and one host can mix them (see Models).
 - **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
   slot like the implementer; a task review never runs on the model that wrote the commit (see Models). It reviews each
   task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
@@ -810,7 +810,8 @@ backends:
                     context: 131072,       # see Rented GPU backends
                     weights: <label> }     # optional: same label = same model for review exclusion
 machines:                              # rented GPU machines: what's billed, once per machine
-  h100-a: { endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
+  h100-a: { instance: <provider's instance id>,
+            endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
             price: { per_hour: <rate> }, idle_alert: 30m }
   # with access: wireguard instead, endpoint: http://10.66.0.1:8000/v1 (the tunnel address) and the machine adds:
   #   wireguard: { peer: <public host>:51820, peer_public_key: <key>, address: 10.66.0.2/32,
@@ -1101,12 +1102,13 @@ holds (a coder model that needs 80 GB or more), it's billed per hour rather than
 speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-compatible API.
 
 The bill belongs to a **machine**, not to a model, so host config describes them separately. A `machines` entry is one
-rented machine: its endpoint, how it's protected, its secret, its hourly `price` and its `idle_alert`. A backend of
-`kind: openai` that names a `machine` is a rented backend (the `machine` field is what marks it; there's no separate
-flag), and gives its model, revision and context; several backends may share a machine (two models served by one
-server), and the machine is still billed once. Validation rejects two machines with the same endpoint, since that would
-bill one machine twice, and a machine's endpoint must reach that machine alone (the operator's assertion, like the model
-revision below).
+rented machine: its `instance` (the provider's ID for the rented instance, copied in by the operator, which is what
+identifies the machine), its endpoint, how it's protected, its secret, its hourly `price` and its `idle_alert`. A
+backend of `kind: openai` that names a `machine` is a rented backend (the `machine` field is what marks it; there's no
+separate flag), and gives its model, revision and context; several backends may share a machine (two models served by
+one server), and the machine is still billed once. Validation rejects two machines with the same `instance` or the same
+endpoint, since that would bill one machine twice, and a machine's endpoint must reach that machine alone (the
+operator's assertion, like the model revision below).
 
 - **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
   model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
@@ -1159,32 +1161,33 @@ revision below).
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
   it stopped, so a machine idle all day alerts once plus the daily reminder.
-- **Removing or repointing a machine.** Host config can change a machine entry at any scan. A change to its settings
-  (`price`, `idle_alert`, a rotated `secret`) is an update in place: the same machine, a new rate from that moment on. A
-  change to its identity (`endpoint`, `access`, the WireGuard `peer`), or dropping the entry, means a different machine,
-  or none, from the herd's point of view, but the old machine doesn't stop with it: the orchestrator keeps the old
-  definition (tunnel, credentials, health checks, hourly accrual, alerts) as a **retained snapshot** under its
-  definition id, the immutable id every definition gets when it's first persisted (the machine's name and the moment it
-  was first loaded, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own files as an operational store and read
-  back on start like the budget counter. A name can be reused or repointed many times, so the definition id, not the
-  name, is what identifies it. Likewise identity, not the name, decides which machine an entry is: an entry whose
-  identity matches an existing definition, current or retained, takes that definition over rather than starting a second
-  one, so a rename keeps the machine's id, accrual and credential copy, and a retained machine that comes back into
-  config becomes current again. One physical machine never has two definitions, which keeps accrual once per machine
-  (validation already rejects two entries with one endpoint). Noticing the change doesn't depend on a scan seeing the
-  old config: the orchestrator persists every machine definition it puts into use (with the hash of its credential copy,
-  below) in that same store before any health check, dispatch or accrual uses it, and every scan, the first after a
-  restart included, compares host config with those persisted definitions, not with what the previous scan read. So a
-  config change made while the orchestrator was down, or a crash before a scan finished, still finds the old machine to
-  retain. The snapshot's credentials can't depend on files the operator may already have rotated or deleted as part of
-  the very config change that retains it, so copying them at that point would be too late. Instead the proxy copies a
-  machine's credentials into its own store as soon as it first loads the machine definition, keyed by the content's
-  hash, and every definition in use (current or retained) runs on its own copy: editing or deleting the operator's file
-  later only affects definitions loaded after the change, and a retained snapshot simply keeps the copy it already had,
-  until it's retired. Since copies are keyed by content, definitions that share a credential share one copy, so a copy
-  is deleted only once no persisted definition, current or retained, still references its hash. That store is a
-  dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate from
-  the operator's files it copies from. Those live in a directory of their own, `~herd/secrets/machines/` (`0700`, files
+- **Removing or repointing a machine.** Host config can change a machine entry at any scan. A machine's identity is its
+  `instance`, so a change to anything else (`endpoint`, `access` and its `wireguard` block, `price`, `idle_alert`, a
+  rotated `secret`) is an update in place: the same machine, reached the new way or billed at the new rate from that
+  moment on, still accrued once. A change of `instance`, or dropping the entry, means a different machine, or none, from
+  the herd's point of view, but the old machine doesn't stop with it: the orchestrator keeps the old definition (tunnel,
+  credentials, health checks, hourly accrual, alerts) as a **retained snapshot** under its definition id, the immutable
+  id every definition gets when it's first persisted (the machine's name and the moment it was first loaded, say
+  `h100-a@2026-10-04T15:02Z`), persisted in the herd's own files as an operational store and read back on start like the
+  budget counter. A name can be reused or repointed many times, so the definition id, not the name, is what identifies
+  it. Likewise the `instance`, not the name, decides which machine an entry is: an entry whose `instance` matches an
+  existing definition, current or retained, takes that definition over rather than starting a second one, so a rename
+  keeps the machine's id, accrual and credential copy, and a retained machine that comes back into config becomes
+  current again. One physical machine never has two definitions, which keeps accrual once per machine (validation
+  already rejects two entries with one endpoint). Noticing the change doesn't depend on a scan seeing the old config:
+  the orchestrator persists every machine definition it puts into use (with the hash of its credential copy, below) in
+  that same store before any health check, dispatch or accrual uses it, and every scan, the first after a restart
+  included, compares host config with those persisted definitions, not with what the previous scan read. So a config
+  change made while the orchestrator was down, or a crash before a scan finished, still finds the old machine to retain.
+  The snapshot's credentials can't depend on files the operator may already have rotated or deleted as part of the very
+  config change that retains it, so copying them at that point would be too late. Instead the proxy copies a machine's
+  credentials into its own store as soon as it first loads the machine definition, keyed by the content's hash, and
+  every definition in use (current or retained) runs on its own copy: editing or deleting the operator's file later only
+  affects definitions loaded after the change, and a retained snapshot simply keeps the copy it already had, until it's
+  retired. Since copies are keyed by content, definitions that share a credential share one copy, so a copy is deleted
+  only once no persisted definition, current or retained, still references its hash. That store is a dedicated
+  persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate from the
+  operator's files it copies from. Those live in a directory of their own, `~herd/secrets/machines/` (`0700`, files
   `0600`), holding machine keys only, which the proxy mounts whole and read-only, so a machine added or a secret renamed
   at any scan is readable without recreating the proxy; the rest of `~herd/secrets/` (provider keys, the orchestrator's
   App key) stays mounted one file at a time, and the App key never reaches the proxy. The snapshot takes no new units,
@@ -1195,18 +1198,22 @@ revision below).
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
   provider's bill: health checks miss time (while the orchestrator is down, say), so the operator reconciles against the
-  bill with `herd budget set --spent <amount> --as-of <time>`, giving what the providers billed up to a cutoff (a bill's
-  own cutoff, typically). The orchestrator doesn't overwrite the counter with it, which could lose or double-count work
-  in flight: in one atomic step, it replaces only what the herd itself had accrued up to that cutoff (from the ledger's
-  timestamped entries) with the billed amount, and keeps every accrual and reservation after the cutoff, along with
-  every reservation still unresolved, whatever its timestamp: a call in flight at the cutoff may or may not be on the
-  bill, so its reservation stays in the counter until it settles and is replaced by the reported usage as usual. That
-  can count such a call twice (once in the bill, once settled), never zero times, the same direction the counter errs in
-  everywhere else, and the next reconciliation absorbs it. The old total, the new one, the cutoff and the reason go to
-  the event log. Restoring a lost counter is the same command with the cutoff at now, while paid dispatch is paused
-  anyway. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, through
-  any of its backends, its time is split evenly among them, and their share goes to their change; time with no call in
-  flight goes to the machine's own idle bucket, never to a change.
+  bill with `herd budget set --spent <amount> --as-of <time> --source <source>`, giving what one bill charged up to its
+  cutoff. A source is what one bill covers: a cloud provider account (the backends sharing one `secret`) or a rented
+  machine (by name, covering every definition with its `instance`), and every ledger entry records its source, since
+  bills from different providers arrive with different cutoffs. The orchestrator doesn't overwrite the counter with it,
+  which could lose or double-count work in flight: in one atomic step, it replaces only what the herd itself had accrued
+  for that source up to that cutoff (from the ledger's timestamped entries), leaving every other source's spend alone,
+  with the billed amount, and keeps every accrual and reservation after the cutoff, along with every reservation still
+  unresolved, whatever its timestamp: a call in flight at the cutoff may or may not be on the bill, so its reservation
+  stays in the counter until it settles and is replaced by the reported usage as usual. That can count such a call twice
+  (once in the bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the
+  next reconciliation absorbs it. The old total, the new one, the cutoff and the reason go to the event log. Restoring a
+  lost counter is the one aggregate case: the same command without `--source`, with the cutoff at now, giving the
+  month's total across every bill, while paid dispatch is paused anyway. Hours are attributed for the usage ledger by
+  time, not tokens: while units are calling the machine, through any of its backends, its time is split evenly among
+  them, and their share goes to their change; time with no call in flight goes to the machine's own idle bucket, never
+  to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
@@ -1412,8 +1419,8 @@ the unit panes' timeline. Like the log, the orchestrator never reads it back.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
-- `herd budget set --spent <amount> [--as-of <time>]`: sets this month's spend, after the counter was lost or to
-  reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
+- `herd budget set --spent <amount> [--as-of <time> --source <source>]`: sets this month's spend, after the counter was
+  lost or to reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
 - `herd machines stopped <machine or snapshot id>`: confirms a rented machine is stopped (see Rented GPU backends).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
