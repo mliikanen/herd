@@ -42,7 +42,7 @@ flowchart TD
     FA -- "pass" --> RV
     FA -- "fail: becomes tasks" --> I
     RV -- "fix tasks" --> I
-    RV -- "review clean" --> A --> AP --> M
+    RV -- "review done" --> A --> AP --> M
     I -. "something it can't do on its own" .-> NH
     RV -. "scope change or too many rounds" .-> NH
     AP -. "failed check, finding<br/>or content commit" .-> NH

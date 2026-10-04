@@ -469,7 +469,7 @@ stateDiagram-v2
     in_review --> implementing: finding triaged into a task
     in_review --> archiving: review done
     archiving --> archived_pending: archive commit
-    archived_pending --> ready_to_merge: up to date, checks pass, archive reviewed
+    archived_pending --> ready_to_merge: up to date, checks pass, archive reviewed or timed out
     ready_to_merge --> archived_pending: bookkeeping push
     ready_to_merge --> [*]: a person merges
 
