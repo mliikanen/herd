@@ -177,8 +177,9 @@ The herd can start observing a new project at any time, without restarting anyth
   orchestrator. The orchestrator gets that file **read-only**, so registering stays a host-side, human action that
   no agent or orchestrator bug can widen.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
-  a `.herd/project.yaml` that parses, the orchestrator's GitHub token can push to the repo, and the project's
-  toolchain image builds. Otherwise it's *inactive*, and the status pane says which check failed. Nothing records
+  a `.herd/project.yaml` that parses, the orchestrator's GitHub token can push to the repo, the project's
+  toolchain image builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's
+  *inactive*, and the status pane says which check failed. Nothing records
   that `herd doctor` passed. `doctor` is the human's deeper check (gate in a real worker, branch protection, model
   backend) to run before trusting a project, not a switch the orchestrator reads.
 - **First scan of a new project.** The orchestrator creates the project's bare mirror and builds its images. It
@@ -548,15 +549,17 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
 - **Any capable slot can take any unit.** Every unit starts from a fresh clone, so a task implemented on one slot can
   be revised or reviewed on another.
-- **A task review never runs on the backend that wrote the commit.** The same model shares its own blind spots. A
-  holistic review spans commits that may come from several backends, so excluding all of them could leave no
-  reviewer; it prefers a backend that wrote none of the change, when a capable slot has one.
+- **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots.
+  Backend names are only labels, so two backends naming the same model (same `kind` and `model`) count as the same
+  model for this rule and the ones below. A holistic review spans commits that may come from several models, so
+  excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable
+  slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover
   `implement` and every reviewer kind, and for each implementer backend among them, some slot must offer a `task`
-  review on a different backend. A project that fails is shown *inactive* with the reason ("no slot can review
+  review on a different model. A project that fails is shown *inactive* with the reason ("no slot can review
   local-coder's work"), before any of its changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
-  a different implementer backend, when one exists, before the task escalates.
+  an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its backend and unit kind** in trailers (`Herd-Backend: local-coder`,
   `Herd-Unit: implement`), and commit validation checks them against the slot. How often each backend's work is
   accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks
@@ -757,7 +760,7 @@ Steps marked **(manual)** need a human.
    Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for
    a pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel
    Arc Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context.
-   It's bounded by the rule that a task's last review round goes to a different backend. The B70 runs under
+   It's bounded by the rule that a task's last review round goes to a different model. The B70 runs under
    official Ollama's Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as
    `/dev/dri`. The runtime is rootless Podman, already on the host.
 
