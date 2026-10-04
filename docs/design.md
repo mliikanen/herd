@@ -571,11 +571,7 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   the herd has already accepted on the candidate and compare. There's no separate metrics store.
 - **A container gets only its backend's settings.** Endpoint and model name as env, and the secret only if the
   backend names one; a local slot's workers never see an API key. Egress is that backend's endpoint plus the
-  manifest's list. The secret's value lives in a Podman secret under the herd's account (`podman secret create`,
-  done once by the operator); the orchestrator starts the worker with `--secret <name>,type=env` and handles only
-  the name, never the value. That keeps keys out of the orchestrator's config, environment and logs, but it isn't
-  a hard wall: anything holding the Podman socket could read a running container's environment, so the socket is
-  the trust boundary (see Containers).
+  manifest's list.
 - **The harness follows the backend kind.** The implementer harness serves every kind. The reviewer runs `claude -p`
   on `anthropic` backends and the implementer harness with the review prompt otherwise; both produce the same
   structured verdict.
