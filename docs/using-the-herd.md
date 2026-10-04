@@ -127,20 +127,23 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
 
 - **The herd runs it** (`container`): an emulator in a worker runs every end-to-end test relevant to the change, after
   the herd has already run each task's relevant tests while implementing it, with every test a task adds or changes
-  shown failing before the task and passing after it. You only step in if a failure can't be settled from the spec, a
-  test stays flaky past the allowed retries or fails on the default branch too, or if the project also asks for your own
-  check afterwards for something only a real device can do. CI runs the full suite on the PR either way.
+  shown failing before the task and passing after it (a task that only maintains tests, fixing a flaky one say, shows
+  them passing on both instead). You only step in if a failure can't be settled from the spec, a test stays flaky past
+  the allowed retries or fails on the default branch too, or if the project also asks for your own check afterwards for
+  something only a real device can do. CI runs the full suite on the PR either way.
 - **You run it** (`human`): when a change reaches it, the draft PR (and the status pane) shows the project's
   instructions. Check out the branch, follow them, and record the result with `/herd-resolve`, which pins it to the
   commit you tested:
   - **pass**: the change moves on to review;
-  - **fail**: describe the failing check and what happened. The herd checks it the way it checks any failing test: if
-    you also report it flaky on a rerun, or failing on the commit the change branched from too, or the spec doesn't say
-    which behavior is right, it stops and asks you; otherwise it turns the failure into new tasks, and the draft PR just
-    gets more commits. `/herd-resolve` asks for the rerun when you record a fail, and for an end-to-end test the change
+  - **fail**: describe the failing check and what happened. The herd checks it the way it checks any failing test: if it
+    passed when you reran it, it's a flake, and the herd just asks you to check again, until the test has flaked more
+    often than the project allows; if it fails on the commit the change branched from too, or the spec doesn't say which
+    behavior is right, it stops and asks you; otherwise it turns the failure into new tasks, and the draft PR just gets
+    more commits. `/herd-resolve` asks for the rerun when you record a fail, and for an end-to-end test the change
     didn't add or change, a try on the commit the change branched from, which it checks out for you (not the default
-    branch's latest, which may already have an unrelated fix). A test the change added or changed isn't compared there:
-    the old commit has a different version of it, or none.
+    branch's latest, which may already have an unrelated fix), and a second try there if the first fails, since one
+    failure there could itself be a flake. A test the change added or changed isn't compared there: the old commit has a
+    different version of it, or none.
 
 ## Review
 

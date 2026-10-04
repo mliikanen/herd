@@ -625,20 +625,21 @@ silently dropped — comes from two rules together, not from the scan alone:
   dispatches triage for a run that already has lines, and a re-run that fails again is a new run, triaged and counted
   afresh. Each `fix` adds a fix task under "(added for CI)"; `preexisting` escalates to `needs-human` ("fails on the
   default branch too") and `unsettled` to `needs-human` ("spec doesn't settle it"), and an escalation comes before the
-  fix tasks, which wait for the stop's resolution; with only `fix` and `flaky` lines the change goes back to
-  *implementing*; and when every line is `flaky`, no task is added, and the commit that records them is itself a push,
-  which runs the check again on the new tip (required workflows run on every push; see Requirements on a project).
-  Flakes count per test, as everywhere. A triage unit that can't rerun the test (the change's `e2e-mode` is `off`, so
-  there's no emulator for it) classifies from the job's artifacts alone, and records `unsettled` with the reason ("can't
-  reproduce: no emulator") when they don't settle it, so a person decides rather than the herd guessing. Those tasks
-  count toward `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" or "flaky
-  test" stop resolved as fixed on the default branch, that no update-branch merge has followed yet, comes before
-  everything else in every state before the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived
-  test is skipped, and there may be nothing newer to merge): the next action is update-branch, so the retry runs against
-  a branch that contains the default branch's fix. This is the path for a CI failure after an update-branch merge too
-  (see Keeping up with the default branch). A required check that still has no result `pr_review.checks_timeout` after
-  the push it's for (queued, running or merely expected) doesn't wait forever: the orchestrator commits a mechanical
-  `needs-human` marker and alerts, before the archive or after it, since a stuck CI is for a person to look at.
+  fix tasks, which wait for the stop's resolution; with at least one `fix` and no escalation the change goes back to
+  *implementing* for its new tasks; and when every line is `flaky`, no task is added and the change stays in its state,
+  while the commit that records them, itself a push, runs the check again on the new tip (required workflows run on
+  every push; see Requirements on a project). Flakes count per test, as everywhere. A triage unit that can't rerun the
+  test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts alone, and
+  records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person decides
+  rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates. A
+  "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no update-branch
+  merge has followed yet, comes before everything else in every state before the archive (a stop resolved by an
+  effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next action
+  is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path for a CI
+  failure after an update-branch merge too (see Keeping up with the default branch). A required check that still has no
+  result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't wait forever:
+  the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it, since a stuck
+  CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -722,14 +723,16 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   rule as every other failure, with the person's note as its evidence (`herd-resolve` asks them, when a check fails, to
   rerun it once and, for an end-to-end test this change didn't touch, to try it on a build of the change's merge-base,
   which `herd-resolve` checks out for them, never the default branch's current tip, which may already carry an unrelated
-  fix, and records both in the note): a flake or a pre-existing failure the person reported, or a failure the spec
-  doesn't settle, escalates to `needs-human` as it would anywhere else, and otherwise it turns the failure into appended
-  task(s) under "(added during final approval)", and the proposal goes back to *implementing*. Either way its verdict
-  commit records `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the
-  stop (a waiver, say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once
-  those tasks are accepted and the holistic review is current again, the change returns to *awaiting-approval* with the
-  `fail` already triaged, and the next action is the human again. The draft PR stays open throughout and simply gets
-  more commits.
+  fix, and to try it there once more if it fails; it records all of it in the note). A check that passes on the rerun,
+  or on the second merge-base try, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> x1`) and it counts
+  toward `caps.flaky_retries` like any other, so the next action is the person's check again until the count reaches the
+  cap. A failure on both merge-base tries, or one the spec doesn't settle, escalates to `needs-human` as it would
+  anywhere else, and otherwise the triage unit turns the failure into appended task(s) under "(added during final
+  approval)", and the proposal goes back to *implementing*. Either way its verdict commit records
+  `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the stop (a waiver,
+  say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once those tasks are
+  accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail` already
+  triaged, and the next action is the human again. The draft PR stays open throughout and simply gets more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
@@ -750,8 +753,9 @@ follow.
 
 The commands' contract, so the orchestrator can handle ids and results deterministically:
 
-- Every command runs in the repository root of the unit's clone, against the unit's own emulator, and `select` and `run`
-  with `$HERD_E2E_ARTIFACTS` naming an empty directory they may write to (`prepare` gets none; see below).
+- Every command runs in the repository root of the unit's clone, against the unit's own emulator, and `run` with
+  `$HERD_E2E_ARTIFACTS` naming a fresh, empty directory it may write to, created for that one `run` (no other command
+  gets one; see below).
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
   that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
@@ -800,20 +804,21 @@ switch the safety net off. So:
 - **The boundary is enforced, not just checked.** `boot`, `select` and `run` run in a sandbox whose filesystem holds
   only the harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
   `e2e.tests` files, taken before `prepare` runs (so the build, which runs the change's own code, can't change what's
-  tested), the test definitions under test, and, for `select` and `run`, `$HERD_E2E_ARTIFACTS`; `boot` and `run` also
-  get the unit's emulator. Nothing else of the change is readable to them, so they can't source a helper or load
-  configuration from a branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed
-  paths itself and passes them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside
-  those mounts. `prepare` is the exception by nature: building the app means running the working tree's own build
-  (`./gradlew`, its wrapper and build scripts), which is the change's code, so it runs with the whole working tree, in
-  the unit's container but outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). So it
-  can't touch what's trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no
-  results directory in existence; when it exits, the herd kills everything left in that cgroup (a background process it
-  started included; the emulator isn't among them, since `boot` started it in its own), and only then creates the
-  artifacts directory for `run`, mounted into the sandbox alone, which runs as a different user that the build's user
-  can't write as. After `prepare`, the herd also compares the working tree's `e2e.tests` files with the copy it took
-  before: a build that changed them fails the unit, so a test can't be weakened for one run without a commit that shows
-  it. The change contributes the app being tested and its tests, nothing that decides selection or reads results.
+  tested), the test definitions under test, and, for `run`, `$HERD_E2E_ARTIFACTS`; `boot` and `run` also get the unit's
+  emulator. Nothing else of the change is readable to them, so they can't source a helper or load configuration from a
+  branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed paths itself and passes
+  them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts. `prepare`
+  is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its wrapper and
+  build scripts), which is the change's code, so it runs with the whole working tree, in the unit's container but
+  outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). So it can't touch what's
+  trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results directory in
+  existence; when it exits, the herd kills everything left in that cgroup (a background process it started included; the
+  emulator isn't among them, since `boot` started it in its own), and only then creates the artifacts directory for
+  `run`, a new one for every run, so no earlier run's evidence is lying around either, mounted into the sandbox alone,
+  which runs as a different user that the build's user can't write as. After `prepare`, the herd also compares the
+  working tree's `e2e.tests` files with the copy it took before: a build that changed them fails the unit, so a test
+  can't be weakened for one run without a commit that shows it. The change contributes the app being tested and its
+  tests, nothing that decides selection or reads results.
 
 - **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
   default-branch version; manifest validation rejects a manifest where they do.
@@ -984,11 +989,11 @@ applies to new changes only, so a change in flight never finds itself owing a ph
 e2e on keeps owing its red/green proofs and its reviews' reruns: if capacity later drops to 0, its units that need an
 emulator wait (the status pane says so, and it alerts once the wait passes `alerts.infra_after`) rather than skip. A
 change started with e2e off stays off, with CI covering it, even if capacity appears midway, so no accepted task is left
-without a proof it was never asked for. A project with an `e2e` block then gets no emulator work, relies on CI and on
-`final_approval.kind: human`, and a change whose pinned approval kind (from the manifest at its merge-base) includes
-`container` waits at its first dispatch, shown as "waiting for emulator capacity" and alerted once the wait passes
-`alerts.infra_after`, rather than starting with a mode it can't honor. Capacity is decided per change, not per project,
-because a change's pinned kind can differ from the manifest's current one.
+without a proof it was never asked for. A project with an `e2e` block then gets no emulator work, relies on CI, plus a
+person's check where its kind is `human` (none where it's `none`), and a change whose pinned approval kind (from the
+manifest at its merge-base) includes `container` waits at its first dispatch, shown as "waiting for emulator capacity"
+and alerted once the wait passes `alerts.infra_after`, rather than starting with a mode it can't honor. Capacity is
+decided per change, not per project, because a change's pinned kind can differ from the manifest's current one.
 
 ## Following up on PR review
 
