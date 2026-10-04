@@ -533,12 +533,14 @@ silently dropped — comes from two rules together, not from the scan alone:
      reviewer's first review of the content tip either classified clean or with all its findings triaged and resolved,
      or timed out), change not yet archived on the branch. Next action, the first that applies: a required check is past
      `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before the archive); a
-     required check failed on the current tip, so a `triage` unit turns it into a fix task (see Failing checks before
-     the archive); the branch is behind the default branch, so update-branch (a merge that touches the change's files
-     sends it back through holistic review, which is still possible before the archive); while a required check is still
-     running, none; wait (a failure then goes through Failing checks before the archive, never past it). Once the branch
-     is up to date and every required check on its tip has passed, the reviewer runs the archive and commits. A crash
-     mid-archive never gets pushed, so it's discarded with the clone and redone, same as any other unit of work.
+     required check failed on the current tip and hasn't been handled yet, so the CI-failure handling in Failing checks
+     before the archive applies (a `triage` unit, whose outcome may be fix tasks, a flaky rerun or an escalation, or no
+     unit at all for a run whose every failure is waived); the branch is behind the default branch, so update-branch (a
+     merge that touches the change's files sends it back through holistic review, which is still possible before the
+     archive); while a required check is still running, none; wait (a failure then goes through Failing checks before
+     the archive, never past it). Once the branch is up to date and every required check on its tip has passed, the
+     reviewer runs the archive and commits. A crash mid-archive never gets pushed, so it's discarded with the clone and
+     redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action is the first of these that applies, in this order:
      1. a check failed or is past `pr_review.checks_timeout` with no result, a review finding is open, or a
