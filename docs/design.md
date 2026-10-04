@@ -116,6 +116,8 @@ recovery, containers) lives only here. A project carries:
 - **The planner skills**, installed and updated by `herd init` into the project's agent config (for Claude Code,
   `.claude/skills/`), the same way `openspec init` installs its skills. They are vendored and herd-managed, so a
   project doesn't edit them; project-specific rules go in the project's workflow doc, which the skills read.
+  Herd is MIT-licensed so the vendored skills fit any project; `herd init` writes the license next to them
+  (`.claude/HERD-LICENSE`), as OpenSpec does with its own.
   - `herd-propose <change>`: starts a proposal the herd's way. It creates `<branch_prefix><change>` from the default
     branch (in a worktree, so the person's main checkout is untouched), runs the project's propose workflow there,
     commits, pushes, and opens a **draft PR**, where the proposal is reviewed. Before proposing, it fetches the other
