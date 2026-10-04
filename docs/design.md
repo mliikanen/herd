@@ -879,10 +879,12 @@ from evidence rather than taste:
    commit, and CI triage records `ci-triage "<check>" <sha> <check run id> "<test id>": flaky`. Flaky outcomes are
    counted from those records per test per change (CI's included, since its records are per test too), and when the
    count reaches `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying again, so
-   an intermittently failing test can't cycle forever; the person fixes the test or its environment in a separate change
-   and resolves the stop once that's merged (update-branch comes first, as for a "fails on the default branch too"
-   stop), and the test's flake count starts over from that resolution. A flaky test can't be waived: a waiver needs a
-   failure on the merge-base to point at, and a flake may not have one.
+   an intermittently failing test can't cycle forever; for a test the change didn't add or change, the person fixes the
+   test or its environment in a separate change and resolves the stop once that's merged (update-branch comes first, as
+   for a "fails on the default branch too" stop); for a change-local test, the flakiness is this change's own, so the
+   person resolves the stop by adding a task to stabilize it to this change's `tasks.md` (`herd-resolve` helps), or
+   fixes the environment if that's the cause. Either way the test's flake count starts over from that resolution. A
+   flaky test can't be waived: a waiver needs a failure on the merge-base to point at, and a flake may not have one.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
    the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
    branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
