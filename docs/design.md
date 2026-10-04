@@ -460,12 +460,13 @@ silently dropped — comes from two rules together, not from the scan alone:
      mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
      open thread or untriaged finding, and every awaited reviewer's first review of the content tip classified clean, or
-     timed out), no required check failed on the current tip, change not yet archived on the branch. Next action: if the
-     branch is behind the default branch, update-branch first (a merge that touches the change's files sends it back
-     through holistic review, which is still possible before the archive); while a required check is still running,
-     none; wait (a failure then goes through Failing checks before the archive, never past it). Once the branch is up to
-     date and every required check on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive
-     never gets pushed, so it's discarded with the clone and redone, same as any other unit of work.
+     timed out), change not yet archived on the branch. Next action, the first that applies: a required check failed on
+     the current tip, so a `triage` unit turns it into a fix task (see Failing checks before the archive); the branch is
+     behind the default branch, so update-branch (a merge that touches the change's files sends it back through holistic
+     review, which is still possible before the archive); while a required check is still running, none; wait (a failure
+     then goes through Failing checks before the archive, never past it). Once the branch is up to date and every
+     required check on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive never gets
+     pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action is the first of these that applies, in this order:
      1. a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
