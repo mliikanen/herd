@@ -1123,7 +1123,9 @@ may share a machine (two models served by one server), and the machine is still 
 machines with the same `instance` or the same endpoint, since that would bill one machine twice, and a machine's
 endpoint must reach that machine alone (the operator's assertion, like the model revision below). Endpoints are unique
 across retained definitions too: a replacement instance that reuses its predecessor's endpoint isn't activated (no
-health checks, accrual or units; the status pane says why) until the retained snapshot holding that endpoint is
+units, and no accrual, though it is health-checked so the herd can tell whether it's up; the status pane says why, and
+if it answers, a "replacement blocked, possibly billing" alert episode opens, cleared when the block lifts or the
+endpoint goes quiet, with the daily reminder like any episode) until the retained snapshot holding that endpoint is
 confirmed stopped and retired, since until then both would answer at the same URL. For the same reason an endpoint stays
 bound to its instance until that definition is retired: the operator gives a replacement instance a new endpoint, or
 keeps the old URL leading to the old machine until it's confirmed stopped and retired. The herd can't see where a URL
@@ -1280,10 +1282,10 @@ retained snapshot would charge the new machine's traffic to the old one.
   machine not confirmed stopped when paid dispatch pauses because the counter was lost, since its hours are then being
   spent with nothing to count them against), the counter keeps accruing, and the status pane shows "over budget: rented
   machine not confirmed stopped" until the operator runs `herd machines stopped <machine>` or the billing month turns:
-  the rollover lifts the budget pause, so the machine is a dispatch target again and the episode closes with it, rather
-  than asking for a machine to be stopped that the herd is about to use (the idle and unhealthy alerts still cover it
-  from there). For per-token backends the budget is a hard limit; for rented ones it's a hard stop on dispatch and an
-  alert on spend, until the herd can stop the machine itself (see Open questions).
+  the rollover lifts the budget pause, so the budget no longer keeps work off the machine (its readiness still does) and
+  the episode closes with it, rather than asking for a machine to be stopped that the herd is about to use (the idle and
+  unhealthy alerts still cover it from there). For per-token backends the budget is a hard limit; for rented ones it's a
+  hard stop on dispatch and an alert on spend, until the herd can stop the machine itself (see Open questions).
 
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
@@ -1481,11 +1483,13 @@ log, the orchestrator never reads it back.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
-- `herd budget set --spent <amount> --as-of <time> --source <source>`: sets this month's spend, after the counter was
-  lost or to reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
+- `herd budget set --spent <amount> --as-of <time> --source <source>`: reconciles one source's spend up to the cutoff
+  with what its bill says (other sources, and anything after the cutoff, stay as counted), after the counter was lost or
+  to reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
 - `herd machines stopped <machine or snapshot id>`: confirms a rented machine is stopped, and
-  `herd machines started <machine>` withdraws that, putting it back into dispatch (see Rented GPU backends).
+  `herd machines started <machine>` withdraws that, so the confirmation no longer keeps it out of dispatch (readiness
+  and the budget still apply) (see Rented GPU backends).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
 
@@ -1566,20 +1570,21 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after`, an idle rented machine, an unready rented backend on a healthy machine (see Rented GPU
   backends), a rented machine not confirmed stopped after the budget limit or a lost counter paused paid dispatch, a
-  retained rented machine not confirmed stopped, an unhealthy rented machine not confirmed stopped, and a rented machine
-  confirmed stopped but still answering all raise an alert. The queue doubles as the orchestrator's own record of
-  alerts, an operational control like the budget counter: unlike the event log, the orchestrator reads it back, and it
-  decides nothing about any change's state. Each alert has a stable id derived from facts, and the queue adds only ids
-  it doesn't already hold. An alert about a waiting change is keyed by the commit of its `needs-human` marker or
-  final-approval state. An ongoing condition (a project inactive, low disk, the budget, infrastructure failures, an idle
-  rented machine, an unready rented backend, a rented machine not confirmed stopped after the budget limit or a lost
-  counter paused paid dispatch, a retained rented machine not confirmed stopped, an unhealthy rented machine not
-  confirmed stopped, a rented machine confirmed stopped but still answering) is an **episode**: the scan that first sees
-  it appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after a `cleared`
-  one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the episode, and a
-  daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated alert per open
-  condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the service accepts it,
-  so a crash in between sends that one again, never none. Alerts go out on two channels from two accounts:
+  retained rented machine not confirmed stopped, an unhealthy rented machine not confirmed stopped, a rented machine
+  confirmed stopped but still answering, and a blocked replacement machine that answers all raise an alert. The queue
+  doubles as the orchestrator's own record of alerts, an operational control like the budget counter: unlike the event
+  log, the orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id
+  derived from facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by
+  the commit of its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk,
+  the budget, infrastructure failures, an idle rented machine, an unready rented backend, a rented machine not confirmed
+  stopped after the budget limit or a lost counter paused paid dispatch, a retained rented machine not confirmed
+  stopped, an unhealthy rented machine not confirmed stopped, a rented machine confirmed stopped but still answering, a
+  blocked replacement that answers) is an **episode**: the scan that first sees it appends an opening entry, the scan
+  that sees it gone appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second
+  outage on the same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the
+  episode and the day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels
+  is at-least-once: push delivery is recorded per id after the service accepts it, so a crash in between sends that one
+  again, never none. Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
