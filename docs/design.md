@@ -442,9 +442,11 @@ silently dropped — comes from two rules together, not from the scan alone:
      (`pr_review.wait_for`) hasn't reviewed the current tip. Next action: none; wait. A failing check is treated
      like a failed gate after an update-branch (fix task, then escalate past `caps.gate_fixes`), and a new review
      finding escalates to `needs-human` instead of becoming a task, because fixing it would mean un-archiving.
-  10. *ready-to-merge* — archive commit pushed, its checks passing, and every awaited reviewer has reviewed the
-     current tip with nothing open. Next action: none; a human merges. Any later push (an update-branch merge, say)
-     moves the change back to *archived-pending* until checks and review catch up.
+  10. *ready-to-merge* — archive commit pushed, its checks passing, every awaited reviewer has reviewed the
+     current tip with nothing open, and the holistic-accept still current (see Current records). Next action: none;
+     a human merges. A later bookkeeping push (a clean update-branch merge, say) moves the change back to
+     *archived-pending* until checks and review catch up. Any non-bookkeeping commit after the archive makes the
+     holistic-accept stale and escalates to `needs-human`, since reviewing it again would mean un-archiving.
 
   **Current records.** A holistic-accept or a final-approval pass is pinned to the SHA it evaluated, and recording
   it is itself a commit, so "for the current tip" could never hold. A record is *current* when every commit since
@@ -762,9 +764,13 @@ way out is the herd's network proxy, which serves two purposes:
   and the agent-written code it runs have none to leak, and a unit can only call the backend its slot assigns.
   Local backends go through the gateway too, which keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed
-  only to the hosts on the unit's list: the manifest's `egress`, which a role can narrow. The proxy doesn't break
-  TLS. A tool that ignores the proxy settings can't connect at all, so a mistake fails closed; `herd doctor`
-  proves the real gate works this way (Gradle, for one, needs its proxy in `JAVA_TOOL_OPTIONS`).
+  only to the hosts on the unit's list: the manifest's `egress`, which a role can narrow. Every unit shares the
+  internal network, so the tunnel authenticates with the same unit token (`Proxy-Authorization`, set through the
+  standard proxy variables), and the proxy rejects a request without a valid one; that's what tells it whose list
+  applies. The proxy doesn't break TLS. A tool that ignores the proxy settings can't connect at all, so a mistake
+  fails closed; `herd doctor` proves the real gate works this way. Gradle, for one, needs its proxy and credentials
+  in `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java disables Basic auth for
+  HTTPS tunnels by default.
 
 The orchestrator registers each unit's token with the proxy (project, role, backend, egress list) when it starts
 the unit, and revokes it when the unit ends. That control interface isn't on any network a worker can reach: it's
@@ -836,7 +842,8 @@ instance*: the orchestrator, the active worker containers, and the herdr workspa
     in that checkout. This is where `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get
     written. It's created with the workspace, by default, and it belongs to the person: the herd never prompts it,
     closes it or restarts it. herdr's integration for that agent (`herdr integration install claude`, done by the
-    install script) reports its working/blocked/idle state and resumes its session after a herdr restart.
+    install script) tells herdr which session the agent is in, so herdr resumes it after a restart. herdr reads
+    the agent's working/blocked/idle state from its screen; Claude Code's integration doesn't report it.
   - **One pane per running unit**, following that unit's log (read-only; workers are non-interactive). The bridge
     reports it to herdr as `working` (`pane.report_agent`) and sets its title to
     `<change> · <role> · task <n> · round <r>`, with the proposal's state as a named token
@@ -940,14 +947,16 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its backend stopped
   answering is an `infra` failure instead, and doesn't count.
 - **Spending.** The model gateway meters every call it forwards (input and output tokens per unit, backend and project)
-  and writes a usage event to the event log, priced from each cloud backend's `price` in host config (per million input
-  and output tokens). The status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an
-  alert; at the budget, the orchestrator stops dispatching units to cloud backends, running units finish, and local
-  slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the operator's call to raise
-  the budget or wait for the month to turn. The budget is the one control that reads something besides git: the
-  gateway's monthly counter, kept in the herd's own files. It decides only whether cloud units get dispatched, never a
-  change's state. If the counter is lost, cloud dispatch pauses until the operator confirms, so losing it can't
-  overspend.
+  and reports it to the orchestrator over the control socket, the same path it uses for each unit's last call. The
+  orchestrator prices it from each cloud backend's `price` in host config (per million input and output tokens), writes
+  a usage event to the event log and keeps the monthly counter: it stays the only writer of `/var/lib/herd/shared/`, and
+  the key-holding proxy gets no writable shared mount. The status pane shows spend this month against `budget.monthly`.
+  At `warn_at` the operator gets an alert; at the budget, the orchestrator stops dispatching units to cloud backends,
+  running units finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`:
+  it's the operator's call to raise the budget or wait for the month to turn. The budget is the one control that reads
+  something besides git: the orchestrator's monthly counter, kept in the herd's own files. It decides only whether cloud
+  units get dispatched, never a change's state. If the counter is lost, cloud dispatch pauses until the operator
+  confirms, so losing it can't overspend.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
   warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after`
   all raise an alert, on two channels from two accounts:
