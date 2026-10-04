@@ -857,12 +857,13 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   naming the same model count as the same model for this rule and the ones below, and two revisions of one model, being
   different weights, count as different models. The same open weights served two ways (`ollama/…` on the B70, `openai/…`
   on a rented machine) have different names, though, so a backend can declare `weights: <label>`: the label is recorded
-  in a `Herd-Weights` trailer and only ever adds an equivalence: two commits are the same model when their `Herd-Model`
-  values match, whatever their labels say, **or** when both carry the same label, so a label can unify the two servings
-  but never split one model into two. `herd doctor` warns when backends of different kinds look like the same model (the
-  same base name) without a shared label. A holistic review spans commits that may come from several models, so
-  excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable slot
-  has one.
+  in a `Herd-Weights` trailer and only ever adds an equivalence: sameness is the transitive closure of both links over
+  every commit and backend the herd knows: two commits are the same model when a chain of matching `Herd-Model` values
+  and shared labels connects them, so a label can unify servings but never split one model into two, and a renamed label
+  can't break a chain. Config validation also rejects two backends that serve one `Herd-Model` under different labels,
+  which keeps the chains short. `herd doctor` warns when backends of different kinds look like the same model (the same
+  base name) without a shared label. A holistic review spans commits that may come from several models, so excluding all
+  of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
   and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
   different model. A project with `locality: host` may use only slots whose every backend is local, and local means the
@@ -1209,8 +1210,9 @@ one.
   alert: up and healthy with no call in flight for its `idle_alert` (default 30 minutes), counted from the end of the
   last call, or, for a machine that hasn't served one since it became healthy, from the start of that healthy interval,
   so a long generation never looks idle and a machine never used can't escape the alert. It's an alert episode like an
-  ongoing condition in Monitoring, opened when the threshold passes and cleared when the next call starts or by the
-  operator confirming it stopped, so a machine idle all day alerts once plus the daily reminder.
+  ongoing condition in Monitoring, opened when the threshold passes and cleared when the next call starts, when the
+  machine stops being healthy (the unhealthy alert takes over), or by the operator confirming it stopped, so a machine
+  idle all day alerts once plus the daily reminder.
 - **Removing or repointing a machine.** Host config can change a machine entry at any scan. A machine's identity is its
   `instance`, so a change to anything else (`endpoint`, `access` and its `wireguard` block, `price`, `idle_alert`, a
   rotated `secret`) is an update in place: the same machine, reached the new way or billed at the new rate from that
@@ -1300,11 +1302,12 @@ one.
   billing, so the herd raises an urgent alert asking the operator to stop it (and does the same for every rented machine
   not confirmed stopped when paid dispatch pauses because the counter was lost, since its hours are then being spent
   with nothing to count them against), the counter keeps accruing, and the status pane shows "over budget: rented
-  machine not confirmed stopped" until the operator runs `herd machines stopped <machine>` or the billing month turns:
-  the rollover lifts the budget pause, so the budget no longer keeps work off the machine (its readiness still does) and
-  the episode closes with it, rather than asking for a machine to be stopped that the herd is about to use (the idle and
-  unhealthy alerts still cover it from there). For per-token backends the budget is a hard limit; for rented ones it's a
-  hard stop on dispatch and an alert on spend, until the herd can stop the machine itself (see Open questions).
+  machine not confirmed stopped" until the operator runs `herd machines stopped <machine>` or paid dispatch resumes,
+  whether the operator raised `budget.monthly` or the billing month turned: once the pause is lifted, the budget no
+  longer keeps work off the machine (its readiness still does) and the episode closes with it, rather than asking for a
+  machine to be stopped that the herd is about to use (the idle and unhealthy alerts still cover it from there). For
+  per-token backends the budget is a hard limit; for rented ones it's a hard stop on dispatch and an alert on spend,
+  until the herd can stop the machine itself (see Open questions).
 
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
