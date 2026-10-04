@@ -1230,7 +1230,9 @@ retained snapshot would charge the new machine's traffic to the old one.
   machine not confirmed stopped" alert episode, shown with its id. The two ends are separate: the operator's
   `herd machines stopped <snapshot id>` closes the alert and stops the accrual at once, like any confirmation, and the
   snapshot is retired (its record and, if nothing else references it, its credential copy deleted) once it's confirmed
-  stopped **and** its units have finished.
+  stopped, its units have finished, **and** its endpoint has stayed silent for `alerts.infra_after` since the
+  confirmation; until then it stays health-checked, so a confirmation that turns out wrong still raises the "confirmed
+  stopped but still answering" alert and resumes accrual, and a replacement waiting for its endpoint stays inactive.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
