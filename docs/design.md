@@ -1168,26 +1168,27 @@ retained snapshot would charge the new machine's traffic to the old one.
   one can disappear while the endpoint stays up), a backend that stays unready past `alerts.infra_after` while its
   machine is healthy (its model gone from the list, say) raises an "unready backend" alert episode, since its units
   would otherwise just wait without any other alert noticing; and a unit whose machine disappears mid-call (spot and
-  marketplace machines can be reclaimed) ends as an `infra` failure and is retried. **Endpoint health decides dispatch,
-  never whether billing stopped**: an expired key, a broken tunnel, a crashed model server or a network blip look
-  exactly like a stopped machine while the provider keeps billing. Only the operator can say a machine is stopped, with
-  `herd machines stopped <machine or snapshot id>` (a request; see The herd's own account). Requests are consumed
-  asynchronously and a name can be repointed in between, so the CLI resolves a machine name to its current definition id
-  when it's run (from the status snapshot) and the request carries that id; a request made by name must still be that
-  name's current definition when it's consumed, and is rejected and reported otherwise, never applied to whatever the
-  name points at now or to the definition it just left behind (the snapshot might be published a scan late). A retained
-  snapshot is confirmed only by its own snapshot id, given explicitly. The orchestrator handles the request in a
-  crash-safe order: it validates it, durably records the confirmation in the persisted machine definitions against the
-  exact current definition or snapshot id, and only then deletes the request file, so a crash in between at worst
-  handles the same request twice, which changes nothing, and never loses the confirmation; it closes that machine's
-  billing-related alerts, stops its accrual, and takes it out of dispatch: a confirmed-stopped machine gets no new
-  units, and the gateway refuses its calls. The confirmation clears when the machine is seen starting again, its
-  endpoint answering after health checks had seen it down, which counts as the operator having started it. An endpoint
-  that keeps answering past `alerts.infra_after` after its confirmation means the machine wasn't stopped after all: that
-  raises a "confirmed stopped but still answering" alert episode, and the confirmation stays until the endpoint goes
-  down and comes back. Since unhealthy may still mean billing, an active machine whose health checks fail for longer
-  than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health
-  returns or the operator confirms it stopped.
+  marketplace machines can be reclaimed), or whose assigned model disappears from a machine that's still up (a
+  model-not-found answer, which the gateway checks against the model list), ends as an `infra` failure and is retried,
+  never charged as an attempt. **Endpoint health decides dispatch, never whether billing stopped**: an expired key, a
+  broken tunnel, a crashed model server or a network blip look exactly like a stopped machine while the provider keeps
+  billing. Only the operator can say a machine is stopped, with `herd machines stopped <machine or snapshot id>` (a
+  request; see The herd's own account). Requests are consumed asynchronously and a name can be repointed in between, so
+  the CLI resolves a machine name to its current definition id when it's run (from the status snapshot) and the request
+  carries that id; a request made by name must still be that name's current definition when it's consumed, and is
+  rejected and reported otherwise, never applied to whatever the name points at now or to the definition it just left
+  behind (the snapshot might be published a scan late). A retained snapshot is confirmed only by its own snapshot id,
+  given explicitly. The orchestrator handles the request in a crash-safe order: it validates it, durably records the
+  confirmation in the persisted machine definitions against the exact current definition or snapshot id, and only then
+  deletes the request file, so a crash in between at worst handles the same request twice, which changes nothing, and
+  never loses the confirmation; it closes that machine's billing-related alerts, stops its accrual, and takes it out of
+  dispatch: a confirmed-stopped machine gets no new units, and the gateway refuses its calls. The confirmation clears
+  when the machine is seen starting again, its endpoint answering after health checks had seen it down, which counts as
+  the operator having started it. An endpoint that keeps answering past `alerts.infra_after` after its confirmation
+  means the machine wasn't stopped after all: that raises a "confirmed stopped but still answering" alert episode, and
+  the confirmation stays until the endpoint goes down and comes back. Since unhealthy may still mean billing, an active
+  machine whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed
+  stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
