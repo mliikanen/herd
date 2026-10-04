@@ -1153,17 +1153,22 @@ revision below).
   definition (tunnel, credentials, health checks, hourly accrual, alerts) as a **retained snapshot** with an immutable
   id (the machine's name and the moment it was retained, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own
   files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
-  times, so the snapshot id, not the name, is what identifies it. The snapshot's credentials can't depend on files the
-  operator may already have rotated or deleted as part of the very config change that retains it, so copying them at
-  that point would be too late. Instead the proxy copies a machine's credentials into its own store as soon as it first
-  loads the machine definition, keyed by the content's hash, and every definition in use (current or retained) runs on
-  its own copy: editing or deleting the operator's file later only affects definitions loaded after the change, and a
-  retained snapshot simply keeps the copy it already had, until it's retired and its copy deleted. That store is a
-  dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate from
-  `~herd/secrets/`, whose key files the proxy only mounts read-only one by one, so it never sees the orchestrator's App
-  key. The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps accruing cost
-  and raises a "retained machine not confirmed stopped" alert episode, shown with its id, until its units have finished
-  **and** the operator runs `herd machines stopped <snapshot id>`.
+  times, so the snapshot id, not the name, is what identifies it. Noticing the change doesn't depend on a scan seeing
+  the old config: the orchestrator persists every machine definition it puts into use (with the hash of its credential
+  copy, below) in that same store before any health check, dispatch or accrual uses it, and every scan, the first after
+  a restart included, compares host config with those persisted definitions, not with what the previous scan read. So a
+  config change made while the orchestrator was down, or a crash before a scan finished, still finds the old machine to
+  retain. The snapshot's credentials can't depend on files the operator may already have rotated or deleted as part of
+  the very config change that retains it, so copying them at that point would be too late. Instead the proxy copies a
+  machine's credentials into its own store as soon as it first loads the machine definition, keyed by the content's
+  hash, and every definition in use (current or retained) runs on its own copy: editing or deleting the operator's file
+  later only affects definitions loaded after the change, and a retained snapshot simply keeps the copy it already had,
+  until it's retired and its copy deleted. That store is a dedicated persistent volume mounted read-write into the proxy
+  alone (directories `0700`, files `0600`), separate from `~herd/secrets/`, whose key files the proxy only mounts
+  read-only one by one, so it never sees the orchestrator's App key. The snapshot takes no new units, its running units
+  finish on it (as Models promises), and it keeps accruing cost and raises a "retained machine not confirmed stopped"
+  alert episode, shown with its id, until its units have finished **and** the operator runs
+  `herd machines stopped <snapshot id>`.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
@@ -1171,19 +1176,26 @@ revision below).
   bill with `herd budget set --spent <amount> --as-of <time>`, giving what the providers billed up to a cutoff (a bill's
   own cutoff, typically). The orchestrator doesn't overwrite the counter with it, which could lose or double-count work
   in flight: in one atomic step, it replaces only what the herd itself had accrued up to that cutoff (from the ledger's
-  timestamped entries) with the billed amount, and keeps every accrual and reservation after the cutoff. The old total,
-  the new one, the cutoff and the reason go to the event log. Restoring a lost counter is the same command with the
-  cutoff at now, while paid dispatch is paused anyway. Hours are attributed for the usage ledger by time, not tokens:
-  while units are calling the machine, through any of its backends, its time is split evenly among them, and their share
-  goes to their change; time with no call in flight goes to the machine's own idle bucket, never to a change.
+  timestamped entries) with the billed amount, and keeps every accrual and reservation after the cutoff, along with
+  every reservation still unresolved, whatever its timestamp: a call in flight at the cutoff may or may not be on the
+  bill, so its reservation stays in the counter until it settles and is replaced by the reported usage as usual. That
+  can count such a call twice (once in the bill, once settled), never zero times, the same direction the counter errs in
+  everywhere else, and the next reconciliation absorbs it. The old total, the new one, the cutoff and the reason go to
+  the event log. Restoring a lost counter is the same command with the cutoff at now, while paid dispatch is paused
+  anyway. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, through
+  any of its backends, its time is split evenly among them, and their share goes to their change; time with no call in
+  flight goes to the machine's own idle bucket, never to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
   dispatch is paused, ending the unit with a `budget` reason (not `infra`, and not a failed attempt). But the machine
   keeps billing, so the herd raises an urgent alert asking the operator to stop it, the counter keeps accruing, and the
   status pane shows "over budget: rented machine not confirmed stopped" until the operator runs
-  `herd machines stopped <machine>`. For per-token backends the budget is a hard limit; for rented ones it's a hard stop
-  on dispatch and an alert on spend, until the herd can stop the machine itself (see Open questions).
+  `herd machines stopped <machine>` or the billing month turns: the rollover lifts the budget pause, so the machine is a
+  dispatch target again and the episode closes with it, rather than asking for a machine to be stopped that the herd is
+  about to use (the idle and unhealthy alerts still cover it from there). For per-token backends the budget is a hard
+  limit; for rented ones it's a hard stop on dispatch and an alert on spend, until the herd can stop the machine itself
+  (see Open questions).
 
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
