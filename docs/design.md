@@ -68,7 +68,7 @@ gate:                                         # implementer runs it before commi
   - ./gradlew check
   - openspec validate --all --strict
 guarded:                                      # the tamper guard (see Who commits, who pushes)
-  tests: ["**/src/*Test/**"]                  # deleting or emptying one needs a declared reason
+  tests: ["**/src/test/**", "**/src/*Test/**"]  # deleting or emptying one needs a declared reason
   skip_markers: ["@Ignore", "@Disabled"]      # adding one needs a declared reason
   paths: [config/detekt/baseline.xml]         # e.g. lint baselines: any change needs a declared reason
 final_approval:
@@ -260,10 +260,25 @@ status file on exit. The orchestrator then validates the commit before pushing i
 - **the tamper guard**: the commit doesn't weaken the safety net silently. Deleting or emptying a file matching
   the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a `guarded.paths` file (a
   lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the commit message. The
-  task review must then accept or reject each declared item by name, and validation of the verdict commit checks
-  that it does. An undeclared one fails validation before any review is spent. Legitimate cases (removing a
+  task review must then accept or reject each declared item, and validation of the verdict commit checks that it
+  does. An undeclared one fails validation before any review is spent. Legitimate cases (removing a
   feature removes its tests) still pass, but never silently. Assertions weakened into tautologies need judgment,
   so catching them stays with the reviewer. (The idea comes from no_human, see Prior art.)
+
+  The format is fixed, so validation never has to interpret prose. In the commit message, one line per item:
+
+  ```
+  Guarded:
+  - G1 delete shared/src/commonTest/kotlin/vehicle/HidingTest.kt: task 2.3 removes vehicle hiding
+  - G2 change config/detekt/baseline.xml: the renamed class keeps its two existing findings
+  ```
+
+  `- <id> <action> <path>: <reason>`, where the id (`G1`, `G2`, …) is unique within the commit and the action is
+  `delete`, `empty`, `skip` or `change`, one per guard rule. The orchestrator computes the guarded items from the
+  diff itself and requires a one-to-one match on action and path. The task review answers each in
+  `review-notes.md` as `guarded <commit sha> <id>: accept|reject — <reason>`, and validation of the verdict commit
+  requires exactly one answer per declared id. A rejected item sends the task back to `[ ]` like any revise
+  verdict.
 
 A commit that fails validation is discarded like any crashed attempt. Worker containers never hold GitHub
 credentials; the orchestrator's GitHub token is the only push-capable credential in the system.
@@ -496,11 +511,16 @@ say which backend runs which kind of unit:
 backends:
   opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY }
   sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY }
-  local-coder: { kind: ollama, model: <coder model>, endpoint: http://ollama:11434 }
+  local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
+  local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
 slots:                                 # each slot runs one unit at a time
   - name: gpu
     implementer: local-coder
     reviewer: { archive: local-coder }  # only the unit kinds listed run here
+  - name: gpu-private
+    projects: [some-project]            # reserved: only these projects' units run here
+    implementer: local-coder
+    reviewer: local-reviewer            # a different model, so it may review local-coder's work
   - name: cloud-1
     implementer: sonnet
     reviewer: { task: sonnet, holistic: opus, triage: opus, archive: sonnet }
@@ -508,20 +528,24 @@ slots:                                 # each slot runs one unit at a time
     implementer: sonnet
     reviewer: opus                      # one backend for every reviewer unit kind
 projects:
-  some-project: { slots: [gpu] }        # optional: e.g. code that must not leave the host
+  some-project: { slots: [gpu, gpu-private] }   # optional: e.g. code that must not leave the host
 ```
 
 A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
 has four that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release
 notes), `triage` (PR review findings and final-approval failures into tasks) and `archive` (mostly running
-`openspec archive`). A slot that doesn't list a role or kind never runs it.
+`openspec archive`). A slot that doesn't list a role or kind never runs it, and a slot with `projects` runs only
+those projects' units. Slots that share a GPU share it in turn: the model server queues their requests.
 
 - **The slots are the capacity.** The scheduler gives each unit to a free slot that can run its kind for its project,
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
 - **Any capable slot can take any unit.** Every unit starts from a fresh clone, so a task implemented on one slot can
   be revised or reviewed on another.
 - **A task review never runs on the backend that wrote the commit.** The same model shares its own blind spots.
-  When no slot qualifies, the status pane shows it as a configuration problem; it isn't a `needs-human` stop.
+- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover
+  `implement` and every reviewer kind, and for each implementer backend among them, some slot must offer a `task`
+  review on a different backend. A project that fails is shown *inactive* with the reason ("no slot can review
+  local-coder's work"), before any of its changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   a different implementer backend, when one exists, before the task escalates.
 - **Each worker commit records its backend and unit kind** in trailers (`Herd-Backend: local-coder`,
@@ -543,7 +567,9 @@ running unit finishes on the backend it started with.
 
 **Runtime: rootless Podman.** Everything runs as an ordinary user's containers, with no root daemon. The
 orchestrator is a container defined by a Quadlet unit (`herd-orchestrator.container`), run by the user's systemd
-with `Restart=always`; lingering (`loginctl enable-linger`) starts it at boot without anyone logged in. The herdr
+with `Restart=always`. Lingering (`loginctl enable-linger`) starts the user's systemd at boot without anyone logged
+in, but not the service itself: a Quadlet-generated service can't be `systemctl enable`d, so the `.container` file
+carries `[Install] WantedBy=default.target`, which starts it with the user's systemd. The herdr
 session that displays it runs on the host (see Launching and watching the herd). Workers are **not** units: the
 orchestrator starts one container per unit of work (it has to, to mount that unit's clone), through the Podman API,
 from a per-project, per-role image:
@@ -567,8 +593,10 @@ from a per-project, per-role image:
     itself rather than trusting the implementer's claim.
 - **Local model server** — when a backend is local: Ollama (or similar) as its own container on the workers'
   internal network, with no egress of its own (the operator pulls models). It's the only container given the GPU,
-  however the vendor exposes it to rootless Podman: an Intel or AMD card as `--device /dev/dri` (the user in the
-  `render` group), an NVIDIA card through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
+  however the vendor exposes it to rootless Podman. An Intel or AMD card is `--device /dev/dri`, and since the
+  device usually belongs to the `render` group, which a rootless container doesn't keep by default, also
+  `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in
+  `render`. An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container
   lifecycle, commit validation, push, `gh pr create`/update-branch/mark-ready. Needs a GitHub token (scoped to the
   registered repos), the user's rootless Podman API socket, and the host config read-only; no LLM key. It's the one
@@ -673,7 +701,8 @@ source of truth. Losing the log, the bridge or the herdr session loses only what
 - `herd doctor [<project>]`: proves a project is ready. It builds the project's worker images, runs the gate on
   the default branch inside a worker container with the real mount/egress limits (proving the toolchain is
   sufficient and the egress list complete), checks branch protection and required checks via `gh`, and checks
-  that every model backend answers (see Models). It also checks that `herdr` is installed and lingering is on.
+  that every model backend answers (see Models). It also checks that `herdr` is installed, lingering is on and the
+  orchestrator's unit is set to start at boot.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
@@ -728,8 +757,8 @@ Steps marked **(manual)** need a human.
    must hold, measured on the host itself:
    - **The card is there and usable:** `lspci` shows it, the kernel's `xe` driver binds it, `/dev/dri/renderD*`
      exists, and the herd's user is in the `render` group.
-   - **The container sees it:** a rootless Ollama container given `/dev/dri` reports the Vulkan device and loads
-     a model onto it, not onto the CPU.
+   - **The container sees it:** a rootless Ollama container given `/dev/dri` and `keep-groups` reports the Vulkan
+     device and loads a model onto it, not onto the CPU.
    - **The model fits with real context:** the candidate loads fully into VRAM at the context the harness needs
      (OpenHands: at least 22k tokens; a real task's prompt plus files is more), with no CPU offload.
    - **It's fast enough:** time per task, measured on the replayed tasks, is acceptable next to the cloud
@@ -748,7 +777,8 @@ Steps marked **(manual)** need a human.
 5. The event log and the herdr bridge (`herd watch`, `herd status`).
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (start the unit, then `herdr --session herd`),
    `init`, `doctor`, `provide`; an install script that puts `herd` on `PATH`, creates `~/.config/herd/`, installs
-   the Quadlet unit, enables lingering and the Podman API socket, and checks that `herdr` is installed.
+   the Quadlet unit (with its `[Install]` section), enables lingering and the Podman API socket, and checks that
+   `herdr` is installed.
 7. **(manual)** Host secrets: `ANTHROPIC_API_KEY` (for every `anthropic` backend); a fine-grained GitHub
    token limited to the registered repos with contents + pull-request scopes, for the orchestrator only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
