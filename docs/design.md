@@ -34,7 +34,7 @@ One herd instance runs per host and serves every **registered project**. The spl
 | Generic (the herd repo) | Per project (`.herd/` in the project's repo) |
 |---|---|
 | Orchestrator, state machine, queue, crash recovery | Toolchain image: what a worker needs to build and test (`toolchain.Dockerfile`) |
-| Role layers: implementer harness, `claude`, `git`, `openspec` | Gate: the commands that must pass before a commit is accepted |
+| Role layers: implementer harness, `claude`, `git`, `openspec` | Gate: the commands that must pass before a commit is accepted, and what the tamper guard protects |
 | Role system prompts | Optional prompt additions per role (appended, never replacing) |
 | Planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), installed by `herd init` | A short workflow doc for the project's people: what's specific to them (see What a project knows) |
 | Commit validation, push, PR lifecycle, update-branch | Network egress beyond the model endpoint (package registries) |
@@ -67,6 +67,10 @@ toolchain:
 gate:                                         # implementer runs it before committing; reviewer re-runs it
   - ./gradlew check
   - openspec validate --all --strict
+guarded:                                      # the tamper guard (see Who commits, who pushes)
+  tests: ["**/src/*Test/**"]                  # deleting or emptying one needs a declared reason
+  skip_markers: ["@Ignore", "@Disabled"]      # adding one needs a declared reason
+  paths: [config/detekt/baseline.xml]         # e.g. lint baselines: any change needs a declared reason
 final_approval:
   kind: human                                 # or: none
   instructions: |                             # shown in the herd's status pane and in the draft PR body
@@ -252,7 +256,14 @@ status file on exit. The orchestrator then validates the commit before pushing i
 - the commit contains the expected state transition (see below) and nothing outside the change's scope (e.g. an
   implementer commit must not touch `review-notes.md` or flip a checkbox to `[x]`; no worker commit may touch
   `.herd/`);
-- the status file agrees with the commit.
+- the status file agrees with the commit;
+- **the tamper guard**: the commit doesn't weaken the safety net silently. Deleting or emptying a file matching
+  the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a `guarded.paths` file (a
+  lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the commit message. The
+  task review must then accept or reject each declared item by name, and validation of the verdict commit checks
+  that it does. An undeclared one fails validation before any review is spent. Legitimate cases (removing a
+  feature removes its tests) still pass, but never silently. Assertions weakened into tautologies need judgment,
+  so catching them stays with the reviewer. (The idea comes from no_human, see Prior art.)
 
 A commit that fails validation is discarded like any crashed attempt. Worker containers never hold GitHub
 credentials; the orchestrator's GitHub token is the only push-capable credential in the system.
@@ -541,11 +552,16 @@ from a per-project, per-role image:
   tagged with the hash of that file, rebuilt when it changes. Contains the language runtimes and SDKs the gate
   needs. Must be Debian/Ubuntu-based so the role layer can install onto it.
 - **Role layer** — generic, from the herd repo, applied with `FROM <toolchain image>`:
-  - *implementer*: the implementer harness (concrete default: [Aider](https://aider.chat), which supports both an
-    Ollama-served local model and cloud APIs behind the same `--model` config — the hard requirement is that
-    property, not the specific tool), `git`, the `openspec` CLI (gates typically run `openspec validate`), and the generic `SYSTEM_PROMPT.md` plus the project's optional
-    addition. Gets its clone as a volume; reads its task from an env var/arg; runs the gate; commits; writes a
-    status file on exit.
+  - *implementer*: the implementer harness, `git`, the `openspec` CLI (gates typically run `openspec validate`),
+    and the generic `SYSTEM_PROMPT.md` plus the project's optional addition. Gets its clone as a volume; reads its
+    task from an env var/arg; runs the gate; commits; writes a status file on exit. The harness must serve a local
+    (Ollama-served) model and cloud APIs behind one config and run headless; the specific tool is secondary. Two
+    candidates, compared on the same tasks at Build plan step 3:
+    - [Aider](https://aider.chat): a thin edit loop with a `--model` config.
+    - [OpenHands](https://docs.openhands.dev) headless: a fuller agent loop (tool use, running tests, correcting
+      itself), any model through LiteLLM. It normally starts its own sandbox container; in a herd worker it must
+      run in-process instead, since the worker is the sandbox and has no Podman socket. With Ollama it needs a
+      context of at least 22k tokens, which narrows the local models a small GPU can serve.
   - *reviewer*: `claude -p` (and the implementer harness, for non-Anthropic backends) with the review system
     prompt (structured accept/revise output), `git`, and the `openspec` CLI for the archive. Re-runs the gate
     itself rather than trusting the implementer's claim.
@@ -670,6 +686,29 @@ flagged human-review-worth items from the holistic review, final-approval instru
 `release_notes: true` — a `## Release notes` section the reviewer writes in its holistic pass, for the project's
 own release automation to lift if it wants to.
 
+## Prior art
+
+Checked 2026-10-04 for a free, open-source tool that does this end to end; none does. What exists, and what the
+herd takes from it:
+
+- **OpenHands** (MIT): a sandboxed coding agent with a headless mode and a GitHub issue resolver, one agent per
+  issue. No task loop, separate reviewer or state machine. Taken: a candidate implementer harness (Containers).
+- **no_human**: ticket to reviewed PR on your own machine, with an adversarial review by a different model and a
+  guard against tampering with tests. Taken: the tamper guard (Who commits, who pushes), and the same rule as the
+  herd's that a review never runs on the backend that wrote the code.
+- **Hydra** (Conduction): the closest workflow, an OpenSpec pipeline from `tasks.md` through containerized quality
+  checks, code and security review and `needs-input` escalation to a human merge. But it's Conduction's internal
+  pipeline in a private repository, PHP/Nextcloud-only and Claude-only; its agents are GitHub users that push and
+  open PRs; its state lives in labels and GitHub Projects; and it archives after merge. Taken as data points: iptables
+  egress allow-lists per agent (Open questions), and a separate security review.
+- **Symphony** (OpenAI, Apache-2.0): a spec and reference implementation that gives each ticket an agent workspace
+  until its PR lands. Tied to Codex and Linear.
+- **CrewAI** (MIT) and similar agent frameworks: they put an LLM in charge of coordination, the opposite of an
+  orchestrator that runs no model, and don't cover git and GitHub plumbing, state or isolation, which are the hard
+  parts here.
+- Worktree-based session runners (Orbi, Contrabass, Composio's orchestrator and others): agents work in host
+  worktrees and hold credentials, the security model the herd avoids.
+
 ## Build plan
 
 Steps marked **(manual)** need a human.
@@ -698,7 +737,8 @@ Steps marked **(manual)** need a human.
 
 ## Open questions deferred, not forgotten
 
-- Implementer harness choice (Aider vs. something custom) — the requirement is local + cloud behind one config.
+- Implementer harness: Aider or OpenHands headless (see Containers), compared on the same tasks; something custom
+  only if neither fits.
 - Which local coder model, if any, earns a slot: decide by replaying accepted tasks (see Models).
 - Whether the herd runs as a dedicated `herd` user instead of the operator's account. Rootless Podman keeps the
   orchestrator's socket off root, but under the operator's account it could still mount their home. A dedicated
@@ -706,7 +746,11 @@ Steps marked **(manual)** need a human.
 - The `review_rounds`, `added_tasks` and `gate_fixes` defaults (3 each): tune from the first smoke tests. Projects
   can override them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see The
   project manifest).
-- Egress enforcement mechanism (allow-listing proxy vs. per-host firewall rules) — decide at Build plan step 3.
+- Egress enforcement mechanism (allow-listing proxy vs. per-host firewall rules) — decide at Build plan step 3. Hydra
+  enforces per-agent allow-lists with iptables, giving its security reviewer less egress than its builder: a tested
+  data point for the firewall option (it needs checking under rootless Podman's networking).
+- A separate security-review unit kind (static analysis such as Semgrep plus a security-focused prompt), run beside
+  task or holistic review, as Hydra does.
 - A second workflow besides OpenSpec — only when a project needs it.
 - Whether to automate final approval for projects whose end-to-end tests can run in a container (e.g. an
   emulator with KVM passthrough), as a `final_approval.kind: container` with its own image.
