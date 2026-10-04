@@ -260,8 +260,10 @@ status file on exit. The orchestrator then validates the commit before pushing i
   implementer commit must not touch `review-notes.md` or flip a checkbox to `[x]`; no worker commit may touch
   `.herd/`);
 - the status file agrees with the commit;
-- the commit doesn't touch the project's CI workflows (`.github/workflows/`). CI is the independent second net, so
-  the herd's App isn't granted GitHub's `workflows` permission, and a task that needs a CI change escalates;
+- the commit doesn't touch anything under `.github/` (workflows, local actions, CODEOWNERS and the like). CI is the
+  independent second net, so the herd's App isn't granted GitHub's `workflows` permission, and a task that needs a
+  CI change escalates. Scripts outside `.github/` that CI runs can weaken it too, so they belong in the project's
+  `guarded.paths`; `herd doctor` warns about any repository script a workflow references that isn't covered;
 - **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying
   a file matching the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a
   `guarded.paths` file (a lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the
@@ -422,8 +424,8 @@ silently dropped — comes from two rules together, not from the scan alone:
      pane as in flight, so planners and people can see it.
   3. *waiting-on-dependency* — ready, but a change in its `depends_on` isn't archived on the default branch yet.
      Next action: none until it is.
-  4. *implementing* — ready, dependencies merged, ≥1 task not `[x]`. This includes tasks appended after a final-approval
-     failure, even when a draft PR already exists.
+  4. *implementing* — ready, dependencies merged, change not archived, ≥1 task not `[x]`. This includes tasks appended
+     after a final-approval failure, even when a draft PR already exists.
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
   6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
@@ -450,17 +452,18 @@ silently dropped — comes from two rules together, not from the scan alone:
      date and every required check on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive
      never gets pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
-     ready is here, and its next action follows from why:
-     - checks still running on the current tip, or an awaited reviewer hasn't reviewed the content tip and
-       its review window hasn't timed out: none; wait;
-     - the branch is behind the default branch: update-branch (see Keeping up with the default branch);
-     - an awaited reviewer's first review of the content tip, not yet classified: a `triage` unit, which records it as
-       `clean` or as a finding in `review-notes.md` (a bookkeeping commit, so the content tip doesn't move). The
-       orchestrator runs no model, so it can't tell a clean review from one with findings in its free-form summary; only
-       a classified-clean review counts;
-     - a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
-       orchestrator commits a mechanical `needs-human` marker (state 1 then matches). None of these can become a
-       task, because fixing anything after the archive would mean un-archiving.
+     ready is here, and its next action is the first of these that applies, in this order:
+     1. a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
+        orchestrator commits a mechanical `needs-human` marker (state 1 then matches). None of these can become a
+        task, because fixing anything after the archive would mean un-archiving;
+     2. the branch is behind the default branch: update-branch (see Keeping up with the default branch), even while
+        checks are still running, since the merge restarts them anyway;
+     3. an awaited reviewer's first review of the content tip, not yet classified: a `triage` unit, which records it
+        as `clean` or as a finding in `review-notes.md` (a bookkeeping commit, so the content tip doesn't move). The
+        orchestrator runs no model, so it can't tell a clean review from one with findings in its free-form summary;
+        only a classified-clean review counts;
+     4. checks still running on the current tip, or an awaited reviewer hasn't reviewed the content tip and its
+        review window hasn't timed out: none; wait.
   10. *ready-to-merge* — archive commit pushed, branch up to date with the default branch, checks passing on the current
      tip, every awaited reviewer's review of the content tip classified clean (or timed out), no open thread, and the
      holistic-accept still current (see Current records). Next action: none; a human merges. A later bookkeeping push
@@ -944,14 +947,13 @@ directory. A project without a checkout gets its workspace without a planner pan
 - The orchestrator does not depend on herdr. It runs as the `herd` user's systemd unit whether or not anyone is
   attached, and lingering brings it back after a host reboot without herdr.
 
-**The bridge.** `herd watch` is display-only and runs inside herdr, so it drives herdr through the `herdr` CLI
-with the context its pane inherits (`HERDR_PANE_ID`), and the orchestrator never needs herdr's socket. Every few
-seconds it reconciles the layout against the event log and the unit logs: it creates missing project workspaces
-(with their planner panes), splits off and closes unit and attention panes (`herdr pane split --no-focus`,
-`herdr pane run`), and reports their state and title. It only ever closes panes it created, and never a planner
-pane.
-It's stateless, like the orchestrator: after a herdr restart or a reboot it rebuilds what's missing on its next
-pass, and herdr brings back the planner panes' sessions.
+**The bridge.** `herd watch` is display-only and runs inside herdr, so it drives herdr through the `herdr` CLI with the
+context its pane inherits (`HERDR_PANE_ID`), and the orchestrator never needs herdr's socket. Every few seconds it
+reconciles the layout against the status snapshot and the unit logs (see The status snapshot): it creates missing
+project workspaces (with their planner panes), splits off and closes unit and attention panes
+(`herdr pane split --no-focus`, `herdr pane run`), and reports their state and title. It only ever closes panes it
+created, and never a planner pane. It's stateless, like the orchestrator: after a herdr restart or a reboot it rebuilds
+what's missing on its next pass, and herdr brings back the planner panes' sessions.
 
 **Desktop alerts come from the bridge.** The bridge runs in the operator's herdr, under the operator's account, so it's
 the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence number, to a queue
@@ -972,6 +974,13 @@ review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/s
 days (`logs.event_log_keep` in host config). **Both the event log and the herdr layout are display-only. The
 orchestrator never reads them back**, so git stays the only source of truth. Losing the log, the bridge or the herdr
 session loses only what's on screen.
+
+**The status snapshot.** History expires, but the current picture mustn't: a proposal open for longer than the event
+log keeps would otherwise drop out of view after a bridge restart. So at the end of every scan the orchestrator also
+writes `status.json` to `/var/lib/herd/shared/`: every registered project and every open proposal with its derived
+state, current task, review round, waiting reason and spend. It's rewritten whole from the scan, never appended, so it
+can't go stale or grow. The status pane, `herd status`, and the bridge's attention panes read the snapshot; the event
+log is only for history and the unit panes' timeline. Like the log, the orchestrator never reads it back.
 
 **The `herd` CLI.** The herd repo installs `herd` on the host:
 - `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
