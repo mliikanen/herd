@@ -7,10 +7,11 @@ workflow doc for its people (see What a project knows about the herd).
 ## Goal and division of labor
 
 Human time is spent at three points only: writing/refining a proposal (interactive, as today), the project's final
-approval step if it has one (e.g. running end-to-end tests by hand, see Final approval), and merging the resulting
-PR. Everything else — implementing `tasks.md` item by item, reviewing each task, iterating on review feedback,
-fixing final-approval failures, archiving the spec delta, and opening the PR — runs unattended. A proposal that
-the pipeline can't finish on its own stops in a `needs-human` state (see Escalation) instead of looping.
+approval step if a person performs it (e.g. running end-to-end tests by hand; a `container` approval runs unattended,
+see Final approval), and merging the resulting PR. Everything else — implementing `tasks.md` item by item, reviewing
+each task, iterating on review feedback, fixing final-approval failures, archiving the spec delta, and opening the PR —
+runs unattended. A proposal that the pipeline can't finish on its own stops in a `needs-human` state (see Escalation)
+instead of looping.
 
 - **Proposer**: a human with an interactive cloud SOTA agent. Unchanged, plus one step: marking the proposal ready
   (see The hand-off).
@@ -38,7 +39,7 @@ One herd instance runs per host and serves every **registered project**. The spl
 | Planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), installed by `herd init` | A short workflow doc for the project's people: what's specific to them (see What a project knows) |
 | Commit validation, push, PR lifecycle, update-branch | Network egress beyond the model endpoint (package registries) |
 | Escalation markers, inputs request/provide cycle | Cache volumes (e.g. a build tool's dependency cache) |
-| herdr bridge, event log, `herd` CLI | Final approval: `none`, or `human` with instructions |
+| herdr bridge, event log, `herd` CLI | Final approval: `none`, `human` with instructions, or `container` with an `e2e` block |
 | Model backends and secrets (host config) | Capabilities the toolchain lacks (tasks needing them escalate) |
 | | Cap overrides; whether the reviewer writes release notes into the PR body |
 
@@ -77,12 +78,26 @@ guarded:                                      # the tamper guard (see Who commit
     - gradle/**
     - gradlew
 final_approval:
-  kind: human                                 # or: none
-  instructions: |                             # shown in the herd's status pane and in the draft PR body
+  kind: human                                 # or: none, or container (see End-to-end tests: the red/green loop)
+  instructions: |                             # shown in the status pane and draft PR body; required with any
+                                              # human phase (kind: human, or human_after: true)
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
+  # human_after: true                        # with kind: container only: also require a person's pass afterwards
+e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
+  harness: e2e/                               # the whole harness, always run from the default branch
+  tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
+  boot: ./e2e/boot.sh                         # starts the unit's emulator, once; the herd keeps it running
+  prepare: ./e2e/prepare.sh                   # (re)builds the app, with no emulator access
+  app: app/build/outputs/apk/debug/app-debug.apk   # what prepare builds; run installs it
+  select: ./e2e/select.sh                     # changed paths on stdin; relevant tests as JSON lines {id, files}
+  run: ./e2e/run.sh                           # installs $HERD_E2E_APP, runs the ids on stdin;
+                                              # results in $HERD_E2E_ARTIFACTS
+  ci_artifacts:                               # what triage may see from CI; the jobs must be secret-free
+    - { job: maestro-full, artifact: maestro-results }
+                                              # (the scripts always run from the default branch: see the section)
 missing_capabilities:                         # a task that needs one of these escalates instead of being attempted
   - macOS / Xcode
-caps: { review_rounds: 3, added_tasks: 3, failed_attempts: 3, gate_fixes: 3, pr_review_rounds: 5 }
+caps: { review_rounds: 3, added_tasks: 3, failed_attempts: 3, gate_fixes: 3, flaky_retries: 2, pr_review_rounds: 5 }
 prompts:                                      # optional, appended to the generic role prompts
   implementer: .herd/implementer.md
   reviewer: .herd/reviewer.md
@@ -93,11 +108,11 @@ pr_review:                                    # see Following up on PR review
   checks_timeout: 60m                         # a required check with no result by then escalates
 ```
 
-**Defaults** for what a manifest leaves out: `caps` as in the example (3, 3, 3, 3 and 5), `pr_review.timeout: 15m` and
-`pr_review.checks_timeout: 60m`.
-They come from the first project's PRs before the herd existed: one PR took five Copilot rounds to come clean,
-which sets `pr_review_rounds`, and Copilot re-reviewed about 2 to 4 minutes after each push, which a 15-minute
-timeout covers with room for a slow round. The other caps are still guesses (see Open questions).
+**Defaults** for what a manifest leaves out: `caps` as in the example (3, 3, 3, 3, 2 and 5), `pr_review.timeout: 15m`
+and `pr_review.checks_timeout: 60m`. They come from the first project's PRs before the herd existed: one PR took five
+Copilot rounds to come clean, which sets `pr_review_rounds`, and Copilot re-reviewed about 2 to 4 minutes after each
+push, which a 15-minute timeout covers with room for a slow round. The other caps are still guesses (see Open
+questions).
 
 Project knowledge the agents need (conventions, where things live, test strategy) comes from the project's own
 `CLAUDE.md`/`AGENTS.md` and `openspec/config.yaml`, which the harness reads like any interactive session would — the
@@ -111,10 +126,16 @@ could widen its own egress or weaken its own gate. Commit validation also reject
 
 - Uses OpenSpec, with changes in `openspec/changes/`.
 - Hosted on GitHub, with branch protection on the default branch requiring PRs, required CI status checks, and
-  up-to-date branches (see Keeping up with the default branch). The CI checks should run the same gate as the
-  manifest, as an independent second net.
-- The gate runs headless in a Linux container. Anything that can't (a Mac, a device, a GUI emulator) is either
-  the project's human final-approval step or a `missing_capabilities` entry.
+  up-to-date branches (see Keeping up with the default branch). The CI checks should run the same gate as the manifest,
+  as an independent second net. The required checks' workflows run on **every** push to a PR, with no path filters, and
+  their required jobs don't skip themselves either (no job-level `if:` on changed paths or commit content, no
+  path-filter step that ends the job early): the herd's own bookkeeping commits move the tip, and a required check that
+  doesn't run there, or reports a skip as a pass, would never test it for real. `herd doctor` checks the triggers and
+  flags such conditions and path-filter actions (`dorny/paths-filter`, say) in required jobs.
+- The gate runs headless in a Linux container. Anything that can't is one of three things: the herd's own end-to-end
+  runs on an emulator in a worker (an `e2e` block, and `final_approval.kind: container` for the whole-change run; see
+  End-to-end tests), the project's human final-approval step (a device, a Mac-only GUI), or a `missing_capabilities`
+  entry.
 - The default branch is **PR-only for everyone**, with no bypass. Nothing needs one: a proposal lives on its own
   branch from its first commit and reaches the default branch only as the one merge of its PR (see The hand-off).
 
@@ -139,7 +160,8 @@ recovery, containers) lives only here. A project carries:
     `missing_capabilities`, then sets `ready: true` in the change's `.openspec.yaml` **on its branch**, commits and
     pushes.
   - `herd-resolve <change>`: shows why a change is waiting on a human, helps fix it on the change branch, and
-    commits the resolution: a resolved `needs-human` marker, or a final-approval pass/fail.
+    commits the resolution: a resolved `needs-human` marker, a `human`-phase final-approval pass or fail, or an
+    `e2e-waive` (see The effective final-approval record for their syntax).
 - **A short workflow doc for the project's people and planner agents.** It covers only what's specific to that
   project: its extra rules for herd-ready tasks, how to run its final approval, and what not to touch once a change
   is ready. For everything else it points to `using-the-herd.md` (the generic guide for people), never repeating
@@ -154,8 +176,13 @@ These are the generic rules `herd-ready` checks. A project's workflow doc adds i
 - **Each `tasks.md` item is one reviewable commit**: one coherent step that leaves the gate green, small enough for
   one review. Split items that aren't; merge items that can't pass the gate on their own.
 - **Sections are in dependency order.** Tasks run strictly in sequence (see Concurrency model).
-- **Nothing needs a `missing_capabilities` entry**, and no task *runs* the final-approval checks. Tasks may write or
-  update those tests; running them is the human's final approval.
+- **Nothing needs a `missing_capabilities` entry.** Without an `e2e` block, no task *runs* the final-approval checks:
+  tasks may write or update those tests, and running them is the human's final approval where the project has one
+  (`final_approval.kind: human`), and CI's alone where it has none (`kind: none`). With one, **a task that changes
+  behavior a test can see includes or updates that test**, whether or not the host runs end-to-end tests yet. Whether
+  the herd actually runs them (the per-task loop, the red/green proof, the final e2e) depends on the host's emulator
+  capacity, which is off until the operator enables it (see End-to-end tests: the red/green loop); until then CI runs
+  them.
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it (see Outside content).
 - **No task needs a secret.**
@@ -188,12 +215,14 @@ The herd can start observing a new project at any time, without restarting anyth
   no worker agent or orchestrator bug can widen, even through the Podman socket. The operator's planner agent runs under
   their account and could run `herd add` too, but it's the person's own supervised session: a config change through it
   is theirs to approve, like any other command it runs.
-- **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
-  a `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
-  builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
-  status pane says which check failed. Nothing records
-  that `herd doctor` passed. `doctor` is the human's deeper check (gate in a real worker, branch protection, model
-  backend) to run before trusting a project, not a switch the orchestrator reads.
+- **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has a
+  `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
+  builds, and the worker slots it may use can run every unit kind the project can dispatch (`e2e` only when the manifest
+  or an open change's pinned approval kind requires a container pass, as Config is checked when it's loaded in Models
+  spells out). Otherwise it's *inactive*, and the status pane says which check failed. Emulator capacity isn't part of
+  it: a change that needs a container pass and finds none waits on its own (see End-to-end tests), so the rest of the
+  project carries on. Nothing records that `herd doctor` passed. `doctor` is the human's deeper check (gate in a real
+  worker, branch protection, model backend) to run before trusting a project, not a switch the orchestrator reads.
 - **First scan of a new project.** The orchestrator creates the project's bare mirror and builds its images. It
   then treats the project like any other: it queues change branches already marked `ready: true`, and leaves the
   others alone. The herdr bridge adds the project's workspace, with its planner pane, on its next pass.
@@ -337,9 +366,13 @@ string, and the kind is one of:
 - `prereq`: a task that has to come before this one;
 - `followup`: a task for later, which doesn't block this one;
 - `input`: outside content (the subject names the file);
-- `capability`: something the pipeline lacks.
+- `capability`: something the pipeline lacks;
+- `escalate`: an end-to-end failure the implementer's own triage can't settle (the subject is the test id, and the
+  reason says whether it also fails on the merge-base, the spec doesn't decide it, or it's flaky past the cap, with the
+  evidence); unlike the others, its commit carries the task's work as it stands (see Test or implementation?).
 
-When the task can't go further without it, the commit is **request-only**: no code, just the task's checkbox
+When the task can't go further without it, the commit is **request-only** (except for `escalate`, above, whose commit
+carries the task's work and is validated as Test or implementation? describes): no code, just the task's checkbox
 flipped to `[r]`, so the reviewer picks it up through the ordinary task review and the task model stays `[ ]` /
 `[r]` / `[x]`. That review answers each request in `review-notes.md` as
 `request <commit sha> <id>: added|needs-human|refused — <reason>`, and validation of the verdict commit requires
@@ -349,8 +382,9 @@ exactly one answer per request id. What happens to the requesting task follows f
   prerequisite runs first.
 - **`added` for a `followup`**: the task is appended under "(added during apply)". The requesting task is judged
   on its own work as usual: accepted if a normal commit carried the request, back to `[ ]` if it was request-only.
-- **`needs-human`** (an `input` or `capability`): the reviewer records the marker, the requesting task goes back
-  to `[ ]`, and the change stops until a person resolves it.
+- **`needs-human`** (an `input` or `capability`, or an `escalate` whose evidence the reviewer confirmed by rerunning the
+  test): the reviewer records the marker, with an `escalate`'s reason ("fails on the default branch too", "spec doesn't
+  settle it" or "flaky test"), the requesting task goes back to `[ ]`, and the change stops until a person resolves it.
 - **`refused`**: the requesting task goes back to `[ ]`, with the reason in `review-notes.md` for the next
   attempt.
 
@@ -364,12 +398,18 @@ push-capable credential in the system.
 by a model, and touching only the file each names. The complete list:
 - **a failed attempt's record** in `review-notes.md` (below);
 - **a mechanical `needs-human` marker** in `review-notes.md`, for the escalations that need no judgment: a cap reached
-  (`caps.review_rounds`, `caps.failed_attempts`, `caps.gate_fixes`, `caps.added_tasks`, `caps.pr_review_rounds`), an
-  update-branch conflict, a required check past `pr_review.checks_timeout`, and the three post-archive cases in
-  *archived-pending* (a failed check, an open review finding, a non-bookkeeping commit). Escalations that need judgment
-  (a request for outside content, holistic feedback that maps to no task, a finding the reviewer can't map to a task)
-  are written by the reviewer in its verdict commit;
-- **an `inputs.md` entry** for content provided through `herd provide` (see Outside content).
+  (`caps.review_rounds`, `caps.failed_attempts`, `caps.gate_fixes`, `caps.flaky_retries` when the counts already
+  recorded reach it between units (a unit that reaches it mid-run escalates in its own commit instead: a reviewer or
+  triage unit in its verdict, an implementer through an `escalate` request its reviewer confirms; see Test or
+  implementation?), `caps.added_tasks`, `caps.pr_review_rounds`), an update-branch conflict, a required check past
+  `pr_review.checks_timeout`, and the three post-archive cases in *archived-pending* (a failed check, an open review
+  finding, a non-bookkeeping commit). Escalations that need judgment (a request for outside content, holistic feedback
+  that maps to no task, a finding the reviewer can't map to a task) are written by the reviewer in its verdict commit;
+- **an `inputs.md` entry** for content provided through `herd provide` (see Outside content);
+- **the `e2e-mode` line** that fixes a change's end-to-end mode and final-approval kind at its first dispatch (see
+  End-to-end tests);
+- **a `final-approval rerun: evidence lost` record**, when a failure's evidence is gone before its triage (see
+  End-to-end tests).
 
 Everything else on a change branch is a worker's commit, a person's, or an update-branch merge.
 
@@ -378,12 +418,14 @@ green, or its commit failed validation) leaves nothing in the branch, so on its 
 orchestrator therefore commits a line to `review-notes.md`, pinned to the tip the unit started from, with its fields as
 one JSON object so that no subject or reason text can make it ambiguous:
 `attempt-failed: {"kind": "implement", "subject": "3.2", "reason": "gate", "from": "<sha>"}`. The subject is the task
-for `implement` and `task` units, and the change itself for `holistic`, `triage` and `archive` units. The count of those
-lines for one unit kind and subject is derived from git like everything else, counting since the later of two points:
-that kind's last accepted commit for that subject, and the resolution of a failed-attempts `needs-human` marker for it,
-so a person who resolves the escalation gives the unit a fresh set of attempts instead of an immediate re-escalation.
-When the count reaches `caps.failed_attempts` the change escalates to `needs-human` before another attempt starts (with
-the default of 3, three failed attempts, not four).
+for `implement` and `task` units, and the change itself for `holistic`, `triage`, `archive` and `e2e` units. For an
+`e2e` unit, its "accepted commit" is the verdict line it records (a final-approval pass, or a failure handed to triage),
+which resets the count; a timed-out or crashed `e2e` unit is retried on a fresh emulator like any other failed attempt.
+The count of those lines for one unit kind and subject is derived from git like everything else, counting since the
+later of two points: that kind's last accepted commit for that subject, and the resolution of a failed-attempts
+`needs-human` marker for it, so a person who resolves the escalation gives the unit a fresh set of attempts instead of
+an immediate re-escalation. When the count reaches `caps.failed_attempts` the change escalates to `needs-human` before
+another attempt starts (with the default of 3, three failed attempts, not four).
 
 A unit whose push lost the race to a person's push is `superseded`, not failed: it says nothing about the worker or the
 change, so it's retried from the new tip, isn't committed and doesn't count. Failures of the herd's own infrastructure
@@ -467,7 +509,7 @@ stateDiagram-v2
     holistic_review_pending --> awaiting_approval: accepted, final approval still needed
     holistic_review_pending --> in_review: accepted, approval not needed or still effective
     awaiting_approval --> implementing: fail, triaged into tasks
-    awaiting_approval --> in_review: pass
+    awaiting_approval --> in_review: every required phase passed (e2e unit, person)
     in_review --> implementing: finding triaged into a task
     in_review --> archiving: review done
     archiving --> archived_pending: archive commit
@@ -482,6 +524,7 @@ stateDiagram-v2
     archived_pending --> needs_human: failed check, finding or content commit
     implementing --> needs_human: cap reached
     in_review --> needs_human: review rounds cap or scope request
+    awaiting_approval --> needs_human: failure pre-existing, flaky past cap or not settled by spec
     needs_human --> rederived: a person resolves
     rederived: resumes where the branch now says
 
@@ -530,36 +573,42 @@ silently dropped — comes from two rules together, not from the scan alone:
      order.
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
-  6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
-     (see below) isn't a pass, change not archived. Next action, the first that applies: a required check is past
+  6. *awaiting-approval* — holistic review accepted, the change's recorded approval kind (its `e2e-mode` line, not the
+     manifest's current `final_approval.kind`) is not `none`, the effective final-approval record (see below) isn't a
+     pass, change not archived. Next action, the first that applies: a required check is past `pr_review.checks_timeout`
+     with no result, so the orchestrator escalates (see Failing checks before the archive); a required check failed on
+     the current tip and that run is neither triaged nor verified all-waived, so CI triage (see Failing checks before
+     the archive); the effective record is a `fail` not yet triaged, so a `triage` unit (see Final approval); otherwise
+     ensure a PR exists (a **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into
+     one), and then, for `container`, an `e2e` unit (see End-to-end tests: the red/green loop), or for `human` (or after
+     a container pass with `human_after`) the human runs the project's final approval. Skipped entirely when the
+     recorded kind is `none`.
+  7. *in-review* — holistic review accepted and (if the recorded approval kind requires it) every required phase's
+     effective final-approval record a pass, change not archived, and review isn't done: the PR has unresolved review
+     threads, a review requesting changes, a review finding not yet triaged, an awaited reviewer (`pr_review.wait_for`)
+     that hasn't reviewed the content tip (see below) yet while its review window (see below) hasn't timed out, or an
+     awaited reviewer's first review of the content tip that no `triage` unit has classified yet. The orchestrator runs
+     no model and can't tell a clean review from one with findings only in its free-form summary, so every such review
+     is classified (`clean`, or findings triaged), before the archive as after it. Next action, the first that applies:
+     a required check is past `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing
+     checks before the archive); a required check failed on the current tip and that run is neither triaged nor verified
+     all-waived, so CI triage (see Failing checks before the archive); otherwise mark the PR ready for review if it's
+     still a draft, then follow up as Following up on PR review describes. A triaged finding becomes a task under
+     "(added during review)", which sends the change back to *implementing*. Review comes before archiving, because a
+     fix after the archive would mean editing the synced main specs by hand.
+  8. *archiving* — holistic review accepted, (if the recorded approval kind requires it) every required phase's
+     effective final-approval record a pass, review done (no open thread or untriaged finding, and every awaited
+     reviewer's first review of the content tip either classified clean or with all its findings triaged and resolved,
+     or timed out), change not yet archived on the branch. Next action, the first that applies: a required check is past
      `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before the archive); a
-     required check failed on the current tip, so CI triage (see Failing checks before the archive); the effective
-     record is a `fail` not yet triaged, so a `triage` unit (see Final approval); otherwise ensure a PR exists (a
-     **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into one), and the human runs
-     the project's final approval. Skipped entirely when `final_approval.kind: none`.
-  7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
-     archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
-     finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip (see
-     below) yet while its review window (see below) hasn't timed out, or an awaited reviewer's first review of the
-     content tip that no `triage` unit has classified yet. The orchestrator runs no model and can't tell a clean review
-     from one with findings only in its free-form summary, so every such review is classified (`clean`, or findings
-     triaged), before the archive as after it. Next action, the first that applies: a required check is past
-     `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before the archive); a
-     required check failed on the current tip, so CI triage (see Failing checks before the archive); otherwise mark the
-     PR ready for review if it's still a draft, then follow up as Following up on PR review describes. A triaged finding
-     becomes a task under "(added during review)", which sends the change back to *implementing*. Review comes before
-     archiving, because a fix after the archive would mean editing the synced main specs by hand.
-  8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
-     open thread or untriaged finding, and every awaited reviewer's first review of the content tip either classified
-     clean or with all its findings triaged and resolved, or timed out), change not yet archived on the branch. Next
-     action, the first that applies: a required check is past `pr_review.checks_timeout` with no result, so the
-     orchestrator escalates (see Failing checks before the archive); a required check failed on the current tip, so a
-     `triage` unit turns it into a fix task (see Failing checks before the archive); the branch is behind the default
-     branch, so update-branch (a merge that touches the change's files sends it back through holistic review, which is
-     still possible before the archive); while a required check is still running, none; wait (a failure then goes
-     through Failing checks before the archive, never past it). Once the branch is up to date and every required check
-     on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive never gets pushed, so it's
-     discarded with the clone and redone, same as any other unit of work.
+     required check failed on the current tip and hasn't been handled yet, so the CI-failure handling in Failing checks
+     before the archive applies (a `triage` unit, whose outcome may be fix tasks, a flaky rerun or an escalation, or no
+     unit at all for a run whose every failure is waived); the branch is behind the default branch, so update-branch (a
+     merge that touches the change's files sends it back through holistic review, which is still possible before the
+     archive); while a required check is still running, none; wait (a failure then goes through Failing checks before
+     the archive, never past it). Once the branch is up to date and every required check on its tip has passed, the
+     reviewer runs the archive and commits. A crash mid-archive never gets pushed, so it's discarded with the clone and
+     redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action is the first of these that applies, in this order:
      1. a check failed or is past `pr_review.checks_timeout` with no result, a review finding is open, or a
@@ -580,26 +629,43 @@ silently dropped — comes from two rules together, not from the scan alone:
      action: none; a human merges. A later bookkeeping push (a clean update-branch merge, say) moves the change back to
      *archived-pending* until checks pass on the new tip; its review of the content tip still stands.
 
-  **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so
-  "for the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is
-  **bookkeeping** (a final-approval pass follows its own rule, the effective record below):
-  - a commit that touches only `review-notes.md` (verdict lines, failed-attempt lines, final-approval records,
-    PR triage notes) or only `inputs.md`;
+  **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so "for
+  the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is **bookkeeping**
+  (a final-approval pass follows its own rule, the effective record below):
+
+  - a commit that touches only `review-notes.md` (verdict lines, failed-attempt lines, final-approval records, PR triage
+    notes) or only `inputs.md`;
   - the validated archive commit, whose content `openspec archive` determines (see Who commits, who pushes);
-  - an update-branch merge from the default branch that merged cleanly **and** brought in no change to a file the
-    change itself touches. Default-branch changes elsewhere can still interact with the change, but CI re-runs
-    the gate on the merge; changes to the change's own files are close enough to need another look.
+  - an update-branch merge from the default branch that merged cleanly **and** brought in no change to a file the change
+    itself touches. Default-branch changes elsewhere can still interact with the change, but CI re-runs the gate on the
+    merge; changes to the change's own files are close enough to need another look.
 
   Any other commit (a fix task's code, a person's content push, an update-branch merge that touches the change's files)
   makes the holistic-accept stale, so the change returns to *holistic-review-pending*, and once archived, to
-  *archived-pending* with the merge treated as a review finding. A final-approval pass isn't made stale by later
-  fixes on its own: the holistic review that follows them records `final-approval: rerun` when the fixes touch what
+  *archived-pending* with the merge treated as a review finding. A final-approval pass isn't made stale by later fixes
+  on its own: the holistic review that follows them records `final-approval rerun: <reason>` when the fixes touch what
   final approval covers.
 
-  **The effective final-approval record** is the latest of the change's final-approval records in git order: a
-  `pass`, a `fail`, or a `rerun`. History is additive, so an old pass stays in `review-notes.md`, but only a pass
-  that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until
-  a person records a new pass.
+  **The effective final-approval record** is kept per **phase**: each final-approval record names its phase, `container`
+  (written by an `e2e` unit) or `human` (written through `herd-resolve`), and a phase's effective record is the latest
+  in git order among that phase's `pass` and `fail` records and the phase-less `final-approval rerun: <reason>` records,
+  which name no phase and apply to every phase the change requires (there is no per-phase rerun). A change requires the
+  phases of the approval kind fixed at its first dispatch (see Emulators in workers), not whatever the manifest says
+  now: the `human` phase with `kind: human`, the `container` phase with `kind: container`, and both, container first,
+  with `kind: container` and `human_after: true`, where the human pass also has to be newer than the current container
+  pass, so the person's check always follows the container run it's meant to follow; *awaiting-approval* holds until
+  every required phase's effective record is a pass, and states 7 and 8's "the effective final-approval record a pass"
+  means every required phase. History is additive, so an old pass stays in `review-notes.md`, but only a pass that's
+  newer than any `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until each
+  required phase has a new pass. The records are single lines in `review-notes.md` with a fixed syntax, so the scan
+  never interprets prose: `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also
+  names the merge-base it was tested against before the colon
+  (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`) and, before the archive, is current
+  only while the change's merge-base is unchanged (from the archive on, the pin is frozen and a later merge doesn't
+  invalidate it; see The pin) (phase `container`, written by an `e2e` unit, or `human`, written through `herd-resolve`;
+  the detail is free text after the colon), `final-approval rerun: <reason>`,
+  `final-approval-triaged <sha of the commit that added the fail record>`, and
+  `e2e-waive <test id> <default sha> <files digest>: <reason>`.
 
   **The content tip** is the branch's latest non-bookkeeping commit, except that the archive commit always counts as
   content here: it's bookkeeping for keeping the holistic-accept current, but its generated spec changes still need an
@@ -624,9 +690,43 @@ silently dropped — comes from two rules together, not from the scan alone:
   the archive).
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
-  next action is a `triage` unit, which turns the failure into a fix task under "(added for CI)", sending the change
-  back to *implementing*. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates. This is the
-  path for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
+  next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
+  outcomes in `review-notes.md`, one line per failed test (a full-suite run can fail several, for different reasons):
+  `ci-triage "<check>" <sha> <run key> "<test id>": fix | flaky xN | preexisting | unsettled | waived`, with the check's
+  and the test's names as JSON strings since they may contain spaces (a failure that isn't a test's, a build step say,
+  takes the test id `"-"`). The run key names the exact failed run, since a re-run keeps the check's name and commit:
+  `check:<check run id>` for a check run, or `status:<status id>` for a legacy commit status, whose every update is a
+  new status with its own id. All of a run's lines are written in one verdict commit, keyed by it: the scan never
+  dispatches triage for a run that already has lines, and a re-run that fails again is a new run, triaged and counted
+  afresh. Each `fix` adds a fix task under "(added for CI)"; `preexisting` escalates to `needs-human` ("fails on the
+  default branch too") and `unsettled` to `needs-human` ("spec doesn't settle it"), and an escalation comes before the
+  fix tasks, which wait for the stop's resolution; with at least one `fix` and no escalation the change goes back to
+  *implementing* for its new tasks; `waived` marks a failing test with an effective `e2e-waive`: the triage unit records
+  it without judging it, and it adds no task and no escalation, since the person already decided. When the lines are
+  only `flaky` and `waived`, no task is added and the change stays in its state: if any flaky test's count has reached
+  `caps.flaky_retries`, the triage unit escalates ("flaky test") instead; otherwise, with at least one `flaky` line, the
+  commit that records them, itself a push, runs the check again on the new tip (required workflows run on every push;
+  see Requirements on a project). Flakes count per test, as everywhere. `flaky xN` counts every flaky outcome the triage
+  saw for that test (its reruns and merge-base runs included), like the other flake records. A run whose every failure
+  is in a waived test needs no triage at all, so nothing is committed for it and a waiver can't loop: the orchestrator
+  reads the run's failed ids itself from its `results.jsonl` (the CI end-to-end job uploads one in `run`'s format,
+  together with `requested.jsonl`, the ids it was asked to run as one JSON string per line, both at the top level of an
+  artifact listed in `e2e.ci_artifacts`; ids must be unique in each file, and a file that's missing, unparseable or has
+  duplicates means the run can't be verified) and treats the run as waived, without a unit or a record, only when it can
+  verify that's the whole story: the steps of the workflow job behind the check run, read through the Actions API (which
+  the App can read, and which, unlike the Checks API, lists a job's steps), show the end-to-end step as the only one
+  that failed, `results.jsonl` covers exactly the requested ids, and every failed id has an effective `e2e-waive`.
+  Whenever any of that can't be verified, the run goes to triage as usual. The required check stays red, so the change
+  carries on through its other work but can't become *ready-to-merge* (the status pane shows "waiting for a
+  default-branch fix"); the next update-branch merge that brings the fix in clears it. A triage unit that can't rerun
+  the test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts alone,
+  and records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person
+  decides rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator
+  escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no
+  update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
+  by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next
+  action is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path
+  for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
   still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
   wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
   since a stuck CI is for a person to look at.
@@ -677,6 +777,8 @@ A proposal stops and waits for a human when any of these happens:
 - the holistic review rejects with feedback that can't be mapped to a specific task;
 - a task needs something in the manifest's `missing_capabilities`, or anything else the pipeline doesn't have (a
   device, a credential, a change to CI workflows), or content from outside the project (see Outside content);
+- a test is flaky past `caps.flaky_retries`, fails on the change's merge-base too, or fails in a way the change's spec
+  deltas don't settle as either an outdated test or a regression (see End-to-end tests: the red/green loop);
 - after the archive commit, a check fails, a review finding arrives, or a non-bookkeeping commit lands (see
   *archived-pending*).
 
@@ -688,27 +790,363 @@ describe.
 
 ## Final approval
 
-The gate runs inside the workers. Some checks don't fit there — typically end-to-end tests that need an emulator,
-a device or a GUI — and suit a human final check better. A project opts in with `final_approval.kind: human`.
-Tasks that *write* those tests are still implemented and reviewed like any other task; only *running* them is
-deferred.
+The gate runs inside the workers. Some checks don't fit there — typically end-to-end tests that need an emulator, a
+device or a GUI. `final_approval.kind` chooses only who performs the **whole-change** approval, and a change keeps the
+kind it started with (recorded in its `e2e-mode` line), so the manifest's current value applies to new changes only:
+`none`; `human`, a person; or `container`, an `e2e` unit on an emulator in a worker, optionally followed by a person's
+check (`human_after`). It doesn't decide whether end-to-end tests run during implementation: with an `e2e` block and
+emulator capacity, the per-task loop runs for every kind, `human` included (see End-to-end tests: the red/green loop);
+without them, tasks that *write* those tests are implemented and reviewed like any other task, and *running* them is
+left to the whole-change approval, if the project has one, and to CI. What follows describes the `human` phase; the
+`container` phase is recorded the same way, by an `e2e` unit.
 
 When a proposal reaches *awaiting-approval*, the orchestrator makes sure its **draft** PR exists (normally opened by
-`herd-propose` at proposal time) and puts in its body the
-manifest's `final_approval.instructions`. The human checks the branch out, follows them, and records the result in
-`review-notes.md`, pinned to the SHA tested (`herd-resolve` writes the entry):
+`herd-propose` at proposal time) and puts in its body the `final_approval.instructions` from the same manifest its
+`e2e-mode` line was pinned from (the one at its merge-base when it was first dispatched), not the current one, so the
+instructions always match the phase the change owes even if the manifest has since changed or dropped them. The human
+checks the branch out, follows them, and records the result in `review-notes.md`, pinned to the SHA tested
+(`herd-resolve` writes the entry):
 - **pass** → the proposal moves to *in-review* (GitHub's review of the PR), and from there to *archiving* once no
   review thread is open;
 - **fail** → the human writes the failure as the note. While that `fail` is the effective record and hasn't been
-  triaged, *awaiting-approval*'s next action is a `triage` unit: the reviewer turns it into appended task(s) under
-  "(added during final approval)" and records `final-approval-triaged <sha of the fail record>`, and the proposal goes
-  back to *implementing*. Once those tasks are accepted and the holistic review is current again, the change returns to
-  *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR stays open
-  throughout and simply gets more commits.
+  triaged, *awaiting-approval*'s next action is a `triage` unit: the triage unit applies the same Test or implementation
+  rule as every other failure, with the person's note as its evidence (`herd-resolve` asks them, when a check fails, to
+  rerun it once and, for an end-to-end test this change didn't touch, to try it on a build of the change's merge-base,
+  which `herd-resolve` checks out for them, never the default branch's current tip, which may already carry an unrelated
+  fix, and to try it there once more if it fails; it records all of it in the note). A check that passes on the rerun is
+  intermittent, and for an end-to-end test the change didn't touch, `herd-resolve` then has the triage unit run it when
+  the change's recorded `e2e-mode` is `on` and the failed check is a test the pinned harness can run (an id its `select`
+  can return), and the person otherwise (capacity that appears later doesn't change that, and a real-device check under
+  `human_after` always stays with the person), run it on the merge-base build `caps.flaky_retries` + 1 times, as step 1
+  of the rule requires: stable there means this change made it intermittent, a regression that goes on to the spec step
+  and becomes a fix task like any other. A check that both passes and fails there, or that passes on the second
+  merge-base try after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, where
+  the id is the harness's test id for an end-to-end test, and for a manual check one `herd-resolve` assigns, `human:`
+  plus a short slug the person confirms, offering the slugs this change already used so the same check keeps one id and
+  its flakes add up; N counting every flaky outcome seen, including on the merge-base runs) and it counts toward
+  `caps.flaky_retries` like any other, so the next action is the person's check again until the count reaches the cap. A
+  check that fails on every merge-base run is pre-existing (fixed on the default branch or waived), and that, or a
+  failure the spec doesn't settle, escalates to `needs-human` as it would anywhere else, and otherwise the triage unit
+  turns the failure into appended task(s) under "(added during final approval)", and the proposal goes back to
+  *implementing*. Either way its verdict commit records `final-approval-triaged <sha of the fail record>`, escalation
+  included, so once a person resolves the stop (a waiver, say) the same fail isn't triaged and escalated again; the same
+  goes for a `container`-phase fail. An `e2e-waive` only fits an end-to-end test, whose files it digests; a manual check
+  (`human:` id) that fails on the default branch too is resolved by the person instead with a pass that names it,
+  `final-approval human pass <sha>: known default-branch failure <check id>, <reason>`, which `herd-resolve` writes and
+  the PR description repeats, so the change can move on while the default-branch fix is tracked on its own. Once those
+  tasks are accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail`
+  already triaged, and the next action is the human again. The draft PR stays open throughout and simply gets more
+  commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
 un-archiving.
+
+## End-to-end tests: the red/green loop
+
+The gate proves a task compiles and its unit tests pass; it can't prove the feature works end to end. For projects whose
+end-to-end tests can run on an emulator in a worker (Driving Log's Maestro flows, say), the herd closes a red/green loop
+around the agents with them, in layers that get broader and more independent as the change matures. A project opts in
+with an `e2e` block in the manifest: four commands of its own, which the herd treats as opaque, like the gate. The
+block, together with emulator capacity on the host (see Emulators in workers), is what turns on the per-task layers (1
+to 3 below) for every change, whatever the project's final-approval kind; `final_approval.kind` only chooses the
+whole-change approval phase, and `kind: container` adds layer 4. `container` requires the block; manifest validation
+rejects `container` without it, and the project is inactive with that reason until it's fixed. Likewise, any human phase
+(`kind: human`, or `human_after: true`) requires `final_approval.instructions`, so the person always has a check to
+follow.
+
+The commands' contract, so the orchestrator can handle ids and results deterministically:
+
+- Every command runs in the repository root of the unit's clone, `boot` and `run` against the unit's own emulator
+  (`prepare` and `select` get no access to it), and `run` with `$HERD_E2E_ARTIFACTS` naming a fresh, empty directory it
+  may write to, created for that one `run` (no other command gets one; see below). It's a size-limited mount, capped in
+  total bytes and file count (`e2e.max_artifacts`, from host config), so a broken or runaway `run` fills its own
+  directory, not the host: hitting the cap fails that run, with the reason, like any other failed command. A run's
+  directory is deleted once the herd has read its results, so retries don't pile up; what the unit's verdict cites (the
+  failing tests' reports, screenshots and logs) is first copied to the change's evidence store under `/var/lib/herd/`,
+  which the orchestrator mounts read-only into the `triage` unit that handles the failure. It holds evidence only for a
+  failure not yet triaged, and each failure's copy is deleted as soon as its triage verdict is committed, or as soon as
+  the failure's record stops being effective without one (a `rerun`, a newer content tip), so a change never holds more
+  than its untriaged failures' evidence, each bounded by the per-run caps, however long it lives. A closed PR keeps its
+  evidence for `e2e.closed_evidence` (host config, default 14 days), since the change may be reopened, and then it's
+  deleted, as it is with the change branch; a change reopened after that takes the evidence-lost path below. If the
+  evidence is missing when triage is due (lost in a restore, say), the failure isn't triaged blind: the orchestrator
+  records `final-approval rerun: evidence lost` and the run happens again.
+- **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
+  part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
+  that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
+- **`prepare`** takes no arguments and is idempotent: it rebuilds the app from the working tree, leaving it at the path
+  `e2e.app` names (relative to the repository root), and exits 0 once it's built; any other exit fails the unit. It has
+  no access to the emulator: the herd copies the built app out of the tree, checking it's a regular file inside the
+  repository, into the sandbox as `$HERD_E2E_APP`, and the pinned `run` installs it. The herd runs `prepare` before
+  every `run`, so a rerun after an edit always tests the edited code, never the previously installed build.
+- **`select`** takes no arguments. It reads, on stdin, the paths that differ between a base commit and the working tree,
+  committed or not, one JSON string per line (a Git path may contain a newline, so a raw path per line would be
+  ambiguous; JSON can't carry bytes that aren't UTF-8, so the herd requires a change's paths to be valid UTF-8 and
+  commit validation rejects one that isn't, which also keeps the waiver digest's path framing exact), which the herd
+  computes itself (so the implementer can run it before its commit exists, and a reviewer runs it for the commit under
+  review); it can read the `e2e.tests` files, but nothing else of the change (see below). It prints the relevant tests
+  on stdout as JSON lines, one per test: `{"id": ..., "files": [...]}`, where `files` lists the repository paths that
+  define the test (all under `e2e.tests`). That's how the herd knows which selected tests a change adds or changes: a
+  test is change-local if any of its files is among the changed paths, which decides both the required red run and
+  whether step 2 below compares with the default branch. Every added or modified path under `e2e.tests` among the
+  changed paths must appear in at least one selected test's `files` (a deleted one is the tamper guard's business), so a
+  selector that doesn't recognize a new test or helper can't make its red/green proof disappear by selecting nothing.
+  Ids are unique, and each is a safe single path component (only letters, digits, `.`, `_` and `-`, and never `.` or
+  `..`), since it also names the test's evidence directory; output that breaks this is a failed attempt with reason
+  `e2e-contract`. A deterministic script, so selection is reviewable and repeatable and an agent can't quietly skip a
+  test. Any non-zero exit fails the unit.
+- **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
+  deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
+  (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
+- **`run`** reads test ids from stdin, one per line, so no id needs shell escaping. It first installs `$HERD_E2E_APP` on
+  the unit's emulator, then runs the ids, writing `$HERD_E2E_ARTIFACTS/results.jsonl`, one line per id
+  (`{"id": ..., "status": "pass" | "fail", "detail": ...}`), and per-test evidence (reports, screenshots, view
+  hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. Each id runs from clean app and device state (app data
+  cleared, device settings and media as `boot` left them), so results don't depend on order or on what ran before; the
+  herd relies on that when it reruns one failed id alone to tell a flake from a failure, and in red/green runs. It exits
+  0 if every test passed, 1 if any failed, anything else on an error that isn't a test result. Any other exit is a
+  command failure (an install that failed before any test ran, say): the unit fails with the reason, and whatever
+  partial results it left are ignored. For exits 0 and 1, the herd validates the results before believing them: valid
+  JSON, exactly one record for every requested id and none for any other, and statuses that agree with the exit code (0
+  means all pass, 1 means at least one fail). A violation means the script is broken, not the test: it's a failed
+  attempt with reason `e2e-contract`, so a script that keeps breaking escalates instead of passing a change by accident.
+
+**The harness comes from the default branch, never the change branch.** It decides whether the loop can go red at all,
+so an implementer that rewrote `select` to print nothing, or `run` (or any helper either loads) to report success, would
+switch the safety net off. So:
+
+- **A pinned, separate copy runs.** `e2e.harness` names a directory; the herd copies it whole from the default branch
+  and mounts it read-only at `/herd/harness/` in the unit. All four commands (`boot`, `prepare`, `select` and `run`)
+  must live in it, and their manifest paths are resolved against that copy (with `harness: e2e/`, `run: ./e2e/run.sh`
+  runs `/herd/harness/run.sh`), still with the repository root as working directory. The working tree's own harness
+  directory stays editable, since a task may need to change it, but it's never executed: everything under `e2e.harness`
+  is a built-in guarded path, so an edit is declared, and it takes effect only once it's merged.
+
+- **The boundary is enforced, not just checked.** `boot`, `select` and `run` run in a sandbox whose filesystem holds
+  only the harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
+  `e2e.tests` files, taken before `prepare` runs (so the build, which runs the change's own code, can't change what's
+  tested), in which every entry must be a regular file whose path stays under an `e2e.tests` root (a symlink or a
+  gitlink there fails the unit, since following it would test content the guard never sees), the test definitions under
+  test, and, for `run`, `$HERD_E2E_ARTIFACTS` and the copied `$HERD_E2E_APP`; `boot` and `run` also get the unit's
+  emulator. Nothing else of the change is readable to them, so they can't source a helper or load configuration from a
+  branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed paths itself and passes
+  them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts. Test
+  definitions are the change's too, and a test tool may run code from them (a Maestro flow's scripts, say), so inside
+  `run` the tests themselves execute as yet another user, without access to `$HERD_E2E_ARTIFACTS`, writing their raw
+  output to a scratch directory, a size-limited mount with the same per-run caps as the artifacts directory (hitting
+  them fails the run); each test id runs in a cgroup of its own, and when it exits the herd kills everything left in
+  that cgroup before `run` translates its output or starts the next id, so nothing a test started in the background
+  outlives it; only then does the pinned `run` translate that output into `results.jsonl` and the evidence, so no test
+  can write or replace the results. `prepare` is the exception by nature: building the app means running the working
+  tree's own build (`./gradlew`, its wrapper and build scripts), which is the change's code, so it runs with the whole
+  working tree, in the unit's container but outside that sandbox and with no access to the unit's emulator, so it can't
+  tamper with the device the trusted `run` tests on; its build configuration (the wrapper and build scripts) is guarded
+  (see Who commits, who pushes), while the app source it compiles isn't, and needn't be: whatever that builds is only
+  the app under test, which never reaches the results. So it can't touch what's trusted later, it runs as its own user
+  in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results directory in existence; when it exits, the herd
+  kills everything left in that cgroup (a background process it started included; the emulator isn't among them, since
+  `boot` started it in its own), and only then creates the artifacts directory for `run`, a new one for every run, so no
+  earlier run's evidence is lying around either, mounted into the sandbox alone, which runs as a different user that the
+  build's user can't write as. After `prepare`, the herd also compares the working tree's `e2e.tests` files with the
+  copy it took before: a build that changed them fails the unit, so a test can't be weakened for one run without a
+  commit that shows it. The change contributes the app being tested and its tests, nothing that decides selection or
+  reads results.
+
+- **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
+  default-branch version; manifest validation rejects a manifest where they do.
+
+- **The pin.** The copy is taken at the default-branch commit the change's branch is currently based on (its
+  merge-base), not the moving tip, and the rest of the e2e environment is pinned with it: the manifest's `e2e` block and
+  the toolchain image (by digest), both as they are at that same commit. So every unit of the change runs the same
+  `select` and `run`, with the same configuration and the same image, and an implementer's `E2E:` section is checked
+  against the same harness that produced it. The pin, all three together, moves only when update-branch merges a newer
+  default branch into the change, and only before the archive, and only to a commit whose manifest can still serve the
+  change's recorded `e2e-mode`: if the newer default branch has dropped the `e2e` block or the harness, or no longer
+  builds the emulator image a `container` mode needs, the merge goes ahead, provided every test definition the kept
+  environment can select still exists in the merged tree (otherwise the update escalates to `needs-human`, "the default
+  branch dropped what this change's end-to-end tests need"), but the pin stays where it was, no longer the branch's
+  merge-base (the scan derives it as the latest of the change's merge-bases whose manifest can serve the mode), so the
+  change keeps the last environment that can run its red/green proofs and final e2e for the rest of its life, and the
+  scan notes it on the status pane. And from the archive commit on, it's frozen, since an archived change can't go back
+  to *awaiting-approval*, and CI's full suite covers anything a later merge brings in. When the merge-base moves before
+  the archive, whether or not the pin moves with it, the change's `container`-phase pass is no longer current, even if
+  the merge is otherwise bookkeeping: that pass was earned against the old baseline and possibly the old harness, so the
+  final e2e runs again (which is also when a waiver that lapsed on the merge gets its test run). This is the one
+  exception to clean merges keeping final-approval records; the `human` phase isn't affected on its own, but under
+  `container+human` a human pass counts only when it's newer than the current container pass (that's what `human_after`
+  means), so once the container phase reruns, the person checks again after it. The `container` record names its
+  merge-base for this (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`).
+
+The layers:
+
+1. **Inner loop: the implementer.** When a task's diff selects any tests, they're part of the implementer's gate for
+   that task: it runs them, reads the results, fixes what's red and reruns until they're green, before it commits. This
+   is where the loop does its work: the agent gets the same feedback a person would, in the same unit, as often as it
+   needs.
+2. **Red/green proof.** A test the task adds or changes has to show that it actually tests the change: it must fail
+   against the app as it was before the task, and pass on the task's own commit. "Before the task" is the task's
+   **baseline**: the parent of the task's first implementation commit, fixed for the life of the task. A revision after
+   a rejected attempt starts on top of the rejected commit, but keeps the same baseline, so the task's earlier changes
+   stay in its selection and its red run stays against the app without any of them. Selection for the task compares that
+   baseline with the working tree. The red run builds the baseline's tree untouched, so `prepare` builds exactly the old
+   app even if a build input happens to match `e2e.tests`, and the task's versions of the `e2e.tests` files reach only
+   `run`, through the test snapshot (the baseline has the old test or none): `run` runs the new test against the old
+   app. The implementer runs both and records the results in an `E2E:` section of its commit message, in the fixed
+   format of `Guarded:`: a `- <test id> green` line for **every** test in the effective selection (what `select`
+   returned, minus tests with an effective `e2e-waive`, which aren't run; each of those gets a `- <test id> waived` line
+   instead, so a waiver stays visible), since the green run is on the commit that carries the section (which a commit
+   can't name by its own SHA, so it's implicit); an additional `- <test id> red <baseline sha>` line for each
+   change-local test; and an additional `- <test id> flaky xN` line for each test that flaked along the way, N being how
+   many times. Validation checks that every test in the effective selection has its green line (or, with a matching
+   `escalate` request, its `escalated` line; see below), every waived one its waived line, every change-local test its
+   red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and the task isn't done.
+   The exception is a **test-maintenance task**, one whose own changes stay inside `e2e.tests` (fixing a flaky test,
+   refactoring a helper), counting only what its implementation commits change from the baseline, so neither the
+   checkbox every implementer commit flips in `tasks.md` nor a reviewer's verdict in `review-notes.md` after a rejection
+   counts against it: it doesn't change the app, so there's no behavior for a red run to prove, and its change-local
+   tests instead must pass on the baseline too, recorded as `- <test id> green <baseline sha>` in place of the red line.
+   Validation accepts that line only when the task's own changes stay inside `e2e.tests`, and the task review checks
+   that `tasks.md` describes the task as test maintenance and that the change doesn't weaken what the test checks.
+3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
+   task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
+   `E2E:` section is a revise verdict.
+4. **Final e2e: `final_approval.kind: container`.** In *awaiting-approval*, an `e2e` unit (a reviewer unit kind) runs
+   every test `select` picks for the whole change (from its current merge-base to its branch tip, so a clean
+   update-branch merge's result is what's compared, not the pre-merge content tip) on one fresh emulator. A pass is
+   recorded as a `container`-phase final-approval pass, a bookkeeping line in `review-notes.md` (see The effective
+   final-approval record); a failure is recorded as a `container`-phase `fail` with the run's results, and a separate
+   `triage` unit then applies the test-or-implementation rule below (see Final approval). The `e2e` unit itself only
+   runs the tests and records the verdict. `final_approval.human_after: true` adds a person's pass after the unit's, for
+   checks only a real device can do.
+5. **CI: the full suite.** The project's CI runs every end-to-end test as a required check, independent of the herd's
+   selection and of its emulator setup. A failure goes through Failing checks before the archive like any other, with
+   the job's artifacts handed to the triage unit (see below).
+
+**Test or implementation?** When a test fails, whoever triages it (the implementer in its own loop, the reviewer, or a
+`triage` unit after the final e2e, a person's final-approval failure, or CI) follows the same order, so the answer comes
+from evidence rather than taste:
+
+1. **Rerun it.** If it passes on a rerun, it's intermittent, but that alone doesn't say whose: for a test this change
+   didn't add or change, the triager also runs it on the merge-base build (step 2's) `caps.flaky_retries` + 1 times. If
+   it both passes and fails there, the flakiness predates the change: it's flaky, so record it, retry, change nothing.
+   If it fails every time there, it was already broken, and step 2's pre-existing path applies (fix the default branch
+   or waive). If it passes every time there, this change made it intermittent, which is a regression like any other
+   failure the change caused: go on to 3. A change-local test that passes on a rerun is flaky and the change's own. Each
+   flake leaves a fixed record, written by whoever saw it, since reruns happen inside disposable units: the implementer
+   lists it in its `E2E:` section (`- <test id> flaky xN`), a task review or `triage` unit adds
+   `e2e-flaky <test id> <sha> xN` to its verdict commit, N counting every flaky outcome in the unit, not just whether
+   there was one, and CI triage records `ci-triage "<check>" <sha> <run key> "<test id>": flaky xN`. Flaky outcomes are
+   counted from those records per test per change, summing the Ns (CI's keyed by check and test id together, so a
+   non-test failure, `"-"`, in one check never shares a count with another check's), and when the count reaches
+   `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying again, so an
+   intermittently failing test can't cycle forever. Units enforce the cap as they go, since reruns happen inside one
+   unit: the change's recorded count plus the unit's own flakes so far must stay below the cap before another rerun, and
+   when it doesn't, the unit stops retrying (an implementer commits what it has with an `escalate` request, "flaky
+   test"; a reviewer or triage unit records its flakes and escalates); for a test the change didn't add or change, the
+   person fixes the test or its environment in a separate change and resolves the stop once that's merged (update-branch
+   comes first, as for a "fails on the default branch too" stop); for a change-local test, the flakiness is this
+   change's own, so the person resolves the stop by adding a task to stabilize it to this change's `tasks.md`
+   (`herd-resolve` helps), or fixes the environment if that's the cause. Either way the test's flake count starts over
+   from that resolution. A flaky test can't be waived: a waiver needs a failure on the merge-base to point at, and a
+   flake may not have one.
+2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
+   the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
+   branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
+   this change's. A test this change adds or changes (under `e2e.tests`) is meant to fail on the old build, or may not
+   exist there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes on the
+   merge-base, this change caused the failure: go on to 3. If it fails there too, it's rerun there once more, since a
+   single run can't tell a broken test from a flaky one: passing on that rerun makes it flaky (step 1's record and count
+   apply), and failing again means the test was already broken, and fixing it isn't this change's job. So that can't
+   loop, the triager escalates to `needs-human` ("fails on the default branch too"), and the person either fixes the
+   default branch in a separate change and resolves the stop once it's merged, (resolving that stop makes update-branch
+   the next action before any retry, whatever the change's state: see Failing checks before the archive), or waives the
+   test for this change with `herd-resolve`, which records `e2e-waive <test id> <default sha> <files digest>: <reason>`,
+   naming the merge-base commit the test was found failing on and a digest of the test's `files` (`sha256:` and the
+   lowercase hex SHA-256 over the files sorted by path bytewise, each file framed as: its Git file mode in octal
+   (`100644` or `100755`) and a newline; its path's length in bytes in decimal, a newline and the path's UTF-8 bytes
+   (paths are UTF-8, see `select`); a newline; its content's length in bytes in decimal, a newline and the content's
+   exact bytes, so `herd-resolve` and the scan compute the same value); the herd's own e2e runs for the change then skip
+   it. The waiver covers exactly that failure and lapses on its own when either changes: once the test's files on the
+   branch no longer match the digest (a later task touched the test, so it's change-local again and owes its red/green
+   proof), or once the change merges a newer default branch (the baseline moved, so the comparison runs again). A lapsed
+   waiver means the test runs, and if it still fails on the default branch, a fresh escalation. A waiver doesn't touch
+   CI: the required check still fails until the default branch is fixed, which keeps the merge blocked on the real
+   problem, but its failures in the waived test are triaged as `waived` rather than escalated again (see Failing checks
+   before the archive), so the rest of the change can still progress while it waits.
+3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
+   gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
+   code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
+   proposer's call.
+
+The implementer can't write `review-notes.md`, so when its own triage ends in either stop (in step 2 or 3), it doesn't
+escalate itself: it commits the task's work as it stands, since the failure may depend on it, with the checkbox flipped
+to `[r]` as for a request and an `escalate` request for the test (see Who commits, who pushes). Its `E2E:` section lists
+that test as `- <test id> escalated` in place of its green line, which validation accepts only with a matching
+`escalate` request; everything else in the gate still has to pass. The task review reruns the test on that commit (and
+on the merge-base, for a pre-existing claim) and answers `needs-human` when the evidence holds, or `refused` with what
+it found; either way the task goes back to `[ ]`, and the next attempt starts on top of that commit, as after any
+rejection. An escalation isn't a failed attempt, so this doesn't spend `caps.failed_attempts`.
+
+Updating a test to make it pass is always explicit: a project's end-to-end test files are named by `e2e.tests` (for
+Driving Log, `maestro/**`), which makes them built-in guarded paths, so any commit that changes one declares it under
+`Guarded:` with what justifies it: the spec delta that changed the behavior it asserts, or, for a test-maintenance task,
+that task and the evidence it leaves behavior alone (the green run on the baseline), and the task review has to accept
+it (see Who commits, who pushes).
+
+**CI artifacts for triage.** A triage unit for a failed CI check gets the job's logs and uploaded artifacts (the
+end-to-end reports and screenshots, for instance): the orchestrator fetches them through the GitHub App (which therefore
+has *Actions* read access) and mounts them read-only into the unit, like provided inputs; the triage unit itself has no
+GitHub access. That output crosses into a model-backed worker, so only some of it does: what the manifest lists in
+`e2e.ci_artifacts`, as pairs of a job and an artifact name. A job's logs are attributable to it, so a listed job's logs
+can be passed on once the job is checked secret-free. That takes more than the absence of `secrets.*`: the job
+references no secrets and runs in no deployment environment; its token has no write permission and no `id-token`
+(read-only `contents` at most); every `actions/checkout` sets `persist-credentials: false`, so test code can't copy the
+token into an artifact; it calls no reusable workflow; and the workflow isn't triggered by `pull_request_target`; and it
+runs on a GitHub-hosted runner, which the workflow file can only suggest (a `runs-on` label from GitHub's own fixed set,
+not `self-hosted` or a custom label, nor an expression that could resolve to one) and which the orchestrator verifies
+for the very job it fetches from, through the Actions API's record of the job's runner group (GitHub's hosted pool, not
+a self-hosted group, since a self-hosted runner can carry any label), withholding the output when that can't be
+established, which is ephemeral and holds nothing of anyone's beyond the job, whereas test code on a self-hosted runner
+could read the runner host's own files and credentials and copy them into its output. And it holds for every job in the
+workflow, not just the listed one: any job in a run can download what its siblings uploaded, so test code in a
+secret-free job could otherwise copy a secret-bearing sibling's artifact into its own output. Anything the check can't
+prove from the workflow file disqualifies the job. Artifacts aren't: GitHub scopes them to the whole workflow run and
+doesn't record which job uploaded one, so a listed artifact is passed on only if the run's workflow file shows that
+exactly one job uploads an artifact by that name and it's the listed, secret-free job; an artifact that can't be
+attributed that way is never mounted. `herd doctor` checks all of this against the default branch's workflows, and the
+orchestrator re-checks it against the workflow file of the very run it fetches from. Downloads are capped in size, and
+extraction is bounded while it streams, since a small, highly compressed artifact could otherwise fill the disk: total
+extracted bytes and file count are capped, only regular files are written (no symlinks, hard links or devices), and no
+entry's path may escape the mount. Hitting a limit drops that artifact and tells the triager it was too large. Any other
+failed check reaches triage only as its name and conclusion; without the artifacts the triager reasons from far less,
+which is why the project's end-to-end CI job should be one it can list.
+
+**Emulators in workers.** The project's toolchain image includes what `boot` and `prepare` need (an emulator and a
+system image, for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container
+by `GroupAdd=keep-groups`, as for the GPU). Each such unit boots its own emulator (with `boot`) and throws it away with
+the unit, like its clone: sharing one would carry app data and device state from one unit into the next. Emulators are
+heavy (a few GB of memory and a few cores each, on the host that also serves the desktop and the local model server), so
+host config caps how many run at once (`e2e.max_emulators`); a unit that needs one waits for capacity, and its wait
+doesn't count against its timeouts. That capacity is also the switch: `e2e.max_emulators` defaults to **0**, and the
+operator raises it only once the emulator probe in Build plan step 2's reality check passes on the host. While it's 0
+(and on a host without KVM, where it must stay 0), no e2e layer runs at all, whatever a project's `e2e` block says: no
+per-task loop, no red/green proof, no `e2e` units. Capacity is re-read every scan, but a change can't switch mode
+halfway: whether its e2e layers apply is decided once, when its first unit is dispatched, from the manifest **at the
+change's pinned merge-base** (see The pin), not the current default branch, so the mode never names an `e2e` block,
+harness or image the pinned commit doesn't have (no block there means `off`), and recorded by the orchestrator as a
+bookkeeping line in `review-notes.md`, which holds for the change's life. The line fixes the final-approval kind at the
+same moment, since the two must agree (an "off" change can't take a container pass):
+`e2e-mode <on|off> approval <none|human|container|container+human>`. A later change to the manifest's `final_approval`
+applies to new changes only, so a change in flight never finds itself owing a phase it can't run. A change started with
+e2e on keeps owing its red/green proofs and its reviews' reruns: if capacity later drops to 0, its units that need an
+emulator wait (the status pane says so, and it alerts once the wait passes `alerts.infra_after`) rather than skip. A
+change started with e2e off stays off, with CI covering it, even if capacity appears midway, so no accepted task is left
+without a proof it was never asked for. A project with an `e2e` block then gets no emulator work, relies on CI, plus a
+person's check where its kind is `human` (none where it's `none`), and a change whose pinned approval kind (from the
+manifest at its merge-base) includes `container` waits at its first dispatch, shown as "waiting for emulator capacity"
+and alerted once the wait passes `alerts.infra_after`, rather than starting with a mode it can't honor. Capacity is
+decided per change, not per project, because a change's pinned kind can differ from the manifest's current one.
 
 ## Following up on PR review
 
@@ -758,16 +1196,17 @@ implementation is escalated, not triaged: scope is the proposer's call.
 
 ## Keeping up with the default branch
 
-No rebasing (that would rewrite SHAs and break the reviewer's pins and the additive-history rule). Instead,
-branch protection requires PR branches to be **up to date** before merging, and the orchestrator uses GitHub's
-update-branch (`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`, a merge commit) when the PR is
-behind. That merge triggers the CI checks again, which is where two concurrent proposals that both touched a shared
-file (a dependency catalog, `CLAUDE.md`, a shared spec) actually collide — per-task testing alone won't catch that.
-A conflicting update-branch escalates to `needs-human`; a CI failure after the update gets a fix task (see Failing
-checks before the archive), and escalates past `caps.gate_fixes` of them. A clean update-branch merge that brings in no
-change to the change's own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or
-final-approval pass stale: CI re-runs the gate, and the human re-runs final approval at their discretion. One that does
-touch the change's files sends it back through holistic review against the merged tip.
+No rebasing (that would rewrite SHAs and break the reviewer's pins and the additive-history rule). Instead, branch
+protection requires PR branches to be **up to date** before merging, and the orchestrator uses GitHub's update-branch
+(`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`, a merge commit) when the PR is behind. That merge
+triggers the CI checks again, which is where two concurrent proposals that both touched a shared file (a dependency
+catalog, `CLAUDE.md`, a shared spec) actually collide — per-task testing alone won't catch that. A conflicting
+update-branch escalates to `needs-human`; a CI failure after the update gets a fix task (see Failing checks before the
+archive), and escalates past `caps.gate_fixes` of them. A clean update-branch merge that brings in no change to the
+change's own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or a `human`-phase
+final-approval pass stale (a `container`-phase pass is the exception before the archive, since the merge moves the
+change's merge-base: see The pin in End-to-end tests): CI re-runs the gate, and the human re-runs final approval at
+their discretion. One that does touch the change's files sends it back through holistic review against the merged tip.
 
 ## Cleaning up after merge
 
@@ -841,11 +1280,13 @@ projects:
     slots: [gpu, gpu-private]           # optional: the slots this project may use
 ```
 
-A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
-has four that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release
-notes), `triage` (PR review findings and final-approval failures into tasks) and `archive` (mostly running
-`openspec archive`). A slot that doesn't list a role or kind never runs it, and a slot with `projects` runs only
-those projects' units. Slots that share a GPU share it in turn: the model server queues their requests.
+A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer has
+five that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release notes),
+`triage` (PR review findings and final-approval failures into tasks), `archive` (mostly running `openspec archive`) and
+`e2e` (the final end-to-end run, which only records pass or fail with its results; a failure is then handed to a
+`triage` unit, see End-to-end tests: the red/green loop). A slot that doesn't list a role or kind never runs it, and a
+slot with `projects` runs only those projects' units. Slots that share a GPU share it in turn: the model server queues
+their requests.
 
 - **The slots are the capacity.** The scheduler gives each unit to a free slot that can run its kind for its project,
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
@@ -865,17 +1306,20 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   base name) without a shared label. A holistic review spans commits that may come from several models, so excluding all
   of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
-  and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
-  different model. A project with `locality: host` may use only slots whose every backend is local, and local means the
-  herd's own model server: an `ollama` backend's `endpoint` must be that server's address on the internal network, which
-  validation enforces on every reload for every backend, so repointing one at a remote server is rejected rather than
-  quietly exporting code, for every role and unit kind; a config that maps one of its slots to a cloud or rented
-  backend, including by repointing a backend later, fails this check, so its code can't leave the host through a config
-  change. The policy covers what the herd sends: its workers' model traffic. The planner pane is the person's own
-  session, outside the herd's control, so for a `locality: host` project the herd doesn't start a cloud planner there by
-  default: the pane opens a plain shell, with a note saying why, and the person can start whatever local agent they like
-  in it. A project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any
-  of its changes start, rather than stalling one after its first task.
+  and every reviewer kind the project can dispatch (`e2e` only when its manifest has `final_approval.kind: container`,
+  or when an open change's pinned approval kind, recorded in its `e2e-mode` line or, before first dispatch, read from
+  the manifest at its merge-base, still requires a container pass, since a change keeps the approval kind it started
+  with), and for each implementer backend among them, some slot must offer a `task` review on a different model. A
+  project with `locality: host` may use only slots whose every backend is local, and local means the herd's own model
+  server: an `ollama` backend's `endpoint` must be that server's address on the internal network, which validation
+  enforces on every reload for every backend, so repointing one at a remote server is rejected rather than quietly
+  exporting code, for every role and unit kind; a config that maps one of its slots to a cloud or rented backend,
+  including by repointing a backend later, fails this check, so its code can't leave the host through a config change.
+  The policy covers what the herd sends: its workers' model traffic. The planner pane is the person's own session,
+  outside the herd's control, so for a `locality: host` project the herd doesn't start a cloud planner there by default:
+  the pane opens a plain shell, with a note saying why, and the person can start whatever local agent they like in it. A
+  project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its
+  changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -913,9 +1357,12 @@ session that displays it runs on the host (see Launching and watching the herd).
 orchestrator starts one container per unit of work (it has to, to mount that unit's clone), through the Podman API,
 from a per-project, per-role image:
 
-- **Toolchain image** — built from the project's `.herd/toolchain.Dockerfile` (read from the default branch),
-  tagged with the hash of that file, rebuilt when it changes. Contains the language runtimes and SDKs the gate
-  needs. Must be Debian/Ubuntu-based so the role layer can install onto it.
+- **Toolchain image** — built from the project's `.herd/toolchain.Dockerfile` and its build context at a default-branch
+  commit, tagged with a hash of that whole context plus the base image's digest, and rebuilt only when that hash
+  changes. Workers normally use the image for the default branch's tip; a change with end-to-end tests uses the one for
+  its pinned commit (see End-to-end tests), built on first need, and an image is kept while any open change pins it.
+  Contains the language runtimes and SDKs the gate needs. Must be Debian/Ubuntu-based so the role layer can install onto
+  it.
 - **Role layer** — generic, from the herd repo, applied with `FROM <toolchain image>`:
   - *implementer*: the implementer harness, `git`, the `openspec` CLI (gates typically run `openspec validate`),
     and the generic `SYSTEM_PROMPT.md` plus the project's optional addition. Gets its clone as a volume; reads its
@@ -966,12 +1413,15 @@ network instead.
   layer (herd), not something an agent can do itself — and since `.herd/` is read from the default branch and
   off-limits to worker commits, an agent can't do it through its own branch either.
 - **No filesystem access outside the project.** The only mounts are the unit's own clone, the project's declared cache
-  volumes, and (when provided) the read-only inputs volume. No host bind mounts (not the host checkout, not `$HOME`, not
-  the Podman socket), no access to other units' clones, other projects' volumes or the bare mirrors. The container's
-  root filesystem is read-only apart from those mounts and a scratch `tmpfs`. No provider key or other long-lived secret
-  reaches a worker. Its only credential is its unit's token, which is still a secret: a short-lived bearer credential
-  for model and proxy access, valid only until its unit's revocation or expiry. The orchestrator redacts it from the
-  unit's log, and commit validation rejects a commit that contains it.
+  volumes, (when provided) the read-only inputs volume, and, for a unit with end-to-end work, the e2e mounts End-to-end
+  tests defines: the pinned harness copy and the `e2e.tests` snapshot (both read-only), the copied app, each run's
+  size-limited artifacts directory, and the unit's emulator (`/dev/kvm`), each visible only to the commands that need
+  it. No host bind mounts (not the host checkout, not `$HOME`, not the Podman socket), no access to other units' clones,
+  other projects' volumes or the bare mirrors. The container's root filesystem is read-only apart from those mounts and
+  a scratch `tmpfs`. No provider key or other long-lived secret reaches a worker. Its only credential is its unit's
+  token, which is still a secret: a short-lived bearer credential for model and proxy access, valid only until its
+  unit's revocation or expiry. The orchestrator redacts it from the unit's log, and commit validation rejects a commit
+  that contains it.
 - **Caches** are per project *and* per role, so one project's worker can never read or poison another's. A project
   that declares none gets the strict per-clone behavior (slower, nothing shared).
 - Network egress is the unit's model backend plus the manifest's `egress` list — not open internet (see Network
@@ -1528,6 +1978,8 @@ timeouts:                              # per unit kind; a unit past either is ki
   holistic:  { wall: 30m, quiet: 10m }
   triage:    { wall: 20m, quiet: 10m }
   archive:   { wall: 10m, quiet: 5m }
+  e2e:       { wall: 60m, quiet: 15m }   # emulator boot and a full selection; waiting for one doesn't count;
+                                       # a running prepare or run counts as activity
 budget:
   currency: USD                        # every paid backend's price (per token or per hour) is in this currency
   timezone: UTC                        # where a billing month starts and ends
@@ -1542,15 +1994,22 @@ logs:
   event_log_keep: 90d                  # the event log, rotated daily
 disk:
   warn_below: 50GB
+e2e:
+  max_emulators: 0                     # emulators at once across all units; 0 (the default) turns e2e off
+                                       # until the emulator probe passes (see End-to-end tests)
+  max_artifacts: { bytes: 2GB, files: 10000 }   # per run's $HERD_E2E_ARTIFACTS; past it the run fails
+  closed_evidence: 14d                 # how long a closed PR keeps its untriaged failures' evidence
 ```
 
 The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
 
-- **Unit timeouts.** A unit is killed when it runs past its kind's `wall` time, or goes `quiet`: no log output
-  and no model call for that long. The network proxy sees every model call by unit token, so it reports each
-  unit's last call to the orchestrator. A killed unit is a failed attempt (reason `timeout`, see Failed
-  attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its backend stopped
-  answering is an `infra` failure instead, and doesn't count.
+- **Unit timeouts.** A unit is killed when it runs past its kind's `wall` time, or goes `quiet`: no log output, no model
+  call and no `prepare` or `run` running for that long (those two may legitimately stay silent for many minutes, so
+  while one runs the unit isn't quiet; the `wall` time still bounds it; a silent `boot` or `select` gets no such
+  allowance). The network proxy sees every model call by unit token, so it reports each unit's last call to the
+  orchestrator. A killed unit is a failed attempt (reason `timeout`, see Failed attempts), so a task that keeps hanging
+  escalates instead of looping. A unit killed because its backend stopped answering is an `infra` failure instead, and
+  doesn't count.
 - **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
   the control socket, to reserve the call's maximum cost: an upper bound on its input tokens plus the requested output
   limit, priced from the backend's `price` in host config (per million input and output tokens). A rented backend is
@@ -1691,6 +2150,10 @@ Steps marked **(manual)** need a human.
      acceptance rate is close enough to the cloud backend's that the extra rounds cost less than they save.
    - **The host copes:** the gate (a Gradle build, say) and the model running at once don't run the host out of
      RAM or throttle it.
+   - **Emulators are stable in a worker:** for a project with an `e2e` block, a rootless worker container with
+     `/dev/kvm` boots the project's emulator and runs its full end-to-end suite ten times; boot time, flake rate and
+     memory are recorded, and `final_approval.kind: container` is enabled only if the flake rate is low enough to
+     trust a red result.
    - **Switching is affordable:** if the slots use two local models, the measured time to swap one for the other
      on the card is small next to a task's time; if not, use one local model, or keep both resident if they fit.
 
@@ -1720,9 +2183,9 @@ Steps marked **(manual)** need a human.
    `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
    `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
    repositories, with repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit
-   statuses* and *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`),
-   and not *Workflows*; and its private key, read by the orchestrator only; and, for each rented machine, its key or
-   WireGuard private key in `~herd/secrets/machines/`.
+   statuses*, *Actions* and *Administration* (read only: CI results for the state machine, CI logs and artifacts for
+   triage, branch protection for `herd doctor`), and not *Workflows*; and its private key, read by the orchestrator
+   only; and, for each rented machine, its key or WireGuard private key in `~herd/secrets/machines/`.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
@@ -1740,14 +2203,15 @@ Each waits for the point where it can be answered with evidence rather than gues
 - **At Build plan step 5** (the herdr bridge): the exact command for attaching a client. herdr's docs (read
   2026-10-04) give the rest: `pane.report_agent`, `pane.report_metadata`, `herdr notification show`.
 - **After the smoke test** (Onboarding a project, step 7):
-  - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each). Projects can override
-    them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see The project
-    manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same way.
+  - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each), and `flaky_retries` (2).
+    Projects can override them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see
+    The project manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same
+    way.
   - Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
     too, once the reality check passes (Build plan step 2): decide by replaying accepted tasks (see Models).
 - **Once a rented backend is in use:** whether the herd should start and stop rented machines itself through the
   provider's API (on demand, stopped after idle), which provider, and how closely health-check hours track the bill.
 - **When a project needs it:**
   - A second workflow besides OpenSpec.
-  - Automating final approval for projects whose end-to-end tests can run in a container (e.g. an emulator with KVM
-    passthrough), as a `final_approval.kind: container` with its own image.
+  - Whether `e2e.select` should also let the reviewer add tests it judges relevant beyond the script's choice, once
+    the first project has data on what the script misses.
