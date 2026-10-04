@@ -76,7 +76,7 @@ straight to a project.
   - **Your planner pane**: your agent (Claude Code by default), where you propose, mark ready and resolve stops.
     The herd never touches it; herdr resumes it after a restart.
   - **One pane per running step**, showing that worker's log. They're read-only; the workers aren't interactive.
-  - **An attention pane** while a change waits on you, highlighted by herdr, saying what's wrong and what to run
+  - **An attention pane for each change waiting on you**, highlighted by herdr, saying what's wrong and what to run
     in your planner pane.
 
 `herd status` shows the same list in any terminal. When you're not attached, alerts about what's waiting on you

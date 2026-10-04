@@ -174,8 +174,10 @@ The herd can start observing a new project at any time, without restarting anyth
 
 - **Registering.** `herd init` registers the project it onboards. `herd add <repo-url>` registers a project that already
   has `.herd/` (for example, on a second host). Both write `/etc/herd/config.yaml` and poke the orchestrator (see The
-  herd's own account). The orchestrator gets that file **read-only**, so registering stays a host-side, human action
-  that no agent or orchestrator bug can widen.
+  herd's own account). The orchestrator gets that file **read-only**, so registering stays a host-side action that no
+  worker agent or orchestrator bug can widen. The operator's planner agent runs under their account and could run
+  `herd add` too, but it's the person's own supervised session: a config change through it is theirs to approve, like
+  any other command it runs.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
   a `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
   builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
@@ -799,11 +801,11 @@ network instead.
   and secrets).
 
 **Network and secrets.** Each unit gets its **own** internal Podman network (`--internal`, no route out), created when
-the unit starts and removed when it ends, holding only that worker and the network proxy (attached with `podman network
-connect`). No two workers share a network, so a compromised worker has no peer whose traffic it could sniff or redirect,
-and no other unit's token to steal; workers also run with every Linux capability dropped (`--cap-drop=all`). The
-plain-HTTP hop between a worker and the proxy below is therefore private to that unit. The worker's only way out is the
-proxy, which serves two purposes:
+the unit starts and removed when it ends, holding only that worker and the network proxy (attached with
+`podman network connect`). No two workers share a network, so a compromised worker has no peer whose traffic it could
+sniff or redirect, and no other unit's token to steal; workers also run with every Linux capability dropped
+(`--cap-drop=all`). The plain-HTTP hop between a worker and the proxy below is therefore private to that unit. The
+worker's only way out is the proxy, which serves two purposes:
 - **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`,
   or the harness's equivalent, points at the gateway, with a placeholder key). The gateway checks the unit's token,
   swaps in the backend's real key and calls the provider over HTTPS. It also sets the provider endpoint and the
@@ -825,15 +827,19 @@ proxy, which serves two purposes:
   its proxy and credentials in `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java
   disables Basic auth for HTTPS tunnels by default.
 
-The orchestrator registers each unit's token with the proxy (project, role, backend, egress list) when it starts
-the unit, and revokes it when the unit ends. That control interface isn't on any network a worker can reach: it's
-a Unix socket in a volume mounted only into the orchestrator and the proxy, so a worker can't register its own
-token or widen its own egress. The keys live in the herd user's files and are mounted into the proxy
-alone, so the orchestrator is never given one. That isn't a hard wall: the orchestrator holds the `herd` user's
-Podman socket, which could read any of that user's containers, the proxy included. The socket is the real trust
-boundary, which is why it belongs to an account that holds nothing but the herd, and why the orchestrator runs no
-model and no project code. A firewall per container (Hydra's iptables approach) doesn't fit:
-rootless Podman's networking runs inside the user's own namespace, where host rules can't tell containers apart.
+The orchestrator registers each unit's token with the proxy (project, role, backend, egress list) when it starts the
+unit, and revokes it when the unit ends. Tokens don't depend on that revocation: each expires on its own after its unit
+kind's `wall` timeout plus a short margin (see Monitoring), and on expiry or revocation the proxy also closes the unit's
+open connections and tunnels. Every orchestrator start begins a new epoch, and registrations carry it; before
+reconciling orphaned workers, a starting orchestrator tells the proxy to drop every registration from earlier epochs, so
+a crash can't leave a running worker with a live token. That control interface isn't on any network a worker can reach:
+it's a Unix socket in a volume mounted only into the orchestrator and the proxy, so a worker can't register its own
+token or widen its own egress. The keys live in the herd user's files and are mounted into the proxy alone, so the
+orchestrator is never given one. That isn't a hard wall: the orchestrator holds the `herd` user's Podman socket, which
+could read any of that user's containers, the proxy included. The socket is the real trust boundary, which is why it
+belongs to an account that holds nothing but the herd, and why the orchestrator runs no model and no project code. A
+firewall per container (Hydra's iptables approach) doesn't fit: rootless Podman's networking runs inside the user's own
+namespace, where host rules can't tell containers apart.
 
 ## The herd's own account
 
@@ -865,12 +871,12 @@ like every other state:
 2. **Provide, preferred: commit it.** If the content is fine to live in the repo, the human commits it to the
    change branch at a path inside the project, with a line in the change's `inputs.md` saying where it came from.
    From then on it's ordinary project content.
-3. **Provide, when it can't be committed** (too large, licensed, or not to be published): the human runs `herd provide
-   <project> <change> <file>...`, which copies the files into the shared request area, where the orchestrator moves them
-   into a per-change **inputs volume** (never a host bind mount), and records each file's name, SHA-256 and origin in
-   `inputs.md`, committed to the branch. The orchestrator mounts that volume **read-only** at `.agent-inputs/` inside
-   the unit's clone (the herd adds it to the clone's `.git/info/exclude`, so the project needn't gitignore it), and only
-   for units of that change. A file whose hash doesn't match `inputs.md` is not mounted.
+3. **Provide, when it can't be committed** (too large, licensed, or not to be published): the human runs
+   `herd provide <project> <change> <file>...`, which copies the files into the shared request area, where the
+   orchestrator moves them into a per-change **inputs volume** (never a host bind mount), and records each file's name,
+   SHA-256 and origin in `inputs.md`, committed to the branch. The orchestrator mounts that volume **read-only** at
+   `.agent-inputs/` inside the unit's clone (the herd adds it to the clone's `.git/info/exclude`, so the project needn't
+   gitignore it), and only for units of that change. A file whose hash doesn't match `inputs.md` is not mounted.
 4. **Resume.** The human marks the `needs-human` request resolved; the next scan picks the proposal back up.
 
 This path is for content, never credentials. A task that needs a secret escalates and stays with the human; it
@@ -901,8 +907,9 @@ instance*: the orchestrator, the active worker containers, and the herdr workspa
     reports it to herdr as `working` (`pane.report_agent`) and sets its title to
     `<change> · <role> · task <n> · round <r>`, with the proposal's state as a named token
     (`pane.report_metadata`). Closed when the unit ends.
-  - **An attention pane**, only while one of the project's changes waits on a person. It's reported as `blocked`,
-    so herdr highlights it like an agent waiting for input, titled with the change and the reason; it shows the
+  - **An attention pane per waiting change**, only while that change waits on a person, so two stops in one project
+    show as two panes. Each is reported as `blocked`, so herdr highlights it like an agent waiting for input, titled
+    with its change and reason; it shows the
     details and the next step (for example, `/herd-resolve <change>` in the planner pane beside it). Closed once
     the change moves on.
 
@@ -940,10 +947,10 @@ so nothing raised while it was down is missed, as long as it was down for less t
 cursor older than the oldest alert left resumes from that oldest alert. Delivery is at-least-once: a crash between
 showing an alert and saving the cursor shows that one alert again. Without a cursor (first run, or lost) it shows only
 the last hour's alerts rather than replaying the whole queue; the status pane still lists everything waiting. The
-orchestrator drops queued alerts older than 7 days, far beyond the replay window. With herdr's `[ui.toast] delivery =
-"system"`, that goes through the OS notification service even when no client is attached, as long as herdr's server is
-running in the operator's session. The `herd` user has no desktop session to notify, so it sends only push alerts (see
-Monitoring).
+orchestrator drops queued alerts older than 7 days, far beyond the replay window. With herdr's
+`[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached, as long
+as herdr's server is running in the operator's session. The `herd` user has no desktop session to notify, so it sends
+only push alerts (see Monitoring).
 
 **The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit pushed,
 review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`, rotated daily and kept for 90
