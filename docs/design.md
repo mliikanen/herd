@@ -7,10 +7,11 @@ workflow doc for its people (see What a project knows about the herd).
 ## Goal and division of labor
 
 Human time is spent at three points only: writing/refining a proposal (interactive, as today), the project's final
-approval step if it has one (e.g. running end-to-end tests by hand, see Final approval), and merging the resulting
-PR. Everything else — implementing `tasks.md` item by item, reviewing each task, iterating on review feedback,
-fixing final-approval failures, archiving the spec delta, and opening the PR — runs unattended. A proposal that
-the pipeline can't finish on its own stops in a `needs-human` state (see Escalation) instead of looping.
+approval step if a person performs it (e.g. running end-to-end tests by hand; a `container` approval runs unattended,
+see Final approval), and merging the resulting PR. Everything else — implementing `tasks.md` item by item, reviewing
+each task, iterating on review feedback, fixing final-approval failures, archiving the spec delta, and opening the PR —
+runs unattended. A proposal that the pipeline can't finish on its own stops in a `needs-human` state (see Escalation)
+instead of looping.
 
 - **Proposer**: a human with an interactive cloud SOTA agent. Unchanged, plus one step: marking the proposal ready
   (see The hand-off).
@@ -216,11 +217,12 @@ The herd can start observing a new project at any time, without restarting anyth
   is theirs to approve, like any other command it runs.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has a
   `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
-  builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
-  status pane says which check failed. Emulator capacity isn't part of it: a change that needs a container pass and
-  finds none waits on its own (see End-to-end tests), so the rest of the project carries on. Nothing records that
-  `herd doctor` passed. `doctor` is the human's deeper check (gate in a real worker, branch protection, model backend)
-  to run before trusting a project, not a switch the orchestrator reads.
+  builds, and the worker slots it may use can run every unit kind the project can dispatch (`e2e` only when the manifest
+  or an open change's pinned approval kind requires a container pass, as Config is checked when it's loaded in Models
+  spells out). Otherwise it's *inactive*, and the status pane says which check failed. Emulator capacity isn't part of
+  it: a change that needs a container pass and finds none waits on its own (see End-to-end tests), so the rest of the
+  project carries on. Nothing records that `herd doctor` passed. `doctor` is the human's deeper check (gate in a real
+  worker, branch protection, model backend) to run before trusting a project, not a switch the orchestrator reads.
 - **First scan of a new project.** The orchestrator creates the project's bare mirror and builds its images. It
   then treats the project like any other: it queues change branches already marked `ready: true`, and leaves the
   others alone. The herdr bridge adds the project's workspace, with its planner pane, on its next pass.
@@ -628,15 +630,18 @@ silently dropped — comes from two rules together, not from the scan alone:
   afresh. Each `fix` adds a fix task under "(added for CI)"; `preexisting` escalates to `needs-human` ("fails on the
   default branch too") and `unsettled` to `needs-human` ("spec doesn't settle it"), and an escalation comes before the
   fix tasks, which wait for the stop's resolution; with at least one `fix` and no escalation the change goes back to
-  *implementing* for its new tasks; and when every line is `flaky`, no task is added and the change stays in its state,
-  while the commit that records them, itself a push, runs the check again on the new tip (required workflows run on
-  every push; see Requirements on a project). Flakes count per test, as everywhere. `waived` is recorded mechanically,
-  without a model, for a failing test with an effective `e2e-waive`: it adds no task and no escalation, since the person
-  already decided. When every line of a run is `waived`, the run is triaged and the change carries on through its other
-  work, but the required check is still red, so the change can't become *ready-to-merge* (the status pane shows "waiting
-  for a default-branch fix"); the next update-branch merge that brings the fix in clears it. A triage unit that can't
-  rerun the test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts
-  alone, and records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person
+  *implementing* for its new tasks; `waived` marks a failing test with an effective `e2e-waive`: the triage unit records
+  it without judging it, and it adds no task and no escalation, since the person already decided. When the lines are
+  only `flaky` and `waived`, no task is added and the change stays in its state: if any flaky test's count has reached
+  `caps.flaky_retries`, the triage unit escalates ("flaky test") instead; otherwise, with at least one `flaky` line, the
+  commit that records them, itself a push, runs the check again on the new tip (required workflows run on every push;
+  see Requirements on a project). Flakes count per test, as everywhere. A later failed run of the same check whose tip
+  differs from the triaged one only by bookkeeping, while every line of that triage was `waived`, is the same failure,
+  and the scan doesn't dispatch triage for it again, so recording a waiver can't loop. The required check stays red, so
+  the change carries on through its other work but can't become *ready-to-merge* (the status pane shows "waiting for a
+  default-branch fix"); the next update-branch merge that brings the fix in clears it. A triage unit that can't rerun
+  the test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts alone,
+  and records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person
   decides rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator
   escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no
   update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
@@ -1253,12 +1258,15 @@ network instead.
   layer (herd), not something an agent can do itself — and since `.herd/` is read from the default branch and
   off-limits to worker commits, an agent can't do it through its own branch either.
 - **No filesystem access outside the project.** The only mounts are the unit's own clone, the project's declared cache
-  volumes, and (when provided) the read-only inputs volume. No host bind mounts (not the host checkout, not `$HOME`, not
-  the Podman socket), no access to other units' clones, other projects' volumes or the bare mirrors. The container's
-  root filesystem is read-only apart from those mounts and a scratch `tmpfs`. No provider key or other long-lived secret
-  reaches a worker. Its only credential is its unit's token, which is still a secret: a short-lived bearer credential
-  for model and proxy access, valid only until its unit's revocation or expiry. The orchestrator redacts it from the
-  unit's log, and commit validation rejects a commit that contains it.
+  volumes, (when provided) the read-only inputs volume, and, for a unit with end-to-end work, the e2e mounts End-to-end
+  tests defines: the pinned harness copy and the `e2e.tests` snapshot (both read-only), the copied app, each run's
+  size-limited artifacts directory, and the unit's emulator (`/dev/kvm`), each visible only to the commands that need
+  it. No host bind mounts (not the host checkout, not `$HOME`, not the Podman socket), no access to other units' clones,
+  other projects' volumes or the bare mirrors. The container's root filesystem is read-only apart from those mounts and
+  a scratch `tmpfs`. No provider key or other long-lived secret reaches a worker. Its only credential is its unit's
+  token, which is still a secret: a short-lived bearer credential for model and proxy access, valid only until its
+  unit's revocation or expiry. The orchestrator redacts it from the unit's log, and commit validation rejects a commit
+  that contains it.
 - **Caches** are per project *and* per role, so one project's worker can never read or poison another's. A project
   that declares none gets the strict per-clone behavior (slower, nothing shared).
 - Network egress is the unit's model backend plus the manifest's `egress` list — not open internet (see Network
