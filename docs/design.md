@@ -832,9 +832,10 @@ from a per-project, per-role image:
     itself rather than trusting the implementer's claim. The holistic review's prompt includes a security
     checklist; there's no separate security-review unit. A project that wants static analysis (Semgrep, say)
     adds it to its gate, where it runs on every task.
-- **Local model server** — when host config has a local backend: Ollama (or similar) as its own container, on an
-  internal network shared only with the network proxy, with no egress of its own and the only container given the GPU.
-  Workers reach it only through the model gateway, like any backend. See The local model server.
+- **Local model server** — while host config has a local backend, or a running unit still uses one: Ollama (or similar)
+  as its own container, on an internal network shared only with the network proxy, with no egress of its own and the
+  only container given the GPU. Workers reach it only through the model gateway, like any backend. See The local model
+  server.
 - **Network proxy** — one container on every unit's internal network (see Network and secrets), the model server's, and
   the outside one, with two parts. The **model gateway** is the herd's own small component, not a generic proxy: the
   model and output limit are fields in the request body (for Anthropic and Ollama alike), and metering needs the usage
@@ -931,9 +932,10 @@ namespace, where host rules can't tell containers apart.
 
 ## The local model server
 
-The model server exists only while host config has a backend of a local kind (`ollama`), and the herd manages all of it:
-the operator never touches the `herd` user's Podman, storage or GPU setup. Everything here is reconciled from host
-config on each scan, like the rest of the orchestrator's work.
+The model server exists while host config has a backend of a local kind (`ollama`), or while a running unit still uses
+one after its backend was removed or repointed (units finish on the backend they started with, see Models), and the herd
+manages all of it: the operator never touches the `herd` user's Podman, storage or GPU setup. Everything here is
+reconciled from host config on each scan, like the rest of the orchestrator's work.
 
 ```yaml
 models:                                # host config; only read when a local backend exists
@@ -941,6 +943,7 @@ models:                                # host config; only read when a local bac
   max_loaded: 1                        # models resident at once
   parallel: 1                          # concurrent requests per loaded model
   context: 32768                       # context length the server allocates; must cover the harness's needs
+  queue_timeout: 30m                   # longest a call may wait for the server before failing as infra
   registry_egress: [registry.ollama.ai]  # what a pull may reach (host[:port], TLS, as for units), plus any
                                        # download host the registry redirects to; doctor's test pull shows them
 ```
@@ -948,11 +951,11 @@ models:                                # host config; only read when a local bac
 - **Lifecycle.** The orchestrator starts the server through the Podman API, the same way it starts workers, rather than
   as a Quadlet unit, since a local backend can be added or removed in host config at any time and the orchestrator can't
   drive systemd from its container. On each scan it makes sure the server is running when a local backend is configured,
-  and stopped when none is. Unlike a worker, the server is herd infrastructure: a restarting orchestrator adopts a
-  running server by its label instead of killing it as an orphan. Its settings come from `models` above (as the server's
-  environment: keep-alive, loaded-model limit, parallelism, context length), and changing them restarts it on the next
-  scan, once no unit is using it.
-
+  and stopped only once none is configured and no running unit still uses a local model, so removing the last local
+  backend lets running units drain first. Unlike a worker, the server is herd infrastructure: a restarting orchestrator
+  adopts a running server by its label instead of killing it as an orphan. Its settings come from `models` above (as the
+  server's environment: keep-alive, loaded-model limit, parallelism, context length), and changing them restarts it on
+  the next scan, once no unit is using it.
 - **GPU access.** The server is the only container given the GPU, however the vendor exposes it to rootless Podman. An
   Intel or AMD card is `--device /dev/dri`, and since the device usually belongs to the `render` group, which a rootless
   container doesn't keep by default, also `--group-add keep-groups` (which needs the `crun` runtime) with the `herd`
@@ -964,16 +967,19 @@ models:                                # host config; only read when a local bac
   models volume, on its own internal network behind the network proxy, registered there like a unit with
   `models.registry_egress` as its whole allow-list. The registry's digests are checked on download, so a corrupted or
   swapped blob doesn't land. The server reads new models from the volume without a restart. `herd models list` and
-  `herd models rm <model>` are requests too; removing a model a configured backend still names is refused. Every model
-  on the host was pulled explicitly by the operator, and nothing a worker does can add one.
-
+  `herd models rm <model>` are requests too; removing a model is refused while a configured backend names it, or a
+  running unit's backend does (a unit keeps the model it started with even after host config moves on). Every model on
+  the host was pulled explicitly by the operator, and nothing a worker does can add one.
 - **Sharing the GPU.** `max_loaded` and `keep_alive` decide how the card is shared. With one model resident, two local
   models (an implementer and a reviewer, say) swap in and out, and each switch costs a load from disk. So among queued
   units for local slots, the scheduler prefers one whose model is already loaded, which the server reports; it's a
   preference, never a rule, so a unit that has waited longer than its unit kind's `quiet` timeout is dispatched
-  regardless. Slots that share the card share it in turn: the server queues requests beyond `parallel`. A model load
-  counts as model activity for the quiet timeout (see Monitoring), so a slow cold load isn't mistaken for a hung unit.
-
+  regardless. Slots that share the card share it in turn: the server queues requests beyond `parallel`. A local call in
+  flight counts as model activity for the quiet timeout (see Monitoring), from the moment the gateway forwards it until
+  its response ends, whether it's waiting in the server's queue, waiting for a model to load, or generating, so a unit
+  waiting its turn isn't mistaken for a hung one. A call that waits longer than `models.queue_timeout` for the server
+  fails as an `infra` failure, which doesn't count against the unit and raises an alert once such failures persist; the
+  unit's wall timeout still applies throughout.
 - **Accounting.** The gateway meters local calls like cloud ones, so the usage ledger and the per-model acceptance rates
   cover them, but a local backend has no `price` and makes no reservation: it never counts against the budget, and a
   budget pause doesn't stop local slots.
