@@ -1186,19 +1186,19 @@ retained snapshot would charge the new machine's traffic to the old one.
   deletes the request file, so a crash in between at worst handles the same request twice, which changes nothing, and
   never loses the confirmation; it closes that machine's billing-related alerts, stops its accrual, and takes it out of
   dispatch: a confirmed-stopped machine gets no new units, the gateway refuses its calls, and units still running on it
-  end as `infra` failures, retried elsewhere and never charged as attempts. The confirmation clears only explicitly,
-  with `herd machines started <machine>` (a request, validated and persisted the same way), so nothing depends on the
-  orchestrator having watched the machine go down and come back. Health checks keep running through a confirmation, and
-  any successful one after it restores the machine's accrual for the time it was seen up, so a wrong confirmation never
-  drops known-up time. An endpoint that keeps answering past `alerts.infra_after` after its confirmation means the
-  machine wasn't stopped after all: that raises a "confirmed stopped but still answering" alert episode and restores the
-  machine's accrual back to the confirmation, as continuous; for a retained snapshot, which never returns to dispatch,
-  it also withdraws the confirmation, so retiring the snapshot needs a fresh `herd machines stopped <snapshot id>` once
-  it really has stopped, since it may well have been billing all along (health checks keep running through the
-  confirmation, so the herd knows the endpoint was up the whole time), while dispatch stays off until the operator
-  either stops it or runs `herd machines started`. Since unhealthy may still mean billing, an active machine whose
-  health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert
-  episode, cleared when its health returns or the operator confirms it stopped.
+  end as `infra` failures, retried elsewhere and never charged as attempts. For a current machine, the confirmation
+  clears only explicitly, with `herd machines started <machine>` (a request, validated and persisted the same way), so
+  nothing depends on the orchestrator having watched the machine go down and come back. Health checks keep running
+  through a confirmation, and any successful one after it restores the machine's accrual for the time it was seen up, so
+  a wrong confirmation never drops known-up time. An endpoint that keeps answering past `alerts.infra_after` after its
+  confirmation means the machine wasn't stopped after all: that raises a "confirmed stopped but still answering" alert
+  episode and restores the machine's accrual back to the confirmation, as continuous; for a retained snapshot, which
+  never returns to dispatch, it also withdraws the confirmation, so retiring the snapshot needs a fresh
+  `herd machines stopped <snapshot id>` once it really has stopped, since it may well have been billing all along
+  (health checks keep running through the confirmation, so the herd knows the endpoint was up the whole time), while
+  dispatch stays off until the operator either stops it or runs `herd machines started`. Since unhealthy may still mean
+  billing, an active machine whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy,
+  not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call in flight for its `idle_alert` (default 30 minutes), counted from the end of the
   last call, so a long generation never looks idle. It's an alert episode like an ongoing condition in Monitoring,
@@ -1208,41 +1208,43 @@ retained snapshot would charge the new machine's traffic to the old one.
   `instance`, so a change to anything else (`endpoint`, `access` and its `wireguard` block, `price`, `idle_alert`, a
   rotated `secret`) is an update in place: the same machine, reached the new way or billed at the new rate from that
   moment on, still accrued once. A unit's token is bound to the definition, not to a connection, so when the endpoint or
-  access changes the gateway moves every call, running units' included, to the new connection in the same step, and from
-  then on the old URL belongs to no definition and may be reused. A change of `instance`, or dropping the entry, means a
-  different machine, or none, from the herd's point of view, but the old machine doesn't stop with it: the orchestrator
-  keeps the old definition (tunnel, credentials, health checks, hourly accrual, alerts) as a **retained snapshot** under
-  its definition id, the immutable id every definition gets when it's first persisted (the machine's name and the moment
-  it was first loaded, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own files as an operational store and
-  read back on start like the budget counter. A name can be reused or repointed many times, so the definition id, not
-  the name, is what identifies it. Likewise the `instance`, not the name, decides which machine an entry is: an entry
-  whose `instance` matches an existing definition, current or retained, takes that definition over rather than starting
-  a second one, so a rename keeps the machine's id, accrual and credential copy, and a retained machine that comes back
-  into config becomes current again. One physical machine never has two definitions, which keeps accrual once per
-  machine (validation already rejects two entries with one endpoint). Noticing the change doesn't depend on a scan
-  seeing the old config: the orchestrator persists every machine definition it puts into use (with the hash of its
-  credential copy, below) in that same store before any health check, dispatch or accrual uses it, and every scan, the
-  first after a restart included, compares host config with those persisted definitions, not with what the previous scan
-  read. So a config change made while the orchestrator was down, or a crash before a scan finished, still finds the old
-  machine to retain. The snapshot's credentials can't depend on files the operator may already have rotated or deleted
-  as part of the very config change that retains it, so copying them at that point would be too late. Instead the proxy
-  copies a machine's credentials into its own store as soon as it first loads the machine definition, keyed by the
-  content's hash, and every definition in use (current or retained) runs on its own copy: editing or deleting the
-  operator's file later only affects definitions loaded after the change, and a retained snapshot simply keeps the copy
-  it already had, until it's retired. Since copies are keyed by content, definitions that share a credential share one
-  copy, so a copy is deleted only once no persisted definition, current or retained, still references its hash. That
-  store is a dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`),
-  separate from the operator's files it copies from. Those live in a directory of their own, `~herd/secrets/machines/`
-  (`0700`, files `0600`), holding machine keys only, which the proxy mounts whole and read-only, so a machine added or a
-  secret renamed at any scan is readable without recreating the proxy; the rest of `~herd/secrets/` (provider keys, the
-  orchestrator's App key) stays mounted one file at a time, and the App key never reaches the proxy. The snapshot takes
-  no new units, its running units finish on it (as Models promises), and it keeps accruing cost and raises a "retained
-  machine not confirmed stopped" alert episode, shown with its id. The two ends are separate: the operator's
-  `herd machines stopped <snapshot id>` closes the alert and stops the accrual at once, like any confirmation, and the
-  snapshot is retired (its record and, if nothing else references it, its credential copy deleted) once it's confirmed
-  stopped, its units have finished, **and** its endpoint has stayed silent for `alerts.infra_after` since the
-  confirmation; until then it stays health-checked, so a confirmation that turns out wrong still raises the "confirmed
-  stopped but still answering" alert and resumes accrual, and a replacement waiting for its endpoint stays inactive.
+  access changes the gateway sends every new call, running units' included, over the new connection from that step on. A
+  call already in flight can't move: it finishes on the old connection, which the gateway keeps open only for that, and
+  once the last one has finished the old URL belongs to no definition and may be reused. A change of `instance`, or
+  dropping the entry, means a different machine, or none, from the herd's point of view, but the old machine doesn't
+  stop with it: the orchestrator keeps the old definition (tunnel, credentials, health checks, hourly accrual, alerts)
+  as a **retained snapshot** under its definition id, the immutable id every definition gets when it's first persisted
+  (the machine's name and the moment it was first loaded, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own
+  files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
+  times, so the definition id, not the name, is what identifies it. Likewise the `instance`, not the name, decides which
+  machine an entry is: an entry whose `instance` matches an existing definition, current or retained, takes that
+  definition over rather than starting a second one, so a rename keeps the machine's id, accrual and credential copy,
+  and a retained machine that comes back into config becomes current again. One physical machine never has two
+  definitions, which keeps accrual once per machine (validation already rejects two entries with one endpoint). Noticing
+  the change doesn't depend on a scan seeing the old config: the orchestrator persists every machine definition it puts
+  into use (with the hash of its credential copy, below) in that same store before any health check, dispatch or accrual
+  uses it, and every scan, the first after a restart included, compares host config with those persisted definitions,
+  not with what the previous scan read. So a config change made while the orchestrator was down, or a crash before a
+  scan finished, still finds the old machine to retain. The snapshot's credentials can't depend on files the operator
+  may already have rotated or deleted as part of the very config change that retains it, so copying them at that point
+  would be too late. Instead the proxy copies a machine's credentials into its own store as soon as it first loads the
+  machine definition, keyed by the content's hash, and every definition in use (current or retained) runs on its own
+  copy: editing or deleting the operator's file later only affects definitions loaded after the change, and a retained
+  snapshot simply keeps the copy it already had, until it's retired. Since copies are keyed by content, definitions that
+  share a credential share one copy, so a copy is deleted only once no persisted definition, current or retained, still
+  references its hash. That store is a dedicated persistent volume mounted read-write into the proxy alone (directories
+  `0700`, files `0600`), separate from the operator's files it copies from. Those live in a directory of their own,
+  `~herd/secrets/machines/` (`0700`, files `0600`), holding machine keys only, which the proxy mounts whole and
+  read-only, so a machine added or a secret renamed at any scan is readable without recreating the proxy; the rest of
+  `~herd/secrets/` (provider keys, the orchestrator's App key) stays mounted one file at a time, and the App key never
+  reaches the proxy. The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps
+  accruing cost and raises a "retained machine not confirmed stopped" alert episode, shown with its id. The two ends are
+  separate: the operator's `herd machines stopped <snapshot id>` closes the alert and stops the accrual at once, like
+  any confirmation, and the snapshot is retired (its record and, if nothing else references it, its credential copy
+  deleted) once it's confirmed stopped, its units have finished, **and** its endpoint has stayed silent for
+  `alerts.infra_after` since the confirmation; until then it stays health-checked, so a confirmation that turns out
+  wrong still raises the "confirmed stopped but still answering" alert and resumes accrual, and a replacement waiting
+  for its endpoint stays inactive.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
