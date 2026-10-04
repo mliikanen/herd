@@ -385,7 +385,8 @@ by a model, and touching only the file each names. The complete list:
   *archived-pending* (a failed check, an open review finding, a non-bookkeeping commit). Escalations that need judgment
   (a request for outside content, holistic feedback that maps to no task, a finding the reviewer can't map to a task)
   are written by the reviewer in its verdict commit;
-- **an `inputs.md` entry** for content provided through `herd provide` (see Outside content).
+- **an `inputs.md` entry** for content provided through `herd provide` (see Outside content);
+- **the `e2e-mode on|off` line** that fixes a change's end-to-end mode at its first dispatch (see End-to-end tests).
 
 Everything else on a change branch is a worker's commit, a person's, or an update-branch merge.
 
@@ -758,9 +759,11 @@ switch the safety net off. So:
   default-branch version; manifest validation rejects a manifest where they do.
 
 - **The pin.** The copy is taken at the default-branch commit the change's branch is currently based on (its
-  merge-base), not the moving tip, so every unit of the change runs the same `select` and `run`, and an implementer's
-  `E2E:` section is checked against the same harness that produced it. The pin moves only when update-branch merges a
-  newer default branch into the change, and only before the archive: from the archive commit on, it's frozen, since an
+  merge-base), not the moving tip, and the rest of the e2e environment is pinned with it: the manifest's `e2e` block and
+  the toolchain image (by digest), both as they are at that same commit. So every unit of the change runs the same
+  `select` and `run`, with the same configuration and the same image, and an implementer's `E2E:` section is checked
+  against the same harness that produced it. The pin, all three together, moves only when update-branch merges a newer
+  default branch into the change, and only before the archive: from the archive commit on, it's frozen, since an
   archived change can't go back to *awaiting-approval*, and CI's full suite covers anything a later merge brings in.
   When the pin moves before the archive, the change's `container`-phase pass is no longer current, even if the merge is
   otherwise bookkeeping: that pass was earned under the old harness, so the final e2e runs again under the new pin
@@ -859,7 +862,13 @@ caps how many run at once (`e2e.max_emulators`); a unit that needs one waits for
 against its timeouts. That capacity is also the switch: `e2e.max_emulators` defaults to **0**, and the operator raises
 it only once the emulator probe in Build plan step 2's reality check passes on the host. While it's 0 (and on a host
 without KVM, where it must stay 0), no e2e layer runs at all, whatever a project's `e2e` block says: no per-task loop,
-no red/green proof, no `e2e` units. A project with an `e2e` block then gets no emulator work, relies on CI and on
+no red/green proof, no `e2e` units. Capacity is re-read every scan, but a change can't switch mode halfway: whether its
+e2e layers apply is decided once, when its first unit is dispatched, and recorded by the orchestrator as a bookkeeping
+line in `review-notes.md` (`e2e-mode on` or `e2e-mode off`), which holds for the change's life. A change started with
+e2e on keeps owing its red/green proofs and its reviews' reruns: if capacity later drops to 0, its units that need an
+emulator wait (the status pane says so, and it alerts once the wait passes `alerts.infra_after`) rather than skip. A
+change started with e2e off stays off, with CI covering it, even if capacity appears midway, so no accepted task is left
+without a proof it was never asked for. A project with an `e2e` block then gets no emulator work, relies on CI and on
 `final_approval.kind: human`, and a project with `kind: container` is inactive with that reason until the host has
 capacity.
 
@@ -1423,7 +1432,8 @@ timeouts:                              # per unit kind; a unit past either is ki
   holistic:  { wall: 30m, quiet: 10m }
   triage:    { wall: 20m, quiet: 10m }
   archive:   { wall: 10m, quiet: 5m }
-  e2e:       { wall: 60m, quiet: 15m }   # emulator boot and a full selection; waiting for one doesn't count
+  e2e:       { wall: 60m, quiet: 15m }   # emulator boot and a full selection; waiting for one doesn't count;
+                                       # a running prepare or run counts as activity
 budget:
   currency: USD                        # every cloud backend's price is in this currency
   timezone: UTC                        # where a billing month starts and ends
@@ -1445,11 +1455,12 @@ e2e:
 
 The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
 
-- **Unit timeouts.** A unit is killed when it runs past its kind's `wall` time, or goes `quiet`: no log output
-  and no model call for that long. The network proxy sees every model call by unit token, so it reports each
-  unit's last call to the orchestrator. A killed unit is a failed attempt (reason `timeout`, see Failed
-  attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its backend stopped
-  answering is an `infra` failure instead, and doesn't count.
+- **Unit timeouts.** A unit is killed when it runs past its kind's `wall` time, or goes `quiet`: no log output, no model
+  call and no end-to-end command running for that long (a `prepare` or `run` may legitimately stay silent for many
+  minutes, so while one runs the unit isn't quiet; the `wall` time still bounds it). The network proxy sees every model
+  call by unit token, so it reports each unit's last call to the orchestrator. A killed unit is a failed attempt (reason
+  `timeout`, see Failed attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its
+  backend stopped answering is an `infra` failure instead, and doesn't count.
 - **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
   the control socket, to reserve the call's maximum cost: an upper bound on its input tokens plus the requested output
   limit, priced from the backend's `price` in host config (per million input and output tokens). The request body
