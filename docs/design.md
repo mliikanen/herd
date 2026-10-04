@@ -870,9 +870,9 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   fails this check, so its code can't leave the host through a config change. The policy covers what the herd sends: its
   workers' model traffic. The planner pane is the person's own session, outside the herd's control, so for a
   `locality: host` project the herd doesn't start a cloud planner there by default: the pane opens a plain shell, with a
-  note saying why, unless the project names a local planner agent (`projects.<project>.planner`). A project that fails
-  is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes start, rather
-  than stalling one after its first task.
+  note saying why, and the person can start whatever local agent they like in it. A project that fails is shown
+  *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes start, rather than
+  stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -1160,13 +1160,15 @@ endpoint must reach that machine alone (the operator's assertion, like the model
   machine while the provider keeps billing. Only the operator can say a machine is stopped, with
   `herd machines stopped <machine or snapshot id>` (a request; see The herd's own account). Requests are consumed
   asynchronously and a name can be repointed in between, so the CLI resolves a machine name to its current definition id
-  when it's run (from the status snapshot) and the request carries that id; a request whose id is no longer the named
-  machine's current definition, or a retained one, is rejected and reported, never applied to whatever the name points
-  at now. The orchestrator records the confirmation in the persisted machine definitions, against the exact current
-  definition or snapshot id, before it consumes the request, so a restart doesn't lose it; it closes that machine's
-  billing-related alerts until its endpoint answers again. Since unhealthy may still mean billing, an active machine
-  whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert
-  episode, cleared when its health returns or the operator confirms it stopped.
+  when it's run (from the status snapshot) and the request carries that id; a request made by name must still be that
+  name's current definition when it's consumed, and is rejected and reported otherwise, never applied to whatever the
+  name points at now or to the definition it just left behind (the snapshot might be published a scan late). A retained
+  snapshot is confirmed only by its own snapshot id, given explicitly. The orchestrator records the confirmation in the
+  persisted machine definitions, against the exact current definition or snapshot id, before it consumes the request, so
+  a restart doesn't lose it; it closes that machine's billing-related alerts until its endpoint answers again. Since
+  unhealthy may still mean billing, an active machine whose health checks fail for longer than `alerts.infra_after`
+  opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns or the operator
+  confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
