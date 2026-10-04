@@ -1190,36 +1190,40 @@ retained snapshot would charge the new machine's traffic to the old one.
 - **Removing or repointing a machine.** Host config can change a machine entry at any scan. A machine's identity is its
   `instance`, so a change to anything else (`endpoint`, `access` and its `wireguard` block, `price`, `idle_alert`, a
   rotated `secret`) is an update in place: the same machine, reached the new way or billed at the new rate from that
-  moment on, still accrued once. A change of `instance`, or dropping the entry, means a different machine, or none, from
-  the herd's point of view, but the old machine doesn't stop with it: the orchestrator keeps the old definition (tunnel,
-  credentials, health checks, hourly accrual, alerts) as a **retained snapshot** under its definition id, the immutable
-  id every definition gets when it's first persisted (the machine's name and the moment it was first loaded, say
-  `h100-a@2026-10-04T15:02Z`), persisted in the herd's own files as an operational store and read back on start like the
-  budget counter. A name can be reused or repointed many times, so the definition id, not the name, is what identifies
-  it. Likewise the `instance`, not the name, decides which machine an entry is: an entry whose `instance` matches an
-  existing definition, current or retained, takes that definition over rather than starting a second one, so a rename
-  keeps the machine's id, accrual and credential copy, and a retained machine that comes back into config becomes
-  current again. One physical machine never has two definitions, which keeps accrual once per machine (validation
-  already rejects two entries with one endpoint). Noticing the change doesn't depend on a scan seeing the old config:
-  the orchestrator persists every machine definition it puts into use (with the hash of its credential copy, below) in
-  that same store before any health check, dispatch or accrual uses it, and every scan, the first after a restart
-  included, compares host config with those persisted definitions, not with what the previous scan read. So a config
-  change made while the orchestrator was down, or a crash before a scan finished, still finds the old machine to retain.
-  The snapshot's credentials can't depend on files the operator may already have rotated or deleted as part of the very
-  config change that retains it, so copying them at that point would be too late. Instead the proxy copies a machine's
-  credentials into its own store as soon as it first loads the machine definition, keyed by the content's hash, and
-  every definition in use (current or retained) runs on its own copy: editing or deleting the operator's file later only
-  affects definitions loaded after the change, and a retained snapshot simply keeps the copy it already had, until it's
-  retired. Since copies are keyed by content, definitions that share a credential share one copy, so a copy is deleted
-  only once no persisted definition, current or retained, still references its hash. That store is a dedicated
-  persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate from the
-  operator's files it copies from. Those live in a directory of their own, `~herd/secrets/machines/` (`0700`, files
-  `0600`), holding machine keys only, which the proxy mounts whole and read-only, so a machine added or a secret renamed
-  at any scan is readable without recreating the proxy; the rest of `~herd/secrets/` (provider keys, the orchestrator's
-  App key) stays mounted one file at a time, and the App key never reaches the proxy. The snapshot takes no new units,
-  its running units finish on it (as Models promises), and it keeps accruing cost and raises a "retained machine not
-  confirmed stopped" alert episode, shown with its id, until its units have finished **and** the operator runs
-  `herd machines stopped <snapshot id>`.
+  moment on, still accrued once. A unit's token is bound to the definition, not to a connection, so when the endpoint or
+  access changes the gateway moves every call, running units' included, to the new connection in the same step, and from
+  then on the old URL belongs to no definition and may be reused. A change of `instance`, or dropping the entry, means a
+  different machine, or none, from the herd's point of view, but the old machine doesn't stop with it: the orchestrator
+  keeps the old definition (tunnel, credentials, health checks, hourly accrual, alerts) as a **retained snapshot** under
+  its definition id, the immutable id every definition gets when it's first persisted (the machine's name and the moment
+  it was first loaded, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own files as an operational store and
+  read back on start like the budget counter. A name can be reused or repointed many times, so the definition id, not
+  the name, is what identifies it. Likewise the `instance`, not the name, decides which machine an entry is: an entry
+  whose `instance` matches an existing definition, current or retained, takes that definition over rather than starting
+  a second one, so a rename keeps the machine's id, accrual and credential copy, and a retained machine that comes back
+  into config becomes current again. One physical machine never has two definitions, which keeps accrual once per
+  machine (validation already rejects two entries with one endpoint). Noticing the change doesn't depend on a scan
+  seeing the old config: the orchestrator persists every machine definition it puts into use (with the hash of its
+  credential copy, below) in that same store before any health check, dispatch or accrual uses it, and every scan, the
+  first after a restart included, compares host config with those persisted definitions, not with what the previous scan
+  read. So a config change made while the orchestrator was down, or a crash before a scan finished, still finds the old
+  machine to retain. The snapshot's credentials can't depend on files the operator may already have rotated or deleted
+  as part of the very config change that retains it, so copying them at that point would be too late. Instead the proxy
+  copies a machine's credentials into its own store as soon as it first loads the machine definition, keyed by the
+  content's hash, and every definition in use (current or retained) runs on its own copy: editing or deleting the
+  operator's file later only affects definitions loaded after the change, and a retained snapshot simply keeps the copy
+  it already had, until it's retired. Since copies are keyed by content, definitions that share a credential share one
+  copy, so a copy is deleted only once no persisted definition, current or retained, still references its hash. That
+  store is a dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`),
+  separate from the operator's files it copies from. Those live in a directory of their own, `~herd/secrets/machines/`
+  (`0700`, files `0600`), holding machine keys only, which the proxy mounts whole and read-only, so a machine added or a
+  secret renamed at any scan is readable without recreating the proxy; the rest of `~herd/secrets/` (provider keys, the
+  orchestrator's App key) stays mounted one file at a time, and the App key never reaches the proxy. The snapshot takes
+  no new units, its running units finish on it (as Models promises), and it keeps accruing cost and raises a "retained
+  machine not confirmed stopped" alert episode, shown with its id. The two ends are separate: the operator's
+  `herd machines stopped <snapshot id>` closes the alert and stops the accrual at once, like any confirmation, and the
+  snapshot is retired (its record and, if nothing else references it, its credential copy deleted) once it's confirmed
+  stopped **and** its units have finished.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
