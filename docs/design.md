@@ -755,12 +755,13 @@ follow.
 
 The commands' contract, so the orchestrator can handle ids and results deterministically:
 
-- Every command runs in the repository root of the unit's clone, against the unit's own emulator, and `run` with
-  `$HERD_E2E_ARTIFACTS` naming a fresh, empty directory it may write to, created for that one `run` (no other command
-  gets one; see below). It's a size-limited mount, capped in total bytes and file count (`e2e.max_artifacts`, from host
-  config), so a broken or runaway `run` fills its own directory, not the host: hitting the cap fails that run, with the
-  reason, like any other failed command. A run's directory is deleted once the herd has read its results and kept what
-  the unit's verdict cites, so retries don't pile up.
+- Every command runs in the repository root of the unit's clone, `boot` and `run` against the unit's own emulator
+  (`prepare` and `select` get no access to it), and `run` with `$HERD_E2E_ARTIFACTS` naming a fresh, empty directory it
+  may write to, created for that one `run` (no other command gets one; see below). It's a size-limited mount, capped in
+  total bytes and file count (`e2e.max_artifacts`, from host config), so a broken or runaway `run` fills its own
+  directory, not the host: hitting the cap fails that run, with the reason, like any other failed command. A run's
+  directory is deleted once the herd has read its results and kept what the unit's verdict cites, so retries don't pile
+  up.
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
   that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
@@ -841,18 +842,20 @@ switch the safety net off. So:
   against the same harness that produced it. The pin, all three together, moves only when update-branch merges a newer
   default branch into the change, and only before the archive, and only to a commit whose manifest can still serve the
   change's recorded `e2e-mode`: if the newer default branch has dropped the `e2e` block or the harness, or no longer
-  builds the emulator image a `container` mode needs, the merge goes ahead but the pin stays where it was, no longer the
-  branch's merge-base (the scan derives it as the latest of the change's merge-bases whose manifest can serve the mode),
-  so the change keeps the last environment that can run its red/green proofs and final e2e for the rest of its life, and
-  the scan notes it on the status pane. And from the archive commit on, it's frozen, since an archived change can't go
-  back to *awaiting-approval*, and CI's full suite covers anything a later merge brings in. When the merge-base moves
-  before the archive, whether or not the pin moves with it, the change's `container`-phase pass is no longer current,
-  even if the merge is otherwise bookkeeping: that pass was earned against the old baseline and possibly the old
-  harness, so the final e2e runs again (which is also when a waiver that lapsed on the merge gets its test run). This is
-  the one exception to clean merges keeping final-approval records; the `human` phase isn't affected on its own, but
-  under `container+human` a human pass counts only when it's newer than the current container pass (that's what
-  `human_after` means), so once the container phase reruns, the person checks again after it. The `container` record
-  names its merge-base for this (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`).
+  builds the emulator image a `container` mode needs, the merge goes ahead, provided every test definition the kept
+  environment can select still exists in the merged tree (otherwise the update escalates to `needs-human`, "the default
+  branch dropped what this change's end-to-end tests need"), but the pin stays where it was, no longer the branch's
+  merge-base (the scan derives it as the latest of the change's merge-bases whose manifest can serve the mode), so the
+  change keeps the last environment that can run its red/green proofs and final e2e for the rest of its life, and the
+  scan notes it on the status pane. And from the archive commit on, it's frozen, since an archived change can't go back
+  to *awaiting-approval*, and CI's full suite covers anything a later merge brings in. When the merge-base moves before
+  the archive, whether or not the pin moves with it, the change's `container`-phase pass is no longer current, even if
+  the merge is otherwise bookkeeping: that pass was earned against the old baseline and possibly the old harness, so the
+  final e2e runs again (which is also when a waiver that lapsed on the merge gets its test run). This is the one
+  exception to clean merges keeping final-approval records; the `human` phase isn't affected on its own, but under
+  `container+human` a human pass counts only when it's newer than the current container pass (that's what `human_after`
+  means), so once the container phase reruns, the person checks again after it. The `container` record names its
+  merge-base for this (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`).
 
 The layers:
 
