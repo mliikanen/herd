@@ -1197,14 +1197,12 @@ Steps marked **(manual)** need a human.
 5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring:
    unit timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd
    watchdog for the orchestrator), log retention and the disk check.
-6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace),
-   `init`, `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in
-   `/etc/subuid` and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group,
-   `/etc/herd/`
-   and `/var/lib/herd/`, puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with
-   its `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is
-   installed, installs herdr's integration for the planner agent, and adds the operator's login unit for
-   `herdr server`.
+6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
+   `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
+   and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/` and
+   `/var/lib/herd/`, puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its
+   `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is installed,
+   installs herdr's integration for the planner agent, and adds the operator's login unit for `herdr server`.
 7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read
    by the network proxy only); a GitHub App for the herd, installed on the registered repositories, with
    repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit statuses* and
