@@ -808,6 +808,9 @@ backends:
                     endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
                     context: 131072, idle_alert: 30m,
                     price: { per_hour: <rate> } }   # see Rented GPU backends
+  # with access: wireguard instead, the endpoint is the tunnel address and the backend adds:
+  #   wireguard: { peer: <public host>:51820, peer_public_key: <key>, address: 10.66.0.2/32,
+  #                allowed_ips: 10.66.0.1/32, private_key_secret: RENTED_WG_KEY }
 slots:                                 # each slot runs one unit at a time
   - name: gpu
     implementer: local-coder
@@ -1094,12 +1097,16 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
 - **Network.** The model gateway is the only client, and the endpoint is never an open port. A rented backend declares
   how it's protected with `access`: `https-key`, HTTPS with a key (`secret`, kept in `~herd/secrets/` and read by the
   proxy alone, like a provider key), for which `herd doctor` checks that a request without the key is refused; or
-  `wireguard`, reachable only through a WireGuard tunnel the proxy holds, where tunnel membership is the authentication,
-  so `doctor` checks instead that the endpoint answers through the tunnel and can't be reached at its public address.
-  Its host is on the proxy's egress for that backend only. The gateway applies the same rules as to any backend: it pins
-  the attested model ID, allow-lists the inference route and token-only features, and bounds the requested output by the
-  backend's `context`, which a rented backend must declare (the OpenAI-compatible model list doesn't report it);
-  `doctor` checks the value with a request near that length.
+  `wireguard`, reachable only through a WireGuard tunnel the proxy holds, where tunnel membership is the authentication.
+  The backend's `wireguard` block gives everything the proxy needs to bring the tunnel up itself: the rented machine's
+  public address and port (`peer`), its public key, the proxy's own tunnel `address`, the `allowed_ips` it routes into
+  the tunnel (the machine's tunnel address only), and the proxy's private key as a secret (`private_key_secret`, in
+  `~herd/secrets/`); the `endpoint` is then the machine's tunnel address. The operator sets up the other side on the
+  machine. `doctor` checks that the endpoint answers through the tunnel, and that the inference port is closed at the
+  peer's public address, which it knows from `peer`. Its host is on the proxy's egress for that backend only. The
+  gateway applies the same rules as to any backend: it pins the attested model ID, allow-lists the inference route and
+  token-only features, and bounds the requested output by the backend's `context`, which a rented backend must declare
+  (the OpenAI-compatible model list doesn't report it); `doctor` checks the value with a request near that length.
 - **Lifecycle.** At first the operator starts and stops the machine; the herd dispatches units to a rented slot only
   while its endpoint answers health checks, and a unit whose machine disappears mid-call (spot and marketplace machines
   can be reclaimed) ends as an `infra` failure and is retried. So a machine left running for nothing doesn't burn money
