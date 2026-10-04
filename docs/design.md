@@ -808,7 +808,7 @@ backends:
                     endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
                     context: 131072, idle_alert: 30m,
                     price: { per_hour: <rate> } }   # see Rented GPU backends
-  # with access: wireguard instead, the endpoint is the tunnel address and the backend adds:
+  # with access: wireguard instead, endpoint: http://10.66.0.1:8000/v1 (the tunnel address) and the backend adds:
   #   wireguard: { peer: <public host>:51820, peer_public_key: <key>, address: 10.66.0.2/32,
   #                allowed_ips: 10.66.0.1/32, private_key_secret: RENTED_WG_KEY }
 slots:                                 # each slot runs one unit at a time
@@ -955,15 +955,16 @@ worker's only way out is the proxy, which serves two purposes:
 - **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`, or
   the harness's equivalent, points at the gateway, and the SDK's credential, `ANTHROPIC_API_KEY` or its equivalent,
   holds the unit's token). The gateway validates that token first, and only then replaces it with the backend's real key
-  and calls the provider over HTTPS. It also sets the provider endpoint and the model itself, from the token's
-  registered backend, overwriting whatever the request named (one key can authorize several models), and rejects
-  requests to any other endpoint. Beyond that it allow-lists what a request may contain: the inference route only, known
-  headers, and body features that run entirely on tokens. Server-executed tools (a provider's web search, web fetch or
-  code execution) would reach outside the egress allow-list and add fees the reservation doesn't price, so they're
-  rejected, as are batch, file and other separately billed APIs, unless the herd constrains and meters them itself. So
-  workers never hold an API key, the gate and the agent-written code it runs have none to leak, and a unit can only call
-  the model its slot assigns, at the price its reservation assumed. Local backends go through the gateway too, which
-  keeps that rule uniform.
+  and calls the provider over HTTPS, or, for a rented backend with `access: wireguard`, over plain HTTP inside the
+  WireGuard tunnel the proxy holds, which already encrypts and authenticates both ends (see Rented GPU backends). It
+  also sets the provider endpoint and the model itself, from the token's registered backend, overwriting whatever the
+  request named (one key can authorize several models), and rejects requests to any other endpoint. Beyond that it
+  allow-lists what a request may contain: the inference route only, known headers, and body features that run entirely
+  on tokens. Server-executed tools (a provider's web search, web fetch or code execution) would reach outside the egress
+  allow-list and add fees the reservation doesn't price, so they're rejected, as are batch, file and other separately
+  billed APIs, unless the herd constrains and meters them itself. So workers never hold an API key, the gate and the
+  agent-written code it runs have none to leak, and a unit can only call the model its slot assigns, at the price its
+  reservation assumed. Local backends go through the gateway too, which keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
   the destinations on the unit's list, each a host and port (`host[:port]`, 443 when no port is given, and always TLS; a
   `CONNECT` tunnel carries arbitrary TCP, so a hostname alone would open every port on it): the manifest's `egress`,
@@ -1101,12 +1102,14 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   The backend's `wireguard` block gives everything the proxy needs to bring the tunnel up itself: the rented machine's
   public address and port (`peer`), its public key, the proxy's own tunnel `address`, the `allowed_ips` it routes into
   the tunnel (the machine's tunnel address only), and the proxy's private key as a secret (`private_key_secret`, in
-  `~herd/secrets/`); the `endpoint` is then the machine's tunnel address. The operator sets up the other side on the
-  machine. `doctor` checks that the endpoint answers through the tunnel, and that the inference port is closed at the
-  peer's public address, which it knows from `peer`. Its host is on the proxy's egress for that backend only. The
-  gateway applies the same rules as to any backend: it pins the attested model ID, allow-lists the inference route and
-  token-only features, and bounds the requested output by the backend's `context`, which a rented backend must declare
-  (the OpenAI-compatible model list doesn't report it); `doctor` checks the value with a request near that length.
+  `~herd/secrets/`); the `endpoint` is then an `http://` URL at the machine's tunnel address: inside the tunnel there's
+  no TLS, since WireGuard already encrypts the traffic and authenticates the peer by its key, so no certificate or
+  hostname is involved. The operator sets up the other side on the machine. `doctor` checks that the endpoint answers
+  through the tunnel, and that the inference port is closed at the peer's public address, which it knows from `peer`.
+  Its host is on the proxy's egress for that backend only. The gateway applies the same rules as to any backend: it pins
+  the attested model ID, allow-lists the inference route and token-only features, and bounds the requested output by the
+  backend's `context`, which a rented backend must declare (the OpenAI-compatible model list doesn't report it);
+  `doctor` checks the value with a request near that length.
 - **Lifecycle.** At first the operator starts and stops the machine; the herd dispatches units to a rented slot only
   while its endpoint answers health checks, and a unit whose machine disappears mid-call (spot and marketplace machines
   can be reclaimed) ends as an `infra` failure and is retried. So a machine left running for nothing doesn't burn money
@@ -1400,13 +1403,13 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's
   state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert
   about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing
-  condition (a project inactive, low disk, the budget, infrastructure failures) is an **episode**: the scan that first
-  sees it appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after a
-  `cleared` one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the
-  episode, and a daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated
-  alert per open condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the
-  service accepts it, so a crash in between sends that one again, never none. Alerts go out on two channels from two
-  accounts:
+  condition (a project inactive, low disk, the budget, infrastructure failures, an idle rented machine, a rented machine
+  still up after the budget limit) is an **episode**: the scan that first sees it appends an opening entry, the scan
+  that sees it gone appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second
+  outage on the same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the
+  episode and the day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels
+  is at-least-once: push delivery is recorded per id after the service accepts it, so a crash in between sends that one
+  again, never none. Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
