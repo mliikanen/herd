@@ -454,7 +454,10 @@ silently dropped — comes from two rules together, not from the scan alone:
   3. *waiting-on-dependency* — change not archived, ready, but a change in its `depends_on` isn't archived on the
      default branch yet. Next action: none until it is.
   4. *implementing* — ready, dependencies merged, change not archived, ≥1 task not `[x]`. This includes tasks appended
-     after a final-approval failure, even when a draft PR already exists.
+     after a final-approval failure, even when a draft PR already exists. Next action: if the branch doesn't yet contain
+     the default-branch commit that merged each of its `depends_on` changes, update-branch first (see Keeping up with
+     the default branch), so no task runs against a tree without its dependencies; otherwise the next open task, in file
+     order.
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
   6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
@@ -1029,16 +1032,20 @@ directory. A project without a checkout gets its workspace without a planner pan
 **The bridge.** `herd watch` is display-only and runs inside herdr, so it drives herdr through the `herdr` CLI with the
 context its pane inherits (`HERDR_PANE_ID`), and the orchestrator never needs herdr's socket. Every few seconds it
 reconciles the layout against the status snapshot and the unit logs (see The status snapshot): it creates missing
-project workspaces (with their planner panes), splits off and closes unit and attention panes
-(`herdr pane split --direction right --no-focus`, `herdr pane run`), and reports their state and title. It only ever
-closes panes it created, and never a planner pane. It's stateless, like the orchestrator: after a herdr restart or a
-reboot it rebuilds what's missing on its next pass, and herdr brings back the planner panes' sessions.
+project workspaces (with their planner panes), splits off and closes unit and attention panes (keeping each project
+workspace's root-pane ID from `herdr workspace create`, splitting that pane with
+`herdr pane split <root pane> --direction right --no-focus`, then `herdr pane run` in the pane it returns; a split
+without a target would resolve against the bridge's own pane and land in the `herd` workspace), and reports their state
+and title. It only ever closes panes it created, and never a planner pane. It's stateless, like the orchestrator: after
+a herdr restart or a reboot it rebuilds what's missing on its next pass, and herdr brings back the planner panes'
+sessions.
 
 **Desktop alerts come from the bridge.** The bridge runs in the operator's herdr, under the operator's account, so it's
 the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence number, to a queue
-(each number the larger of the previous one plus 1 and the current time in milliseconds, so numbers strictly increase
-even when two alerts share a millisecond or the clock is corrected backward, and keep rising if the queue is lost and
-rebuilt; a cursor ahead of the newest alert counts as lost) in `/var/lib/herd/shared/`, and shows each with
+(each number the larger of the previous one plus 1 and the current time in milliseconds, so while the queue is kept,
+numbers strictly increase even when two alerts share a millisecond or the clock is corrected backward. If the queue is
+lost, the previous number goes with it and a backward clock could restart lower, which is what the next rule covers: a
+cursor ahead of the newest alert counts as lost) in `/var/lib/herd/shared/`, and shows each with
 `herdr notification show "<title>" --body "<details>"`. The bridge's one piece of state is a cursor in the operator's
 own state directory (`~/.local/state/herd/alerts.cursor`), the sequence number of the last alert it showed, updated
 after each one by writing a temporary file, syncing it and renaming it over the old one, so a crash leaves either the
