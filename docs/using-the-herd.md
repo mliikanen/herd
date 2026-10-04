@@ -189,9 +189,10 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
     in), or the spec doesn't say which behavior is right, it stops and asks you; otherwise it turns the failure into new
     tasks, and the draft PR just gets more commits. `/herd-resolve` asks for the rerun when you record a fail, and for
     an end-to-end test the change didn't add or change, a try on that merge-base, which it checks out for you (not the
-    default branch's latest, which may already have an unrelated fix), and a second try there if the first fails, since
-    one failure there could itself be a flake. A test the change added or changed isn't compared there: the old commit
-    has a different version of it, or none.
+    default branch's latest, which may already have an unrelated fix), repeated as many times as the project's
+    flaky-retry limit plus one when the check passed on your rerun, since one or two runs there can't tell a stable test
+    from a flaky one (and a second try when the first fails, since one failure there could itself be a flake). A test
+    the change added or changed isn't compared there: the old commit has a different version of it, or none.
 
 ## Review
 

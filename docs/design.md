@@ -577,11 +577,12 @@ silently dropped — comes from two rules together, not from the scan alone:
      manifest's current `final_approval.kind`) is not `none`, the effective final-approval record (see below) isn't a
      pass, change not archived. Next action, the first that applies: a required check is past `pr_review.checks_timeout`
      with no result, so the orchestrator escalates (see Failing checks before the archive); a required check failed on
-     the current tip, so CI triage (see Failing checks before the archive); the effective record is a `fail` not yet
-     triaged, so a `triage` unit (see Final approval); otherwise ensure a PR exists (a **draft**, unless it was already
-     marked ready before a `rerun`; it isn't turned back into one), and then, for `container`, an `e2e` unit (see
-     End-to-end tests: the red/green loop), or for `human` (or after a container pass with `human_after`) the human runs
-     the project's final approval. Skipped entirely when the recorded kind is `none`.
+     the current tip and that run is neither triaged nor verified all-waived, so CI triage (see Failing checks before
+     the archive); the effective record is a `fail` not yet triaged, so a `triage` unit (see Final approval); otherwise
+     ensure a PR exists (a **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into
+     one), and then, for `container`, an `e2e` unit (see End-to-end tests: the red/green loop), or for `human` (or after
+     a container pass with `human_after`) the human runs the project's final approval. Skipped entirely when the
+     recorded kind is `none`.
   7. *in-review* — holistic review accepted and (if the recorded approval kind requires it) every required phase's
      effective final-approval record a pass, change not archived, and review isn't done: the PR has unresolved review
      threads, a review requesting changes, a review finding not yet triaged, an awaited reviewer (`pr_review.wait_for`)
@@ -590,11 +591,11 @@ silently dropped — comes from two rules together, not from the scan alone:
      no model and can't tell a clean review from one with findings only in its free-form summary, so every such review
      is classified (`clean`, or findings triaged), before the archive as after it. Next action, the first that applies:
      a required check is past `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing
-     checks before the archive); a required check failed on the current tip, so CI triage (see Failing checks before the
-     archive); otherwise mark the PR ready for review if it's still a draft, then follow up as Following up on PR review
-     describes. A triaged finding becomes a task under "(added during review)", which sends the change back to
-     *implementing*. Review comes before archiving, because a fix after the archive would mean editing the synced main
-     specs by hand.
+     checks before the archive); a required check failed on the current tip and that run is neither triaged nor verified
+     all-waived, so CI triage (see Failing checks before the archive); otherwise mark the PR ready for review if it's
+     still a draft, then follow up as Following up on PR review describes. A triaged finding becomes a task under
+     "(added during review)", which sends the change back to *implementing*. Review comes before archiving, because a
+     fix after the archive would mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if the recorded approval kind requires it) every required phase's
      effective final-approval record a pass, review done (no open thread or untriaged finding, and every awaited
      reviewer's first review of the content tip either classified clean or with all its findings triaged and resolved,
@@ -1054,16 +1055,17 @@ from evidence rather than taste:
    the next action before any retry, whatever the change's state: see Failing checks before the archive), or waives the
    test for this change with `herd-resolve`, which records `e2e-waive <test id> <default sha> <files digest>: <reason>`,
    naming the merge-base commit the test was found failing on and a digest of the test's `files` (`sha256:` and the
-   lowercase hex SHA-256 over the files sorted by path bytewise, each framed as its path's UTF-8 bytes (paths are UTF-8,
-   see `select`) preceded by their length in bytes in decimal and a newline, then a newline, its length in bytes in
-   decimal, a newline and its exact bytes, so `herd-resolve` and the scan compute the same value); the herd's own e2e
-   runs for the change then skip it. The waiver covers exactly that failure and lapses on its own when either changes:
-   once the test's files on the branch no longer match the digest (a later task touched the test, so it's change-local
-   again and owes its red/green proof), or once the change merges a newer default branch (the baseline moved, so the
-   comparison runs again). A lapsed waiver means the test runs, and if it still fails on the default branch, a fresh
-   escalation. A waiver doesn't touch CI: the required check still fails until the default branch is fixed, which keeps
-   the merge blocked on the real problem, but its failures in the waived test are triaged as `waived` rather than
-   escalated again (see Failing checks before the archive), so the rest of the change can still progress while it waits.
+   lowercase hex SHA-256 over the files sorted by path bytewise, each file framed as: its Git file mode in octal
+   (`100644` or `100755`) and a newline; its path's length in bytes in decimal, a newline and the path's UTF-8 bytes
+   (paths are UTF-8, see `select`); a newline; its content's length in bytes in decimal, a newline and the content's
+   exact bytes, so `herd-resolve` and the scan compute the same value); the herd's own e2e runs for the change then skip
+   it. The waiver covers exactly that failure and lapses on its own when either changes: once the test's files on the
+   branch no longer match the digest (a later task touched the test, so it's change-local again and owes its red/green
+   proof), or once the change merges a newer default branch (the baseline moved, so the comparison runs again). A lapsed
+   waiver means the test runs, and if it still fails on the default branch, a fresh escalation. A waiver doesn't touch
+   CI: the required check still fails until the default branch is fixed, which keeps the merge blocked on the real
+   problem, but its failures in the waived test are triaged as `waived` rather than escalated again (see Failing checks
+   before the archive), so the rest of the change can still progress while it waits.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
