@@ -744,17 +744,17 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   the change's recorded `e2e-mode` is `on`, or the person, when it's `off` (capacity that appears later doesn't change
   that), run it on the merge-base build `caps.flaky_retries` + 1 times, as step 1 of the rule requires: stable there
   means this change made it intermittent, a regression that goes on to the spec step and becomes a fix task like any
-  other. A check that fails there at least once, or that passes on the second merge-base try after failing the first, is
-  a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, N counting every flaky outcome seen, including on
-  the merge-base runs) and it counts toward `caps.flaky_retries` like any other, so the next action is the person's
-  check again until the count reaches the cap. A failure on both merge-base tries, or one the spec doesn't settle,
-  escalates to `needs-human` as it would anywhere else, and otherwise the triage unit turns the failure into appended
-  task(s) under "(added during final approval)", and the proposal goes back to *implementing*. Either way its verdict
-  commit records `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the
-  stop (a waiver, say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once
-  those tasks are accepted and the holistic review is current again, the change returns to *awaiting-approval* with the
-  `fail` already triaged, and the next action is the human again. The draft PR stays open throughout and simply gets
-  more commits.
+  other. A check that both passes and fails there, or that passes on the second merge-base try after failing the first,
+  is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, N counting every flaky outcome seen, including
+  on the merge-base runs) and it counts toward `caps.flaky_retries` like any other, so the next action is the person's
+  check again until the count reaches the cap. A check that fails on every merge-base run is pre-existing (fixed on the
+  default branch or waived), and that, or a failure the spec doesn't settle, escalates to `needs-human` as it would
+  anywhere else, and otherwise the triage unit turns the failure into appended task(s) under "(added during final
+  approval)", and the proposal goes back to *implementing*. Either way its verdict commit records
+  `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the stop (a waiver,
+  say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once those tasks are
+  accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail` already
+  triaged, and the next action is the human again. The draft PR stays open throughout and simply gets more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
@@ -792,18 +792,20 @@ The commands' contract, so the orchestrator can handle ids and results determini
   every `run`, so a rerun after an edit always tests the edited code, never the previously installed build.
 - **`select`** takes no arguments. It reads, on stdin, the paths that differ between a base commit and the working tree,
   committed or not, one JSON string per line (a Git path may contain a newline, so a raw path per line would be
-  ambiguous), which the herd computes itself (so the implementer can run it before its commit exists, and a reviewer
-  runs it for the commit under review); it can read the `e2e.tests` files, but nothing else of the change (see below).
-  It prints the relevant tests on stdout as JSON lines, one per test: `{"id": ..., "files": [...]}`, where `files` lists
-  the repository paths that define the test (all under `e2e.tests`). That's how the herd knows which selected tests a
-  change adds or changes: a test is change-local if any of its files is among the changed paths, which decides both the
-  required red run and whether step 2 below compares with the default branch. Every added or modified path under
-  `e2e.tests` among the changed paths must appear in at least one selected test's `files` (a deleted one is the tamper
-  guard's business), so a selector that doesn't recognize a new test or helper can't make its red/green proof disappear
-  by selecting nothing. Ids are unique, and each is a safe single path component (only letters, digits, `.`, `_` and
-  `-`, and never `.` or `..`), since it also names the test's evidence directory; output that breaks this is a failed
-  attempt with reason `e2e-contract`. A deterministic script, so selection is reviewable and repeatable and an agent
-  can't quietly skip a test. Any non-zero exit fails the unit.
+  ambiguous; JSON can't carry bytes that aren't UTF-8, so the herd requires a change's paths to be valid UTF-8 and
+  commit validation rejects one that isn't, which also keeps the waiver digest's path framing exact), which the herd
+  computes itself (so the implementer can run it before its commit exists, and a reviewer runs it for the commit under
+  review); it can read the `e2e.tests` files, but nothing else of the change (see below). It prints the relevant tests
+  on stdout as JSON lines, one per test: `{"id": ..., "files": [...]}`, where `files` lists the repository paths that
+  define the test (all under `e2e.tests`). That's how the herd knows which selected tests a change adds or changes: a
+  test is change-local if any of its files is among the changed paths, which decides both the required red run and
+  whether step 2 below compares with the default branch. Every added or modified path under `e2e.tests` among the
+  changed paths must appear in at least one selected test's `files` (a deleted one is the tamper guard's business), so a
+  selector that doesn't recognize a new test or helper can't make its red/green proof disappear by selecting nothing.
+  Ids are unique, and each is a safe single path component (only letters, digits, `.`, `_` and `-`, and never `.` or
+  `..`), since it also names the test's evidence directory; output that breaks this is a failed attempt with reason
+  `e2e-contract`. A deterministic script, so selection is reviewable and repeatable and an agent can't quietly skip a
+  test. Any non-zero exit fails the unit.
 - **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
   deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
   (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
@@ -813,11 +815,12 @@ The commands' contract, so the orchestrator can handle ids and results determini
   hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. Each id runs from clean app and device state (app data
   cleared, device settings and media as `boot` left them), so results don't depend on order or on what ran before; the
   herd relies on that when it reruns one failed id alone to tell a flake from a failure, and in red/green runs. It exits
-  0 if every test passed, 1 if any failed, anything else on an error that isn't a test result. The herd validates the
-  results before believing them: valid JSON, exactly one record for every requested id and none for any other, and
-  statuses that agree with the exit code (0 means all pass, 1 means at least one fail). A violation means the script is
-  broken, not the test: it's a failed attempt with reason `e2e-contract`, so a script that keeps breaking escalates
-  instead of passing a change by accident.
+  0 if every test passed, 1 if any failed, anything else on an error that isn't a test result. Any other exit is a
+  command failure (an install that failed before any test ran, say): the unit fails with the reason, and whatever
+  partial results it left are ignored. For exits 0 and 1, the herd validates the results before believing them: valid
+  JSON, exactly one record for every requested id and none for any other, and statuses that agree with the exit code (0
+  means all pass, 1 means at least one fail). A violation means the script is broken, not the test: it's a failed
+  attempt with reason `e2e-contract`, so a script that keeps breaking escalates instead of passing a change by accident.
 
 **The harness comes from the default branch, never the change branch.** It decides whether the loop can go red at all,
 so an implementer that rewrote `select` to print nothing, or `run` (or any helper either loads) to report success, would
@@ -926,25 +929,27 @@ from evidence rather than taste:
 
 1. **Rerun it.** If it passes on a rerun, it's intermittent, but that alone doesn't say whose: for a test this change
    didn't add or change, the triager also runs it on the merge-base build (step 2's) `caps.flaky_retries` + 1 times. If
-   it fails there at least once, the flakiness predates the change: it's flaky, so record it, retry, change nothing. If
-   it's stable there, this change made it intermittent, which is a regression like any other failure the change caused:
-   go on to 3. A change-local test that passes on a rerun is flaky and the change's own. Each flake leaves a fixed
-   record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
-   `E2E:` section (`- <test id> flaky xN`), a task review or `triage` unit adds `e2e-flaky <test id> <sha> xN` to its
-   verdict commit, N counting every flaky outcome in the unit, not just whether there was one, and CI triage records
-   `ci-triage "<check>" <sha> <run key> "<test id>": flaky xN`. Flaky outcomes are counted from those records per test
-   per change, summing the Ns (CI's keyed by check and test id together, so a non-test failure, `"-"`, in one check
-   never shares a count with another check's), and when the count reaches `caps.flaky_retries` the change escalates to
-   `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever. Units
-   enforce the cap as they go, since reruns happen inside one unit: the change's recorded count plus the unit's own
-   flakes so far must stay below the cap before another rerun, and when it doesn't, the unit stops retrying (an
-   implementer commits what it has with an `escalate` request, "flaky test"; a reviewer or triage unit records its
-   flakes and escalates); for a test the change didn't add or change, the person fixes the test or its environment in a
-   separate change and resolves the stop once that's merged (update-branch comes first, as for a "fails on the default
-   branch too" stop); for a change-local test, the flakiness is this change's own, so the person resolves the stop by
-   adding a task to stabilize it to this change's `tasks.md` (`herd-resolve` helps), or fixes the environment if that's
-   the cause. Either way the test's flake count starts over from that resolution. A flaky test can't be waived: a waiver
-   needs a failure on the merge-base to point at, and a flake may not have one.
+   it both passes and fails there, the flakiness predates the change: it's flaky, so record it, retry, change nothing.
+   If it fails every time there, it was already broken, and step 2's pre-existing path applies (fix the default branch
+   or waive). If it passes every time there, this change made it intermittent, which is a regression like any other
+   failure the change caused: go on to 3. A change-local test that passes on a rerun is flaky and the change's own. Each
+   flake leaves a fixed record, written by whoever saw it, since reruns happen inside disposable units: the implementer
+   lists it in its `E2E:` section (`- <test id> flaky xN`), a task review or `triage` unit adds
+   `e2e-flaky <test id> <sha> xN` to its verdict commit, N counting every flaky outcome in the unit, not just whether
+   there was one, and CI triage records `ci-triage "<check>" <sha> <run key> "<test id>": flaky xN`. Flaky outcomes are
+   counted from those records per test per change, summing the Ns (CI's keyed by check and test id together, so a
+   non-test failure, `"-"`, in one check never shares a count with another check's), and when the count reaches
+   `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying again, so an
+   intermittently failing test can't cycle forever. Units enforce the cap as they go, since reruns happen inside one
+   unit: the change's recorded count plus the unit's own flakes so far must stay below the cap before another rerun, and
+   when it doesn't, the unit stops retrying (an implementer commits what it has with an `escalate` request, "flaky
+   test"; a reviewer or triage unit records its flakes and escalates); for a test the change didn't add or change, the
+   person fixes the test or its environment in a separate change and resolves the stop once that's merged (update-branch
+   comes first, as for a "fails on the default branch too" stop); for a change-local test, the flakiness is this
+   change's own, so the person resolves the stop by adding a task to stabilize it to this change's `tasks.md`
+   (`herd-resolve` helps), or fixes the environment if that's the cause. Either way the test's flake count starts over
+   from that resolution. A flaky test can't be waived: a waiver needs a failure on the merge-base to point at, and a
+   flake may not have one.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
    the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
    branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
