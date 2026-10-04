@@ -76,7 +76,7 @@ final_approval:
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
 missing_capabilities:                         # a task that needs one of these escalates instead of being attempted
   - macOS / Xcode
-caps: { review_rounds: 3, added_tasks: 3, gate_fixes: 3, pr_review_rounds: 5 }
+caps: { review_rounds: 3, added_tasks: 3, failed_attempts: 3, gate_fixes: 3, pr_review_rounds: 5 }
 prompts:                                      # optional, appended to the generic role prompts
   implementer: .herd/implementer.md
   reviewer: .herd/reviewer.md
@@ -86,7 +86,7 @@ pr_review:                                    # see Following up on PR review
   timeout: 15m                                # after this, a missing review is treated as none, shown in the status pane
 ```
 
-**Defaults** for what a manifest leaves out: `caps` as in the example (3, 3, 3 and 5) and `pr_review.timeout: 15m`.
+**Defaults** for what a manifest leaves out: `caps` as in the example (3, 3, 3, 3 and 5) and `pr_review.timeout: 15m`.
 They come from the first project's PRs before the herd existed: one PR took five Copilot rounds to come clean,
 which sets `pr_review_rounds`, and Copilot re-reviewed about 2 to 4 minutes after each push, which a 15-minute
 timeout covers with room for a slow round. The other caps are still guesses (see Open questions).
@@ -172,30 +172,31 @@ These are the generic rules `herd-ready` checks. A project's workflow doc adds i
 
 The herd can start observing a new project at any time, without restarting anything.
 
-- **Registering.** `herd init` registers the project it onboards. `herd add <repo-url>` registers a project that
-  already has `.herd/` (for example, on a second host). Both write `~/.config/herd/config.yaml` and poke the
-  orchestrator. The orchestrator gets that file **read-only**, so registering stays a host-side, human action that
-  no agent or orchestrator bug can widen.
+- **Registering.** `herd init` registers the project it onboards. `herd add <repo-url>` registers a project that already
+  has `.herd/` (for example, on a second host). Both write `/etc/herd/config.yaml` and poke the orchestrator (see The
+  herd's own account). The orchestrator gets that file **read-only**, so registering stays a host-side, human action
+  that no agent or orchestrator bug can widen.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
-  a `.herd/project.yaml` that parses, the orchestrator's GitHub token can push to the repo, the project's
-  toolchain image builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's
-  *inactive*, and the status pane says which check failed. Nothing records
+  a `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
+  builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
+  status pane says which check failed. Nothing records
   that `herd doctor` passed. `doctor` is the human's deeper check (gate in a real worker, branch protection, model
   backend) to run before trusting a project, not a switch the orchestrator reads.
 - **First scan of a new project.** The orchestrator creates the project's bare mirror and builds its images. It
   then treats the project like any other: it queues change branches already marked `ready: true`, and leaves the
-  others alone. The herdr bridge adds the project's workspace on its next pass.
-- **GitHub access is the manual step.** The orchestrator's token is a fine-grained token limited to specific
-  repos, so a new project must be added to the token's repository list (or a new token issued). `herd add`/`init`
-  check this and say so when it's missing. Until it's done, the project stays inactive with "token can't push".
+  others alone. The herdr bridge adds the project's workspace, with its planner pane, on its next pass.
+- **GitHub access is the manual step.** The orchestrator acts on GitHub as the herd's own **GitHub App**,
+  installed on selected repositories, so a new project needs the App installed on it (one step in GitHub's
+  settings). `herd add`/`init` check this and say so when it's missing. Until it's done, the project stays inactive
+  with "App not installed".
 - **Pausing and removing.** `herd pause <project>` / `herd resume <project>` set `paused` in host config. A paused
   project gets no new work; a unit already running finishes and pushes. `herd remove <project>` unregisters it:
   running units for it are stopped (their work is discarded like any crashed attempt), and its mirror, caches and
   images are deleted. Its branches, PRs and `review-notes.md` stay on GitHub, so registering it again resumes
   exactly where it stopped.
-- **Why not discover projects automatically** (e.g. every repo the token can see that has `.herd/`)? Because the
-  token's repo list already has to be edited by hand. Discovery would save one command and turn "the token can
-  see this repo" into "the herd will push to this repo", which should stay an explicit choice.
+- **Why not discover projects automatically** (e.g. every repo the App is installed on that has `.herd/`)? Because
+  installing the App is about access, and registering is about intent: discovery would turn "the App can see this
+  repo" into "the herd will push to this repo", which should stay an explicit choice.
 
 ## The hand-off: when a proposal enters the queue
 
@@ -257,6 +258,8 @@ status file on exit. The orchestrator then validates the commit before pushing i
   implementer commit must not touch `review-notes.md` or flip a checkbox to `[x]`; no worker commit may touch
   `.herd/`);
 - the status file agrees with the commit;
+- the commit doesn't touch the project's CI workflows (`.github/workflows/`). CI is the independent second net, so
+  the herd's App isn't granted GitHub's `workflows` permission, and a task that needs a CI change escalates;
 - **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying
   a file matching the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a
   `guarded.paths` file (a lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the
@@ -295,8 +298,42 @@ status file on exit. The orchestrator then validates the commit before pushing i
   `tasks.md` and `review-notes.md`, an archive commit only what `openspec archive` changes under `openspec/`.
   `herd doctor` flags a `guarded` pattern that reaches into `openspec/`, where it would collide with the archive.
 
-A commit that fails validation is discarded like any crashed attempt. Worker containers never hold GitHub
-credentials; the orchestrator's GitHub token is the only push-capable credential in the system.
+
+**Requests travel in the commit message**, never in the status file, which is discarded with the clone. An
+implementer that needs something it can't do itself lists each need under a `Requests:` section of its commit
+message, in the same fixed format as `Guarded:`:
+
+```
+Requests:
+- R1 task 3.2: the importer needs a migration for the new column first
+- R2 input sample-receipt.jpg: a real receipt photo for the OCR fixture
+```
+
+`- <id> <kind> <subject>: <why>`, where the id (`R1`, `R2`, …) is unique within the commit and the kind is
+`task` (an added task; the subject names the task it's for), `input` (outside content; the subject names the file)
+or `capability` (something the pipeline lacks). When the task can't go further without it, the commit is
+**request-only**: no code, just the task's checkbox flipped to `[r]`, so the reviewer picks it up through the
+ordinary task review and the task model stays `[ ]` / `[r]` / `[x]`. That review answers each request in
+`review-notes.md` as `request <commit sha> <id>: added|needs-human|refused — <reason>`: appending a task,
+recording a `needs-human` input request, or refusing (the task goes back to `[ ]`). Validation of the verdict
+commit requires exactly one answer per request id. The status file only reports how the unit ended.
+
+A commit that fails validation is discarded like any crashed attempt, and recorded as one (see Failed
+attempts). Worker containers never hold GitHub credentials; the orchestrator's GitHub App key is the only
+push-capable credential in the system.
+
+**The orchestrator's own commits** are bookkeeping only, in a fixed format and never written by a model: a
+failed attempt's record (below). Everything else on a change branch is a worker's commit, a person's, or an
+update-branch merge.
+
+**Failed attempts.** A unit that ends without an accepted commit (the worker crashed or timed out, couldn't get
+the gate green, or its commit failed validation) leaves nothing in the branch, so on its own it would be retried
+forever. The orchestrator therefore commits a line to `review-notes.md`:
+`attempt-failed: <unit kind> <task> <reason>, from <sha>`, pinned to the tip the unit started from. The count of
+those lines since the task's last accepted commit is derived from git like everything else, and past
+`caps.failed_attempts` the change escalates to `needs-human`. Failures of the herd's own infrastructure (the model
+backend unreachable or rate-limited, the host out of disk) are recorded with an `infra` reason, don't count toward
+the cap, and back off instead.
 
 ## Communication and the work queue: git + files, no message bus, no separate durable store
 
@@ -312,7 +349,7 @@ independently:
   branch's commit history is how many review rounds a task has had — not a separate counter.
 - Whether a proposal's PR exists, and whether it's still a draft, is answered by asking GitHub
   (`gh pr list --head <branch> --json number,isDraft`), not remembered.
-- The set of registered projects is host **config** (`~/.config/herd/config.yaml`), not state: it's written by
+- The set of registered projects is host **config** (`/etc/herd/config.yaml`), not state: it's written by
   the `herd` CLI, never by the orchestrator, and re-read on every scan (see Registering projects).
 
 The only state that lives purely in the orchestrator process's memory — and is allowed to vanish on crash — is the
@@ -357,8 +394,8 @@ silently dropped — comes from two rules together, not from the scan alone:
      Next action: none until it is.
   4. *implementing* — ready, dependencies merged, ≥1 task not `[x]`. This includes tasks appended after a final-approval
      failure, even when a draft PR already exists.
-  5. *holistic-review-pending* — every task `[x]`, no holistic-accept recorded in `review-notes.md` for the
-     current tip, change not archived.
+  5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
+     below), change not archived.
   6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, no pass recorded, change not
      archived. Next action: ensure a **draft** PR exists; the human runs the project's final approval. Skipped
      entirely when `final_approval.kind: none`.
@@ -374,7 +411,18 @@ silently dropped — comes from two rules together, not from the scan alone:
      archived on the branch. Next action: the reviewer runs the archive and
      commits. A crash mid-archive never gets pushed, so it's discarded with the clone and redone, same as any
      other unit of work.
-  9. *ready-to-merge* — archive commit pushed and its checks passing. Next action: none; a human merges.
+  9. *ready-to-merge* — archive commit pushed and its checks passing. Next action: none; a human merges. The
+     orchestrator keeps watching the PR: the archive push and any update-branch merge get reviewed again, and a
+     new finding at this point escalates to `needs-human` instead of becoming a task, because fixing it would mean
+     un-archiving.
+
+  **Current records.** A holistic-accept or a final-approval pass is pinned to the SHA it evaluated, and recording
+  it is itself a commit, so "for the current tip" could never hold. A record is *current* when every commit since
+  its SHA is **bookkeeping**: one that touches only `review-notes.md` (verdict lines, failed-attempt lines,
+  final-approval records, PR triage notes), or an update-branch merge from the default branch that merged cleanly.
+  Any other commit (a fix task's code, a person's push) makes the holistic-accept stale, so the change returns to
+  *holistic-review-pending*. A final-approval pass isn't made stale by later fixes on its own: the holistic review
+  that follows them records `final-approval: rerun` when the fixes touch what final approval covers.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -394,7 +442,8 @@ proposals.
 
 Changes sometimes grow tasks during apply, so the pipeline allows it, narrowly:
 - **Only the reviewer appends tasks**, as part of a verdict commit, under a section marked "(added during apply)".
-  The implementer can only *request* one, via its status file; the reviewer decides on its next pass.
+  The implementer can only *request* one, in its commit's `Requests:` section; the reviewer decides in the task's
+  review (see Who commits, who pushes).
 - Tasks fixing final-approval failures are appended the same way, under "(added during final approval)", and so are
   tasks for GitHub review comments, under "(added during review)" (see *in-review*).
 - Added tasks count toward the per-proposal cap (`caps.added_tasks`); appending past it escalates to
@@ -411,10 +460,12 @@ A proposal stops and waits for a human when any of these happens:
 - PR review runs past `caps.pr_review_rounds` rounds without coming clean, or raises a finding the reviewer can't
   map to a task (see Following up on PR review);
 - merging the default branch into the change branch conflicts (see Keeping up with the default branch);
-- the gate keeps failing after `caps.gate_fixes` fix attempts;
+- a unit keeps failing (crash, timeout, red gate, rejected commit) past `caps.failed_attempts` (see Failed attempts);
+- CI keeps failing after an update-branch past `caps.gate_fixes` fix tasks (see Keeping up with the default branch);
 - the holistic review rejects with feedback that can't be mapped to a specific task;
 - a task needs something in the manifest's `missing_capabilities`, or anything else the pipeline doesn't have (a
-  device, a credential), or content from outside the project (see Outside content).
+  device, a credential, a change to CI workflows), or content from outside the project (see Outside content);
+- a review finding arrives after the archive commit (see *ready-to-merge*).
 
 The marker is a committed line in `review-notes.md` (`needs-human: <reason>`, pinned to a SHA like any verdict),
 so the state is derived from git like everything else. The human resolves it by fixing whatever's wrong (editing
@@ -460,7 +511,9 @@ work like any other, derived from git and GitHub on each scan, never remembered.
 
    Automated reviewers review again after every push, a few minutes later. So review is done only when every
    reviewer in `pr_review.wait_for` has reviewed the **current tip**, and that review leaves nothing open. Replies the
-   herd itself posted don't count as reviews; filter by author and commit, not by the number of reviews.
+   herd itself posted don't count as reviews; filter by author and commit, not by the number of reviews. The herd
+   posts as its GitHub App (`<app>[bot]`), so its replies never look like a person's comments; with a personal token
+   they would, and filtering by author would drop the person's real feedback.
 2. **Triage (reviewer).** New findings go to a reviewer unit together with the change, so the reviewer can check each
    claim against the code and the upstream sources it names. For each finding it decides one of:
    - *fix*: it appends a task under "(added during review)". Where the finding is one instance of a class (a missed
@@ -476,8 +529,9 @@ work like any other, derived from git and GitHub on each scan, never remembered.
    posts the reply the reviewer wrote, naming the fixing commit, and resolves the thread. A finding with no thread is
    answered in one PR comment per review round. Workers hold no GitHub credentials, so replies are always posted by
    the orchestrator, from text in `review-notes.md`.
-5. **Repeat.** The push of the fixes triggers the next round. A change past `caps.pr_review_rounds` rounds without coming
-   clean, or a finding the reviewer can't map to a task, escalates to `needs-human`.
+5. **Repeat.** The push of the fixes triggers the next round. Only pushes with non-bookkeeping commits count as rounds,
+   so update-branch merges and the herd's own records don't use up `caps.pr_review_rounds`. A change past that many
+   rounds without coming clean, or a finding the reviewer can't map to a task, escalates to `needs-human`.
 
 Feedback from a person is handled the same way. A request to change the proposal's scope rather than its
 implementation is escalated, not triaged: scope is the proposer's call.
@@ -489,9 +543,10 @@ branch protection requires PR branches to be **up to date** before merging, and 
 update-branch (`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`, a merge commit) when the PR is
 behind. That merge triggers the CI checks again, which is where two concurrent proposals that both touched a shared
 file (a dependency catalog, `CLAUDE.md`, a shared spec) actually collide — per-task testing alone won't catch that.
-A conflicting update-branch escalates to `needs-human`; a CI failure after the update is treated like a failed
-gate (fix task, then escalate past the cap). A final-approval pass recorded before an update-branch merge is not
-invalidated by it — CI re-runs the gate, and the human re-runs final approval at their discretion.
+A conflicting update-branch escalates to `needs-human`; a CI failure after the update gets a fix task, and
+escalates past `caps.gate_fixes` of them. A clean update-branch merge is bookkeeping (see Current records), so it
+doesn't make a holistic-accept or final-approval pass stale: CI re-runs the gate, and the human re-runs final
+approval at their discretion.
 
 ## Cleaning up after merge
 
@@ -519,7 +574,7 @@ unit (Containers), so what lingers is a change's branch and a planner's worktree
 ## Models
 
 Which model runs a unit is the operator's cost and privacy decision, so it's host config
-(`~/.config/herd/config.yaml`), never the project manifest. Named **backends** say what a model is; **worker slots**
+(`/etc/herd/config.yaml`), never the project manifest. Named **backends** say what a model is; **worker slots**
 say which backend runs which kind of unit:
 
 ```yaml
@@ -542,8 +597,11 @@ slots:                                 # each slot runs one unit at a time
   - name: cloud-2
     implementer: sonnet
     reviewer: opus                      # one backend for every reviewer unit kind
+planner: { agent: claude }              # the interactive agent in each project's planner pane (see herdr)
 projects:
-  some-project: { slots: [gpu, gpu-private] }   # optional: e.g. code that must not leave the host
+  some-project:
+    checkout: ~/src/some-project        # the operator's checkout, for its herdr workspace (herd init fills it in)
+    slots: [gpu, gpu-private]           # optional: e.g. code that must not leave the host
 ```
 
 A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
@@ -573,9 +631,9 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   any metrics read `Herd-Model`, the model that actually ran, never the name. How often each model's work is
   accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks
   the herd has already accepted on the candidate and compare. There's no separate metrics store.
-- **A container gets only its backend's settings.** Endpoint and model name as env, and the secret only if the
-  backend names one; a local slot's workers never see an API key. Egress is that backend's endpoint plus the
-  manifest's list.
+- **No worker holds an API key.** A unit's container gets its backend's model name and the address of the
+  herd's model gateway, plus a token for that unit only. The gateway adds the backend's real key on the way out
+  (see Network and secrets), and accepts the unit's token only for that unit's backend.
 - **The harness follows the backend kind.** The implementer harness serves every kind. The reviewer runs `claude -p`
   on `anthropic` backends and the implementer harness with the review prompt otherwise; both produce the same
   structured verdict.
@@ -587,11 +645,12 @@ running unit finishes on the backend it started with.
 
 ## Containers
 
-**Runtime: rootless Podman.** Everything runs as an ordinary user's containers, with no root daemon. The
-orchestrator is a container defined by a Quadlet unit (`herd-orchestrator.container`), run by the user's systemd
-with `Restart=always`. Lingering (`loginctl enable-linger`) starts the user's systemd at boot without anyone logged
-in, but not the service itself: a Quadlet-generated service can't be `systemctl enable`d, so the `.container` file
-carries `[Install] WantedBy=default.target`, which starts it with the user's systemd. The herdr
+**Runtime: rootless Podman, under the herd's own account.** Everything runs as containers of a dedicated
+`herd` system user, with no root daemon (see The herd's own account). The orchestrator is a container defined by a
+Quadlet unit (`herd-orchestrator.container`), run by that user's systemd with `Restart=always`. Lingering
+(`loginctl enable-linger herd`) starts that user's systemd at boot without anyone logged in, but not the service
+itself: a Quadlet-generated service can't be `systemctl enable`d, so the `.container` file carries
+`[Install] WantedBy=default.target`, which starts it with the user's systemd. The herdr
 session that displays it runs on the host (see Launching and watching the herd). Workers are **not** units: the
 orchestrator starts one container per unit of work (it has to, to mount that unit's clone), through the Podman API,
 from a per-project, per-role image:
@@ -612,19 +671,23 @@ from a per-project, per-role image:
       context of at least 22k tokens, which narrows the local models a small GPU can serve.
   - *reviewer*: `claude -p` (and the implementer harness, for non-Anthropic backends) with the review system
     prompt (structured accept/revise output), `git`, and the `openspec` CLI for the archive. Re-runs the gate
-    itself rather than trusting the implementer's claim.
+    itself rather than trusting the implementer's claim. The holistic review's prompt includes a security
+    checklist; there's no separate security-review unit. A project that wants static analysis (Semgrep, say)
+    adds it to its gate, where it runs on every task.
 - **Local model server** — when a backend is local: Ollama (or similar) as its own container on the workers'
   internal network, with no egress of its own (the operator pulls models). It's the only container given the GPU,
   however the vendor exposes it to rootless Podman. An Intel or AMD card is `--device /dev/dri`, and since the
   device usually belongs to the `render` group, which a rootless container doesn't keep by default, also
   `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in
   `render`. An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
+- **Network proxy** — generic image, on both the workers' internal network and the outside one: the model
+  gateway and the egress allow-list (see Network and secrets). It holds the model backends' API keys and nothing
+  else, and runs no model and no project code.
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container
-  lifecycle, commit validation, push, `gh pr create`/update-branch/mark-ready. Needs a GitHub token (scoped to the
-  registered repos), the user's rootless Podman API socket, and the host config read-only; no LLM key. It's the one
-  privileged component, which is acceptable because it runs no model and no project code. Rootless, the socket is
-  worth the user's account, not root: it could still start a container that mounts the user's home (see Open
-  questions).
+  lifecycle, commit validation, push, `gh pr create`/update-branch/mark-ready. Needs the GitHub App's private key,
+  the `herd` user's rootless Podman API socket, and the host config read-only; no LLM key. It's the one privileged
+  component, which is acceptable because it runs no model and no project code. The socket is worth the `herd`
+  account, which holds nothing but the herd.
 
 **Repo access: a local bare mirror per project, one fresh clone per unit of work.** The orchestrator keeps a bare
 mirror of each registered repo in a volume (fetched before each assignment). For each unit of work it clones
@@ -644,12 +707,49 @@ network instead.
 - **No filesystem access outside the project.** The only mounts are the unit's own clone, the project's declared
   cache volumes, and (when provided) the read-only inputs volume. No host bind mounts (not the host checkout, not
   `$HOME`, not the Podman socket), no access to other units' clones, other projects' volumes or the bare mirrors.
-  The container's root filesystem is read-only apart from those mounts and a scratch `tmpfs`. Secrets reach a
-  container only as the env vars its role needs.
+  The container's root filesystem is read-only apart from those mounts and a scratch `tmpfs`. No secret reaches
+  a worker: its only credential is its unit's gateway token, which dies with the unit.
 - **Caches** are per project *and* per role, so one project's worker can never read or poison another's. A project
   that declares none gets the strict per-clone behavior (slower, nothing shared).
-- Network egress is the model endpoint plus the manifest's `egress` list — not open internet. Enforced by putting
-  workers on an internal Podman network (`--internal`) behind an allow-listing proxy.
+- Network egress is the unit's model backend plus the manifest's `egress` list — not open internet (see Network
+  and secrets).
+
+**Network and secrets.** Workers sit on an internal Podman network (`--internal`) with no route out. Their only
+way out is the herd's network proxy, which serves two purposes:
+- **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`,
+  or the harness's equivalent, points at the gateway, with a placeholder key). The gateway checks the unit's token,
+  swaps in the backend's real key and calls the provider over HTTPS. So workers never hold an API key, the gate
+  and the agent-written code it runs have none to leak, and a unit can only call the backend its slot assigns.
+  Local backends go through the gateway too, which keeps that rule uniform.
+- **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed
+  only to the hosts on the unit's list: the manifest's `egress`, which a role can narrow. The proxy doesn't break
+  TLS. A tool that ignores the proxy settings can't connect at all, so a mistake fails closed; `herd doctor`
+  proves the real gate works this way (Gradle, for one, needs its proxy in `JAVA_TOOL_OPTIONS`).
+
+The orchestrator registers each unit's token with the proxy (project, role, backend, egress list) when it starts
+the unit, and revokes it when the unit ends. The keys live in the herd user's files and are mounted into the proxy
+alone, so the orchestrator is never given one. That isn't a hard wall: the orchestrator holds the `herd` user's
+Podman socket, which could read any of that user's containers, the proxy included. The socket is the real trust
+boundary, which is why it belongs to an account that holds nothing but the herd, and why the orchestrator runs no
+model and no project code. A firewall per container (Hydra's iptables approach) doesn't fit:
+rootless Podman's networking runs inside the user's own namespace, where host rules can't tell containers apart.
+
+## The herd's own account
+
+The herd runs as a dedicated `herd` system user, not the operator's account, so that the orchestrator's Podman
+socket, the App's private key and the proxy's API keys reach nothing else on the host. The operator never uses the
+`herd` user's Podman. They share three things through the filesystem, using a `herd-ops` group the operator
+belongs to:
+- **`/etc/herd/`**: host config, written by the operator (through the `herd` CLI) and mounted read-only into the
+  orchestrator.
+- **`/var/lib/herd/shared/`**: written by the orchestrator, readable by `herd-ops`. It holds the event log, each
+  running unit's log, and a heartbeat file the `herd` CLI checks.
+- **`/var/lib/herd/requests/`**: writable by `herd-ops`. The `herd` CLI drops a request here (rescan now, run
+  `doctor` for a project, import provided inputs, remove a project's volumes) and reads the result from
+  `shared/`. Requests ask the orchestrator to act; they're never state, so losing one loses only that request.
+
+Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator,
+the model keys the proxy.
 
 ## Outside content
 
@@ -657,18 +757,19 @@ When an agent needs content from outside the project (a reference photo, a sampl
 file), it never fetches it itself. The human provides it through a request/provide cycle that is recorded in git
 like every other state:
 
-1. **Request.** The implementer names what it needs in its status file (what, why, which task); the reviewer turns
-   that into a `needs-human: input <name> — <why>` marker in `review-notes.md`. The proposal stops there (see
-   Escalation); the status pane lists the request.
+1. **Request.** The implementer names what it needs in its commit's `Requests:` section (what, why, which task),
+   in a request-only commit when it can't proceed without it; the reviewer turns that into a
+   `needs-human: input <name> — <why>` marker in `review-notes.md`. The proposal stops there (see Escalation); the
+   status pane lists the request.
 2. **Provide, preferred: commit it.** If the content is fine to live in the repo, the human commits it to the
    change branch at a path inside the project, with a line in the change's `inputs.md` saying where it came from.
    From then on it's ordinary project content.
-3. **Provide, when it can't be committed** (too large, licensed, or not to be published): the human runs
-   `herd provide <project> <change> <file>...`, which copies the files into a per-change **inputs volume**
-   (never a host bind mount) and records each file's name, SHA-256 and origin in `inputs.md`, committed to the
-   branch. The orchestrator mounts that volume **read-only** at `.agent-inputs/` inside the unit's clone (the
-   herd adds it to the clone's `.git/info/exclude`, so the project needn't gitignore it), and only for units of
-   that change. A file whose hash doesn't match `inputs.md` is not mounted.
+3. **Provide, when it can't be committed** (too large, licensed, or not to be published): the human runs `herd provide
+   <project> <change> <file>...`, which copies the files into the shared request area, where the orchestrator moves them
+   into a per-change **inputs volume** (never a host bind mount), and records each file's name, SHA-256 and origin in
+   `inputs.md`, committed to the branch. The orchestrator mounts that volume **read-only** at `.agent-inputs/` inside
+   the unit's clone (the herd adds it to the clone's `.git/info/exclude`, so the project needn't gitignore it), and only
+   for units of that change. A file whose hash doesn't match `inputs.md` is not mounted.
 4. **Resume.** The human marks the `needs-human` request resolved; the next scan picks the proposal back up.
 
 This path is for content, never credentials. A task that needs a secret escalates and stays with the human; it
@@ -676,60 +777,138 @@ isn't solved by handing the secret to an agent.
 
 ## Launching and watching the herd: herdr
 
-The herd's terminal front end is [herdr](https://herdr.dev), the terminal workspace manager for AI coding agents
-(workspaces, tabs and panes in a persistent session you can detach from and reattach to). **The herd is launched
-and watched through herdr; there is no herd-specific dashboard.** "The herd" is the *running ecosystem instance*:
-the orchestrator, the active worker containers, and the `herd` session in herdr that shows them.
+The herd's terminal front end is [herdr](https://herdr.dev) (Apache-2.0): a background server holding workspaces,
+tabs and panes, which terminal clients attach to and detach from, locally or from another machine over SSH
+(`herdr machine add`). **The herd is launched and watched through herdr, and it's also where the operator does
+their interactive work on each project; there is no herd-specific dashboard.** "The herd" is the *running ecosystem
+instance*: the orchestrator, the active worker containers, and the herdr workspaces that show them.
 
-**Launch: attach-or-create.**
-- `herd` (no arguments) first runs `systemctl --user start herd-orchestrator`. This is idempotent: it does nothing
-  when the orchestrator is already running, and the unit name is the singleton key, so no lock file is needed.
-  Then it hands over to `herdr --session herd`, which launches the named herdr session or attaches to it if it
-  already exists. One command either way, and detaching (closing the terminal) leaves everything running.
-- The orchestrator does not depend on herdr. It runs as a systemd user unit whether or not anyone is
+**Layout.** Everything below runs under the operator's account, reading what the `herd` user writes to
+`/var/lib/herd/shared/`:
+- **The `herd` workspace**: the overview. Its first pane runs the bridge (`herd watch`, below); next to it, a
+  status pane (`herd status --follow`) lists every proposal in flight with its state (from the enum above), its
+  current task, review round and spend. Proposals waiting on a person (`needs-human`, `awaiting-approval`) come
+  first, with the reason or the final-approval instructions.
+- **One workspace per registered project**, opened in the operator's checkout of it (`--cwd`), holding:
+  - **The planner pane**: the operator's interactive agent (host config `planner.agent`, default `claude`) running
+    in that checkout. This is where `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get
+    written. It's created with the workspace, by default, and it belongs to the person: the herd never prompts it,
+    closes it or restarts it. herdr's integration for that agent (`herdr integration install claude`, done by the
+    install script) reports its working/blocked/idle state and resumes its session after a herdr restart.
+  - **One pane per running unit**, following that unit's log (read-only; workers are non-interactive), with its
+    status reported to herdr as `working` and titled `<change> · <role> · task <n> · round <r>`. Closed when the
+    unit ends.
+  - **An attention pane**, only while one of the project's changes waits on a person. Its status is `blocked`, so
+    herdr highlights it like an agent waiting for input, titled with the change and the reason; it shows the
+    details and the next step (for example, `/herd-resolve <change>` in the planner pane beside it). Closed once
+    the change moves on.
+
+Host config records each project's checkout (`herd init` fills it in, since it runs there; `herd add` takes
+`--checkout`). The orchestrator ignores it and never mounts it; only the bridge uses it, for the workspace's
+directory. A project without a checkout gets its workspace without a planner pane.
+
+**Launch.**
+- `herd` (no arguments) checks the orchestrator's heartbeat in `/var/lib/herd/shared/`, and says so loudly when
+  it's stale (with the command to inspect the `herd` user's unit). It doesn't start the orchestrator: that runs
+  under the `herd` account, which the operator doesn't drive. Then it makes sure the `herd` workspace exists with
+  the bridge running in it (creating them through the `herdr` CLI if not: `herdr workspace create --label herd`,
+  then `herdr pane run` for the bridge), and attaches to herdr. One command either way, and detaching (closing the
+  terminal) leaves everything running.
+- `herd <project>` does the same and focuses that project's workspace, re-creating its planner pane if the
+  person closed it.
+- The orchestrator does not depend on herdr. It runs as the `herd` user's systemd unit whether or not anyone is
   attached, and lingering brings it back after a host reboot without herdr.
 
-**The bridge: what the session shows.** A small display-only process, `herd watch`, runs in the session's first
-pane. Because it runs *inside* herdr, it drives the session through the `herdr` CLI with the session context it
-inherits, so the orchestrator container never needs herdr's socket. Every few seconds it reconciles the session
-layout against the orchestrator's event log and the running worker containers:
-- **one workspace per registered project**, with workspace metadata showing that project's in-flight count;
-- **one pane per active unit of work**, running `podman logs -f <worker>` (read-only; the workers are
-  non-interactive), named `<change> · <role> · task <n>`, with pane metadata for the proposal's state and review
-  round. The bridge closes the pane when the unit ends, and only closes panes it created itself;
-- **a status pane** (`herd status --follow`) listing every proposal in flight with its state (from the enum
-  above), its current task and its review-round count. Proposals in `needs-human` or `awaiting-approval` are
-  listed first, with the reason or the final-approval instructions, because those are waiting on the human;
-- **a herdr notification** when a proposal enters `needs-human` or `awaiting-approval`.
+**The bridge.** `herd watch` is display-only and runs inside herdr, so it drives herdr through the `herdr` CLI
+with the context its pane inherits (`HERDR_PANE_ID`), and the orchestrator never needs herdr's socket. Every few
+seconds it reconciles the layout against the event log and the unit logs: it creates missing project workspaces
+(with their planner panes), splits off and closes unit and attention panes (`herdr pane split --no-focus`,
+`herdr pane run`), and sets their status labels. It only ever closes panes it created, and never a planner pane.
+It's stateless, like the orchestrator: after a herdr restart or a reboot it rebuilds what's missing on its next
+pass, and herdr brings back the planner panes' sessions.
 
-The bridge is stateless, like the orchestrator: a fresh session (for example after a reboot) or a restarted bridge
-just rebuilds the layout on its next pass. How the bridge's pane gets started in a new session (herdr session
-config, or `herd` starting it through the `herdr` CLI right after creating the session) is a build-time detail to
-check against herdr's documentation.
+herdr has no alert channel of its own that reaches someone who isn't attached; a `blocked` pane stands out only
+in an open client. Alerts go through Monitoring's `alerts.notify` instead.
 
 **The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit
-pushed, review verdict, PR opened, escalation) to an append-only log on a volume the bridge can read. **Both the
+pushed, review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`. **Both the
 event log and the herdr layout are display-only. The orchestrator never reads them back**, so git stays the only
 source of truth. Losing the log, the bridge or the herdr session loses only what's on screen.
 
 **The `herd` CLI.** The herd repo installs `herd` on the host:
-- `herd`: launch or attach (above).
+- `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
 - `herd init`: run in a project's checkout. **The one command that onboards a project.** It detects what it can
   (OpenSpec present; build tool from wrapper/lock files; gate candidates from `CLAUDE.md`/CI workflows), writes
   `.herd/project.yaml` and `.herd/toolchain.Dockerfile` with those defaults for the human to review and land
   via PR, installs or updates the planner skills, and registers the repo (see Registering projects). It's idempotent:
   re-running it on an onboarded project updates the skills and only reports where `.herd/` differs from the
   detected defaults.
-- `herd doctor [<project>]`: proves a project is ready. It builds the project's worker images, runs the gate on
+- `herd doctor [<project>]`: proves a project is ready, carried out by the orchestrator as a request (see The
+  herd's own account). It builds the project's worker images, runs the gate on
   the default branch inside a worker container with the real mount/egress limits (proving the toolchain is
   sufficient and the egress list complete), checks branch protection and required checks via `gh`, and checks
-  that every model backend answers (see Models). It also checks that `herdr` is installed, lingering is on and the
-  orchestrator's unit is set to start at boot.
+  that every model backend answers (see Models). It also checks that `herdr` is installed with the planner agent's
+  integration, that lingering is on, and that the orchestrator's unit is set to start at boot.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
+
+## Monitoring
+
+The herdr session (above) is how a person watches the herd while attached. This section covers what keeps an eye
+on it the rest of the time: limits on units, spending, alerts that reach the operator anywhere, and what's kept
+for looking back. Settings live in host config:
+
+```yaml
+timeouts:                              # per unit kind; a unit past either is killed
+  implement: { wall: 60m, quiet: 10m }
+  task:      { wall: 20m, quiet: 10m }
+  holistic:  { wall: 30m, quiet: 10m }
+  triage:    { wall: 20m, quiet: 10m }
+  archive:   { wall: 10m, quiet: 5m }
+budget:
+  monthly: 200                         # in the providers' billing currency, cloud backends only
+  warn_at: 80%
+alerts:
+  notify: [desktop, "ntfy:https://ntfy.sh/<topic>"]
+logs:
+  keep_after_merge: 30d                # failed attempts' logs: twice as long
+disk:
+  warn_below: 50GB
+```
+
+The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
+
+- **Unit timeouts.** A unit is killed when it runs past its kind's `wall` time, or goes `quiet`: no log output
+  and no model call for that long. The network proxy sees every model call by unit token, so it reports each
+  unit's last call to the orchestrator. A killed unit is a failed attempt (reason `timeout`, see Failed
+  attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its backend stopped
+  answering is an `infra` failure instead, and doesn't count.
+- **Spending.** The model gateway meters every call it forwards (input and output tokens per unit, backend and project)
+  and writes a usage event to the event log, priced from each cloud backend's `price` in host config (per million input
+  and output tokens). The status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an
+  alert; at the budget, the orchestrator stops dispatching units to cloud backends, running units finish, and local
+  slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the operator's call to raise
+  the budget or wait for the month to turn. The budget is the one control that reads something besides git: the
+  gateway's monthly counter, kept in the herd's own files. It decides only whether cloud units get dispatched, never a
+  change's state. If the counter is lost, cloud dispatch pauses until the operator confirms, so losing it can't
+  overspend.
+- **Alerts that reach the operator anywhere.** herdr's highlighting only shows in an open client, so the
+  orchestrator also sends alerts through `alerts.notify` (a desktop notification, or a push service such as
+  ntfy): a change entering `needs-human` or `awaiting-approval`, the budget warning or limit, a project turning
+  inactive, low disk. The orchestrator can't report its own death, so a separate check does: the orchestrator's
+  systemd unit has `OnFailure=` pointing at a small notifier, and a systemd timer under the `herd` user alerts
+  when the heartbeat in `/var/lib/herd/shared/` goes stale (a hung orchestrator that hasn't exited).
+- **Unit logs and transcripts.** Each unit's log, including the agent's transcript where the harness writes
+  one, is the only record of what the agent actually did, and the first thing to read when a change stops at
+  `needs-human` or fails attempts repeatedly. They're kept in `/var/lib/herd/shared/` until `keep_after_merge`
+  after the change merges, and twice as long for failed attempts. The status pane links a stopped change to its
+  recent units' logs. They're never fed back to a worker: a retried unit starts clean (see Concurrency model).
+- **Disk.** Each scan checks free space where the herd's volumes live (images, caches, mirrors, per-unit clones),
+  warns in the status pane and alerts below `disk.warn_below`, and stops starting units well before it runs out,
+  so a full disk shows up as a warning instead of a string of `infra` failures.
 
 ## PR body
 
@@ -750,9 +929,9 @@ herd takes from it:
   herd's that a review never runs on the model that wrote the code.
 - **Hydra** (Conduction): the closest workflow, an OpenSpec pipeline from `tasks.md` through containerized quality
   checks, code and security review and `needs-input` escalation to a human merge. But it's Conduction's internal
-  pipeline in a private repository, PHP/Nextcloud-only and Claude-only; its agents are GitHub users that push and
-  open PRs; its state lives in labels and GitHub Projects; and it archives after merge. Taken as data points: iptables
-  egress allow-lists per agent (Open questions), and a separate security review.
+  pipeline in a private repository, PHP/Nextcloud-only and Claude-only; its agents are GitHub users that push and open
+  PRs; its state lives in labels and GitHub Projects; and it archives after merge. Considered and not taken: iptables
+  egress allow-lists per agent (see Network and secrets) and a separate security review (see Containers).
 - **Symphony** (OpenAI, Apache-2.0): a spec and reference implementation that gives each ticket an agent workspace
   until its PR lands. Tied to Codex and Linear.
 - **CrewAI** (MIT) and similar agent frameworks: they put an LLM in charge of coordination, the opposite of an
@@ -797,13 +976,18 @@ Steps marked **(manual)** need a human.
    `ready: true`, round-robin assignment to worker slots, the state derivation above, commit validation and
    push, escalation markers, draft PR, update-branch, mark-ready, PR body template, watching PRs for review and
    posting the reviewer's replies, and deleting merged change branches.
-5. The event log and the herdr bridge (`herd watch`, `herd status`).
-6. The orchestrator's Quadlet unit and the `herd` CLI: launch (start the unit, then `herdr --session herd`),
-   `init`, `doctor`, `provide`; an install script that puts `herd` on `PATH`, creates `~/.config/herd/`, installs
-   the Quadlet unit (with its `[Install]` section), enables lingering and the Podman API socket, and checks that
-   `herdr` is installed.
-7. **(manual)** Host secrets: `ANTHROPIC_API_KEY` (for every `anthropic` backend); a fine-grained GitHub
-   token limited to the registered repos with contents + pull-request scopes, for the orchestrator only.
+5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring:
+   unit timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd
+   watchdog for the orchestrator), log retention and the disk check.
+6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace),
+   `init`, `doctor`, `provide`; an install script that creates the `herd` user and `herd-ops` group, `/etc/herd/`
+   and `/var/lib/herd/`, puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with
+   its `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is
+   installed, and installs herdr's integration for the planner agent.
+7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read
+   by the network proxy only); a GitHub App for the herd, with repository permissions *Contents* and *Pull
+   requests* (read and write) and not *Workflows*, installed on the registered repositories, and its private key,
+   read by the orchestrator only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
@@ -811,23 +995,22 @@ Steps marked **(manual)** need a human.
 
 ## Open questions deferred, not forgotten
 
-- Implementer harness: Aider or OpenHands headless (see Containers), compared on the same tasks; something custom
-  only if neither fits.
-- Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
-  too: decide by replaying accepted tasks (see Models).
-- Whether the herd runs as a dedicated `herd` user instead of the operator's account. Rootless Podman keeps the
-  orchestrator's socket off root, but under the operator's account it could still mount their home. A dedicated
-  user closes that, at the cost of the `herd` command and `herd watch` having to reach another user's Podman.
-- The `review_rounds`, `added_tasks` and `gate_fixes` defaults (3 each): tune from the first smoke tests. Projects
-  can override them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see The
-  project manifest).
-- Egress enforcement mechanism (allow-listing proxy vs. per-host firewall rules) — decide at Build plan step 3. Hydra
-  enforces per-agent allow-lists with iptables, giving its security reviewer less egress than its builder: a tested
-  data point for the firewall option (it needs checking under rootless Podman's networking).
-- A separate security-review unit kind (static analysis such as Semgrep plus a security-focused prompt), run beside
-  task or holistic review, as Hydra does.
-- A second workflow besides OpenSpec — only when a project needs it.
-- Whether to automate final approval for projects whose end-to-end tests can run in a container (e.g. an
-  emulator with KVM passthrough), as a `final_approval.kind: container` with its own image.
-- How the bridge pane starts in a fresh herdr session, and whether herdr's agent-state integration is worth
-  feeding from the workers' status files (they aren't interactive agents herdr can detect itself).
+Each waits for the point where it can be answered with evidence rather than guessed.
+
+- **At Build plan step 3** (role layers and images):
+  - Implementer harness: Aider or OpenHands headless (see Containers), compared on the same tasks; something
+    custom only if neither fits.
+  - Which proxy software the network proxy uses (a reverse proxy that can add headers, plus a `CONNECT`
+    allow-list).
+- **At Build plan step 5** (the herdr bridge): the exact `herdr` commands for reporting a pane's status and title
+  and for attaching. herdr's docs (read 2026-10-04) confirm the capabilities this design uses, not every flag.
+- **After the smoke test** (Onboarding a project, step 7):
+  - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each). Projects can override
+    them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see The project
+    manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same way.
+  - Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
+    too, once the reality check passes (Build plan step 2): decide by replaying accepted tasks (see Models).
+- **When a project needs it:**
+  - A second workflow besides OpenSpec.
+  - Automating final approval for projects whose end-to-end tests can run in a container (e.g. an emulator with KVM
+    passthrough), as a `final_approval.kind: container` with its own image.

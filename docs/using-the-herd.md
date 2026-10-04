@@ -63,18 +63,24 @@ Set `ready: false` on the branch. The herd stops after the step it's on. Make yo
 If you push while the herd is working, its own next push is rejected and that step is redone from your commit.
 Nothing you push is lost.
 
-## Watching the herd
+## Working in herdr
 
-Run `herd`. It starts the herd if it isn't running and opens its herdr session, or attaches to it. Closing the
-terminal leaves everything running.
+Run `herd`. It opens herdr, or attaches to it, and warns you if the herd itself has stopped running. The herd runs
+as its own system user, and keeps running when you close the terminal or reboot. `herd <project>` takes you
+straight to a project.
 
-- **The status pane** lists every change in flight with its state, current task and review round. What's waiting
-  on you (`needs-human`, or final approval with its instructions) comes first, and changes still being drafted are
-  listed too.
-- **One pane per running step**, showing that worker's log. They're read-only; the workers aren't interactive.
-- **A notification** when a change starts waiting on you.
+- **The `herd` workspace** has the status pane: every change in flight with its state, current task, review round
+  and spend. What's waiting on you (`needs-human`, or final approval with its instructions) comes first, and
+  changes still being drafted are listed too.
+- **Each project has a workspace**, opened in your checkout of it:
+  - **Your planner pane**: your agent (Claude Code by default), where you propose, mark ready and resolve stops.
+    The herd never touches it; herdr resumes it after a restart.
+  - **One pane per running step**, showing that worker's log. They're read-only; the workers aren't interactive.
+  - **An attention pane** while a change waits on you, highlighted by herdr, saying what's wrong and what to run
+    in your planner pane.
 
-`herd status` shows the same list in any terminal.
+`herd status` shows the same list in any terminal. When you're not attached, alerts about what's waiting on you
+reach you by desktop notification or push, as the operator set up.
 
 ## When the herd asks for you
 
@@ -82,11 +88,14 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
 
 - a task was rejected in review too many times;
 - the change kept growing tasks past the cap, so the proposal itself needs revisiting;
-- the gate kept failing after the allowed fix attempts;
+- a step kept failing (the worker crashed, timed out or couldn't get the gate green) past the allowed attempts;
+- CI kept failing after the herd merged the default branch in;
 - merging the default branch into the change conflicts;
 - the holistic review raised something that doesn't map to a task;
 - PR review didn't come clean within the allowed rounds, or a reviewer asked for a change of scope;
-- a task needs something the pipeline doesn't have (a device, a credential, a missing capability);
+- a task needs something the pipeline doesn't have (a device, a credential, a missing capability, or a change to
+  the project's CI workflows, which the herd isn't allowed to make);
+- a reviewer raised something after the change was archived, when fixing it would mean un-archiving;
 - a task needs a file from outside the project.
 
 Fix it on the branch (edit `tasks.md`, resolve the conflict, revise the proposal) and mark the stop resolved.
