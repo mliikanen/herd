@@ -362,8 +362,8 @@ string, and the kind is one of:
 - `input`: outside content (the subject names the file);
 - `capability`: something the pipeline lacks;
 - `escalate`: an end-to-end failure the implementer's own triage can't settle (the subject is the test id, and the
-  reason says whether it also fails on the merge-base or the spec doesn't decide it, with the evidence); unlike the
-  others, its commit carries the task's work as it stands (see Test or implementation?).
+  reason says whether it also fails on the merge-base, the spec doesn't decide it, or it's flaky past the cap, with the
+  evidence); unlike the others, its commit carries the task's work as it stands (see Test or implementation?).
 
 When the task can't go further without it, the commit is **request-only** (except for `escalate`, above, whose commit
 carries the task's work and is validated as Test or implementation? describes): no code, just the task's checkbox
@@ -791,19 +791,21 @@ switch the safety net off. So:
 
 - **The boundary is enforced, not just checked.** `boot`, `select` and `run` run in a sandbox whose filesystem holds
   only the harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
-  `e2e.tests` files, the test definitions under test, and, for `select` and `run`, `$HERD_E2E_ARTIFACTS`; `boot` and
-  `run` also get the unit's emulator. Nothing else of the change is readable to them, so they can't source a helper or
-  load configuration from a branch-controlled path. `select` doesn't need the tree: the orchestrator computes the
-  changed paths itself and passes them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read
-  outside those mounts. `prepare` is the exception by nature: building the app means running the working tree's own
-  build (`./gradlew`, its wrapper and build scripts), which is the change's code, so it runs with the whole working
-  tree, in the unit's container but outside that sandbox; its build inputs are guarded paths (see Who commits, who
-  pushes). So it can't touch what's trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS`
-  unset and no results directory in existence; when it exits, the herd kills everything left in that cgroup (a
-  background process it started included; the emulator isn't among them, since `boot` started it in its own), and only
-  then creates the artifacts directory for `run`, mounted into the sandbox alone, which runs as a different user that
-  the build's user can't write as. The change contributes the app being tested and its tests, nothing that decides
-  selection or reads results.
+  `e2e.tests` files, taken before `prepare` runs (so the build, which runs the change's own code, can't change what's
+  tested), the test definitions under test, and, for `select` and `run`, `$HERD_E2E_ARTIFACTS`; `boot` and `run` also
+  get the unit's emulator. Nothing else of the change is readable to them, so they can't source a helper or load
+  configuration from a branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed
+  paths itself and passes them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside
+  those mounts. `prepare` is the exception by nature: building the app means running the working tree's own build
+  (`./gradlew`, its wrapper and build scripts), which is the change's code, so it runs with the whole working tree, in
+  the unit's container but outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). So it
+  can't touch what's trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no
+  results directory in existence; when it exits, the herd kills everything left in that cgroup (a background process it
+  started included; the emulator isn't among them, since `boot` started it in its own), and only then creates the
+  artifacts directory for `run`, mounted into the sandbox alone, which runs as a different user that the build's user
+  can't write as. After `prepare`, the herd also compares the working tree's `e2e.tests` files with the copy it took
+  before: a build that changed them fails the unit, so a test can't be weakened for one run without a commit that shows
+  it. The change contributes the app being tested and its tests, nothing that decides selection or reads results.
 
 - **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
   default-branch version; manifest validation rejects a manifest where they do.
@@ -844,17 +846,17 @@ The layers:
    returned, minus tests with an effective `e2e-waive`, which aren't run; each of those gets a `- <test id> waived` line
    instead, so a waiver stays visible), since the green run is on the commit that carries the section (which a commit
    can't name by its own SHA, so it's implicit); an additional `- <test id> red <baseline sha>` line for each
-   change-local test; and an additional `- <test id> flaky` line for each test that flaked along the way. Validation
-   checks that every test in the effective selection has its green line (or, with a matching `escalate` request, its
-   `escalated` line; see below), every waived one its waived line, every change-local test its red line, and that the
-   SHA is the task's baseline. A test that's green on both is vacuous, and the task isn't done. The exception is a
-   **test-maintenance task**, one whose own changes stay inside `e2e.tests` (fixing a flaky test, refactoring a helper),
-   counting only what its implementation commits change from the baseline, so neither the checkbox every implementer
-   commit flips in `tasks.md` nor a reviewer's verdict in `review-notes.md` after a rejection counts against it: it
-   doesn't change the app, so there's no behavior for a red run to prove, and its change-local tests instead must pass
-   on the baseline too, recorded as `- <test id> green <baseline sha>` in place of the red line. Validation accepts that
-   line only when the task's own changes stay inside `e2e.tests`, and the task review checks that `tasks.md` describes
-   the task as test maintenance and that the change doesn't weaken what the test checks.
+   change-local test; and an additional `- <test id> flaky xN` line for each test that flaked along the way, N being how
+   many times. Validation checks that every test in the effective selection has its green line (or, with a matching
+   `escalate` request, its `escalated` line; see below), every waived one its waived line, every change-local test its
+   red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and the task isn't done.
+   The exception is a **test-maintenance task**, one whose own changes stay inside `e2e.tests` (fixing a flaky test,
+   refactoring a helper), counting only what its implementation commits change from the baseline, so neither the
+   checkbox every implementer commit flips in `tasks.md` nor a reviewer's verdict in `review-notes.md` after a rejection
+   counts against it: it doesn't change the app, so there's no behavior for a red run to prove, and its change-local
+   tests instead must pass on the baseline too, recorded as `- <test id> green <baseline sha>` in place of the red line.
+   Validation accepts that line only when the task's own changes stay inside `e2e.tests`, and the task review checks
+   that `tasks.md` describes the task as test maintenance and that the change doesn't weaken what the test checks.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
@@ -875,33 +877,40 @@ from evidence rather than taste:
 
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
-   `E2E:` section (`- <test id> flaky`), a task review or `triage` unit adds `e2e-flaky <test id> <sha>` to its verdict
-   commit, and CI triage records `ci-triage "<check>" <sha> <check run id> "<test id>": flaky`. Flaky outcomes are
-   counted from those records per test per change (CI's included, since its records are per test too), and when the
-   count reaches `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying again, so
-   an intermittently failing test can't cycle forever; for a test the change didn't add or change, the person fixes the
-   test or its environment in a separate change and resolves the stop once that's merged (update-branch comes first, as
-   for a "fails on the default branch too" stop); for a change-local test, the flakiness is this change's own, so the
-   person resolves the stop by adding a task to stabilize it to this change's `tasks.md` (`herd-resolve` helps), or
-   fixes the environment if that's the cause. Either way the test's flake count starts over from that resolution. A
-   flaky test can't be waived: a waiver needs a failure on the merge-base to point at, and a flake may not have one.
+   `E2E:` section (`- <test id> flaky xN`), a task review or `triage` unit adds `e2e-flaky <test id> <sha> xN` to its
+   verdict commit, N counting every flaky outcome in the unit, not just whether there was one, and CI triage records
+   `ci-triage "<check>" <sha> <check run id> "<test id>": flaky`. Flaky outcomes are counted from those records per test
+   per change, summing the Ns (CI's keyed by check and test id together, so a non-test failure, `"-"`, in one check
+   never shares a count with another check's), and when the count reaches `caps.flaky_retries` the change escalates to
+   `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever. Units
+   enforce the cap as they go, since reruns happen inside one unit: the change's recorded count plus the unit's own
+   flakes so far must stay below the cap before another rerun, and when it doesn't, the unit stops retrying (an
+   implementer commits what it has with an `escalate` request, "flaky test"; a reviewer or triage unit records its
+   flakes and escalates); for a test the change didn't add or change, the person fixes the test or its environment in a
+   separate change and resolves the stop once that's merged (update-branch comes first, as for a "fails on the default
+   branch too" stop); for a change-local test, the flakiness is this change's own, so the person resolves the stop by
+   adding a task to stabilize it to this change's `tasks.md` (`herd-resolve` helps), or fixes the environment if that's
+   the cause. Either way the test's flake count starts over from that resolution. A flaky test can't be waived: a waiver
+   needs a failure on the merge-base to point at, and a flake may not have one.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
    the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
    branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
    this change's. A test this change adds or changes (under `e2e.tests`) is meant to fail on the old build, or may not
    exist there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes on the
-   merge-base, this change caused the failure: go on to 3. If it fails there too, the test was already broken, and
-   fixing it isn't this change's job. So that can't loop, the triager escalates to `needs-human` ("fails on the default
-   branch too"), and the person either fixes the default branch in a separate change and resolves the stop once it's
-   merged, (resolving that stop makes update-branch the next action before any retry, whatever the change's state: see
-   Failing checks before the archive), or waives the test for this change with `herd-resolve`, which records
-   `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming the merge-base commit the test was found failing
-   on and a digest of the test's `files`; the herd's own e2e runs for the change then skip it. The waiver covers exactly
-   that failure and lapses on its own when either changes: once the test's files on the branch no longer match the
-   digest (a later task touched the test, so it's change-local again and owes its red/green proof), or once the change
-   merges a newer default branch (the baseline moved, so the comparison runs again). A lapsed waiver means the test
-   runs, and if it still fails on the default branch, a fresh escalation. A waiver doesn't touch CI: the required check
-   still fails until the default branch is fixed, which keeps the merge blocked on the real problem.
+   merge-base, this change caused the failure: go on to 3. If it fails there too, it's rerun there once more, since a
+   single run can't tell a broken test from a flaky one: passing on that rerun makes it flaky (step 1's record and count
+   apply), and failing again means the test was already broken, and fixing it isn't this change's job. So that can't
+   loop, the triager escalates to `needs-human` ("fails on the default branch too"), and the person either fixes the
+   default branch in a separate change and resolves the stop once it's merged, (resolving that stop makes update-branch
+   the next action before any retry, whatever the change's state: see Failing checks before the archive), or waives the
+   test for this change with `herd-resolve`, which records `e2e-waive <test id> <default sha> <files digest>: <reason>`,
+   naming the merge-base commit the test was found failing on and a digest of the test's `files`; the herd's own e2e
+   runs for the change then skip it. The waiver covers exactly that failure and lapses on its own when either changes:
+   once the test's files on the branch no longer match the digest (a later task touched the test, so it's change-local
+   again and owes its red/green proof), or once the change merges a newer default branch (the baseline moved, so the
+   comparison runs again). A lapsed waiver means the test runs, and if it still fails on the default branch, a fresh
+   escalation. A waiver doesn't touch CI: the required check still fails until the default branch is fixed, which keeps
+   the merge blocked on the real problem.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
