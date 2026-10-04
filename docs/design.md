@@ -685,9 +685,11 @@ un-archiving.
 The gate proves a task compiles and its unit tests pass; it can't prove the feature works end to end. For projects whose
 end-to-end tests can run on an emulator in a worker (Driving Log's Maestro flows, say), the herd closes a red/green loop
 around the agents with them, in layers that get broader and more independent as the change matures. A project opts in
-with an `e2e` block in the manifest: three commands of its own, which the herd treats as opaque, like the gate.
-`final_approval.kind: container` requires the block; manifest validation rejects `container` without it, and the project
-is inactive with that reason until it's fixed.
+with an `e2e` block in the manifest: three commands of its own, which the herd treats as opaque, like the gate. The
+block, together with emulator capacity on the host (see Emulators in workers), is what turns on the per-task layers (1
+to 3 below) for every change, whatever the project's final-approval kind; `final_approval.kind` only chooses the
+whole-change approval phase, and `kind: container` adds layer 4. `container` requires the block; manifest validation
+rejects `container` without it, and the project is inactive with that reason until it's fixed.
 
 The commands' contract, so the orchestrator can handle ids and results deterministically:
 
@@ -765,16 +767,20 @@ The layers:
    is where the loop does its work: the agent gets the same feedback a person would, in the same unit, as often as it
    needs.
 2. **Red/green proof.** A test the task adds or changes has to show that it actually tests the change: it must fail
-   against the app as it was when the task started, and pass on the task's own commit. The red run uses the starting
-   commit's tree with the task's versions of the `e2e.tests` files laid over it, since the starting commit has the old
-   test or none: `prepare` builds the old app, and `run` runs the new test against it. The implementer runs both and
-   records them in an `E2E:` section of its commit message, in the fixed format of `Guarded:`
-   (`- <test id> red <start sha>` for an added or changed test, `- <test id> green` for an unchanged one); the green run
-   is on the commit that carries the section, which a commit can't name by its own SHA, so it's implicit. A test that's
-   green on both is vacuous, and the task isn't done.
+   against the app as it was before the task, and pass on the task's own commit. "Before the task" is the task's
+   **baseline**: the parent of the task's first implementation commit, fixed for the life of the task. A revision after
+   a rejected attempt starts on top of the rejected commit, but keeps the same baseline, so the task's earlier changes
+   stay in its selection and its red run stays against the app without any of them. Selection for the task compares that
+   baseline with the working tree. The red run uses the baseline's tree with the task's versions of the `e2e.tests`
+   files laid over it, since the baseline has the old test or none: `prepare` builds the old app, and `run` runs the new
+   test against it. The implementer runs both and records them in an `E2E:` section of its commit message, in the fixed
+   format of `Guarded:` (`- <test id> red <baseline sha>` for an added or changed test, `- <test id> green` for an
+   unchanged one); validation checks that the SHA is the task's baseline, and the green run is on the commit that
+   carries the section, which a commit can't name by its own SHA, so it's implicit. A test that's green on both is
+   vacuous, and the task isn't done.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
-   task's commit, and the added or changed ones on the starting commit too, and a result that doesn't match the `E2E:`
-   section is a revise verdict.
+   task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
+   `E2E:` section is a revise verdict.
 4. **Final e2e: `final_approval.kind: container`.** In *awaiting-approval*, an `e2e` unit (a reviewer unit kind) runs
    every test `select` picks for the whole change (from where it branched off the default branch to its content tip) on
    one fresh emulator. A pass is recorded as a `container`-phase final-approval pass, a bookkeeping line in
@@ -790,22 +796,24 @@ The layers:
 `triage` unit after the final e2e or CI) follows the same order, so the answer comes from evidence rather than taste:
 
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing.
-2. **Run it on the default branch's build**, but only if the same test definition exists unchanged on the default
-   branch. A test this change adds or changes (under `e2e.tests`) is meant to fail on the old build, or may not exist
-   there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes there, this change
-   caused the failure: go on to 3. If it fails there too, the test was already broken, and fixing it isn't this change's
-   job. So that can't loop, the triager escalates to `needs-human` ("fails on the default branch too"), and the person
-   either fixes the default branch in a separate change and resolves the stop once it's merged, (resolving that stop
-   makes update-branch the next action before any retry, whatever the change's state, so the retry runs against a branch
-   that contains the fix; without it the stale branch would still fail and, the test now passing on the default branch,
-   look like a regression), or waives the test for this change with `herd-resolve`, which records
-   `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming the default-branch commit the test was found
-   failing on and a digest of the test's `files`; the herd's own e2e runs for the change then skip it. The waiver covers
-   exactly that failure and lapses on its own when either changes: once the test's files on the branch no longer match
-   the digest (a later task touched the test, so it's change-local again and owes its red/green proof), or once the
-   change merges a newer default branch (the baseline moved, so the comparison runs again). A lapsed waiver means the
-   test runs, and if it still fails on the default branch, a fresh escalation. A waiver doesn't touch CI: the required
-   check still fails until the default branch is fixed, which keeps the merge blocked on the real problem.
+2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, the same one
+   the harness is pinned to), but only if the same test definition exists unchanged there. Not the default branch's
+   current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like this
+   change's. A test this change adds or changes (under `e2e.tests`) is meant to fail on the old build, or may not exist
+   there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes on the merge-base,
+   this change caused the failure: go on to 3. If it fails there too, the test was already broken, and fixing it isn't
+   this change's job. So that can't loop, the triager escalates to `needs-human` ("fails on the default branch too"),
+   and the person either fixes the default branch in a separate change and resolves the stop once it's merged,
+   (resolving that stop makes update-branch the next action before any retry, whatever the change's state, so the retry
+   runs against a branch that contains the fix; without it the stale branch would still fail and, the test now passing
+   on the default branch, look like a regression), or waives the test for this change with `herd-resolve`, which records
+   `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming the merge-base commit the test was found failing
+   on and a digest of the test's `files`; the herd's own e2e runs for the change then skip it. The waiver covers exactly
+   that failure and lapses on its own when either changes: once the test's files on the branch no longer match the
+   digest (a later task touched the test, so it's change-local again and owes its red/green proof), or once the change
+   merges a newer default branch (the baseline moved, so the comparison runs again). A lapsed waiver means the test
+   runs, and if it still fails on the default branch, a fresh escalation. A waiver doesn't touch CI: the required check
+   still fails until the default branch is fixed, which keeps the merge blocked on the real problem.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the

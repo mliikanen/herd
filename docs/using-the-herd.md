@@ -43,10 +43,12 @@ checks these rules, and the project's workflow doc adds its own:
 - **Each `tasks.md` item is one reviewable commit**: one coherent step that leaves the gate green, small enough for
   one review. Split items that aren't; merge items that can't pass the gate on their own.
 - **Sections are in dependency order.** Tasks run strictly in sequence.
-- **Nothing needs a capability the project lists as missing** (the manifest's `missing_capabilities`). If the herd
-  doesn't run the project's end-to-end tests itself, no task *runs* them: tasks may write or update those tests, and
-  running them is your final approval. If it does (the project's workflow doc says), a task that changes behavior a test
-  can see includes or updates that test, so the herd can show it going from red to green.
+- **Nothing needs a capability the project lists as missing** (the manifest's `missing_capabilities`). If the project
+  has no end-to-end tests the herd knows about, no task *runs* them: tasks may write or update those tests, and running
+  them is your final approval. If it has (an `e2e` block; the project's workflow doc says), a task that changes behavior
+  a test can see **always** includes or updates that test. Whether the herd runs it while implementing, shown failing
+  before the task and passing after, depends on whether the herd's host runs end-to-end tests yet; until it does, CI
+  runs them.
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it.
 - **No task needs a secret.**
