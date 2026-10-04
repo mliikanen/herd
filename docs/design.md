@@ -1171,12 +1171,13 @@ confirmed stopped and retired, since until then both would answer at the same UR
   when it's run (from the status snapshot) and the request carries that id; a request made by name must still be that
   name's current definition when it's consumed, and is rejected and reported otherwise, never applied to whatever the
   name points at now or to the definition it just left behind (the snapshot might be published a scan late). A retained
-  snapshot is confirmed only by its own snapshot id, given explicitly. The orchestrator records the confirmation in the
-  persisted machine definitions, against the exact current definition or snapshot id, before it consumes the request, so
-  a restart doesn't lose it; it closes that machine's billing-related alerts until its endpoint answers again. Since
-  unhealthy may still mean billing, an active machine whose health checks fail for longer than `alerts.infra_after`
-  opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns or the operator
-  confirms it stopped.
+  snapshot is confirmed only by its own snapshot id, given explicitly. The orchestrator handles the request in a
+  crash-safe order: it validates it, durably records the confirmation in the persisted machine definitions against the
+  exact current definition or snapshot id, and only then deletes the request file, so a crash in between at worst
+  handles the same request twice, which changes nothing, and never loses the confirmation; it closes that machine's
+  billing-related alerts until its endpoint answers again. Since unhealthy may still mean billing, an active machine
+  whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert
+  episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
