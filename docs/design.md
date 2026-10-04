@@ -38,7 +38,7 @@ One herd instance runs per host and serves every **registered project**. The spl
 | Planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), installed by `herd init` | A short workflow doc for the project's people: what's specific to them (see What a project knows) |
 | Commit validation, push, PR lifecycle, update-branch | Network egress beyond the model endpoint (package registries) |
 | Escalation markers, inputs request/provide cycle | Cache volumes (e.g. a build tool's dependency cache) |
-| herdr bridge, event log, `herd` CLI | Final approval: `none`, or `human` with instructions |
+| herdr bridge, event log, `herd` CLI | Final approval: `none`, `human` with instructions, or `container` with an `e2e` block |
 | Model backends and secrets (host config) | Capabilities the toolchain lacks (tasks needing them escalate) |
 | | Cap overrides; whether the reviewer writes release notes into the PR body |
 
@@ -86,7 +86,8 @@ e2e:                                          # end-to-end tests the herd runs i
   prepare: ./e2e/prepare.sh                   # (re)builds and installs the app, boots the emulator if needed
   select: ./e2e/select.sh                     # select <base sha>: relevant test ids, one per line on stdout
   run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
-  ci_artifacts: [maestro-full]                # CI jobs whose logs and artifacts triage may see; must be secret-free
+  ci_artifacts:                               # what triage may see from CI; the jobs must be secret-free
+    - { job: maestro-full, artifact: maestro-results }
                                               # (the scripts always run from the default branch: see the section)
 missing_capabilities:                         # a task that needs one of these escalates instead of being attempted
   - macOS / Xcode
@@ -147,7 +148,8 @@ recovery, containers) lives only here. A project carries:
     `missing_capabilities`, then sets `ready: true` in the change's `.openspec.yaml` **on its branch**, commits and
     pushes.
   - `herd-resolve <change>`: shows why a change is waiting on a human, helps fix it on the change branch, and
-    commits the resolution: a resolved `needs-human` marker, or a final-approval pass/fail.
+    commits the resolution: a resolved `needs-human` marker, a `human`-phase final-approval pass or fail, or an
+    `e2e-waive` (see The effective final-approval record for their syntax).
 - **A short workflow doc for the project's people and planner agents.** It covers only what's specific to that
   project: its extra rules for herd-ready tasks, how to run its final approval, and what not to touch once a change
   is ready. For everything else it points to `using-the-herd.md` (the generic guide for people), never repeating
@@ -554,7 +556,11 @@ silently dropped — comes from two rules together, not from the scan alone:
   *awaiting-approval* holds until every required phase's effective record is a pass, and states 7 and 8's "the effective
   final-approval record a pass" means every required phase. History is additive, so an old pass stays in
   `review-notes.md`, but only a pass that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes
-  back to *awaiting-approval* until each required phase has a new pass.
+  back to *awaiting-approval* until each required phase has a new pass. The records are single lines in
+  `review-notes.md` with a fixed syntax, so the scan never interprets prose:
+  `final-approval <phase> <pass|fail> <tested sha>: <detail>` (phase `container`, written by an `e2e` unit, or `human`,
+  written through `herd-resolve`; the detail is free text after the colon), `final-approval rerun: <reason>`,
+  `final-approval-triaged <sha of the commit that added the fail record>`, and `e2e-waive <test id>: <reason>`.
 
   **The content tip** is the branch's latest non-bookkeeping commit, except that the archive commit always counts as
   content here: it's bookkeeping for keeping the holistic-accept current, but its generated spec changes still need an
@@ -643,10 +649,12 @@ describe.
 
 ## Final approval
 
-The gate runs inside the workers. Some checks don't fit there — typically end-to-end tests that need an emulator,
-a device or a GUI — and suit a human final check better. A project opts in with `final_approval.kind: human`.
-Tasks that *write* those tests are still implemented and reviewed like any other task; only *running* them is
-deferred.
+The gate runs inside the workers. Some checks don't fit there — typically end-to-end tests that need an emulator, a
+device or a GUI. A project picks one of three `final_approval.kind`s: `none`; `human`, where a person runs them, and
+tasks that *write* those tests are implemented and reviewed like any other task while *running* them is deferred to the
+person; or `container`, where the herd runs them itself on an emulator in a worker, during implementation as well as at
+the end (see End-to-end tests: the red/green loop), optionally followed by a person's check (`human_after`). What
+follows describes the `human` phase; the `container` phase is recorded the same way, by an `e2e` unit.
 
 When a proposal reaches *awaiting-approval*, the orchestrator makes sure its **draft** PR exists (normally opened by
 `herd-propose` at proposal time) and puts in its body the
@@ -762,12 +770,17 @@ Driving Log, `maestro/**`), which makes them built-in guarded paths, so any comm
 **CI artifacts for triage.** A triage unit for a failed CI check gets the job's logs and uploaded artifacts (the
 end-to-end reports and screenshots, for instance): the orchestrator fetches them through the GitHub App (which therefore
 has *Actions* read access) and mounts them read-only into the unit, like provided inputs; the triage unit itself has no
-GitHub access. That output crosses into a model-backed worker, so only some of it does: the logs and artifacts of jobs
-the manifest lists in `e2e.ci_artifacts`, which must be secret-free (`herd doctor` checks that their workflow job
-references no secrets and runs in no deployment environment, and the orchestrator re-checks the workflow file of the run
-it fetches from). Downloads are capped in size and extracted safely, with no symlinks and no path that escapes the
-mount. Any other failed check reaches triage only as its name and conclusion; without the artifacts the triager reasons
-from far less, which is why the project's end-to-end CI job should be one it can list.
+GitHub access. That output crosses into a model-backed worker, so only some of it does: what the manifest lists in
+`e2e.ci_artifacts`, as pairs of a job and an artifact name. A job's logs are attributable to it, so a listed job's logs
+can be passed on once the job is checked secret-free: its workflow definition references no secrets and runs in no
+deployment environment. Artifacts aren't: GitHub scopes them to the whole workflow run and doesn't record which job
+uploaded one, so a listed artifact is passed on only if the run's workflow file shows that exactly one job uploads an
+artifact by that name and it's the listed, secret-free job; an artifact that can't be attributed that way is never
+mounted. `herd doctor` checks all of this against the default branch's workflows, and the orchestrator re-checks it
+against the workflow file of the very run it fetches from. Downloads are capped in size and extracted safely, with no
+symlinks and no path that escapes the mount. Any other failed check reaches triage only as its name and conclusion;
+without the artifacts the triager reasons from far less, which is why the project's end-to-end CI job should be one it
+can list.
 
 **Emulators in workers.** The project's toolchain image includes what `prepare` needs (an emulator and a system image,
 for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container by
