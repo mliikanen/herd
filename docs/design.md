@@ -82,7 +82,8 @@ final_approval:
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
   human_after: false                          # container only: also require a person's pass afterwards
 e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
-  prepare: ./e2e/prepare.sh                   # builds the app, boots the emulator; exit 0 when ready
+  tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
+  prepare: ./e2e/prepare.sh                   # (re)builds and installs the app, boots the emulator if needed
   select: ./e2e/select.sh                     # select <base sha>: relevant test ids, one per line on stdout
   run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
                                               # (the scripts always run from the default branch: see the section)
@@ -676,17 +677,26 @@ The commands' contract, so the orchestrator can handle ids and results determini
 
 - Every command runs in the repository root of the unit's clone, against the unit's own emulator, with
   `$HERD_E2E_ARTIFACTS` naming an empty directory it may write to.
-- **`prepare`** takes no arguments. It builds the app from the working tree, boots the emulator and installs the app,
-  and exits 0 once tests can run; any other exit fails the unit.
+- **`prepare`** takes no arguments and is idempotent: it rebuilds the app from the working tree and installs it, booting
+  the emulator first only if it isn't already running, and exits 0 once tests can run; any other exit fails the unit.
+  The herd runs it before every `run`, so a rerun after an edit always tests the edited code, never the previously
+  installed build.
 - **`select <base sha>`** compares the base commit with the **working tree**, committed or not, so the implementer can
   run it before its commit exists, and a reviewer runs it on a checkout of the commit under review. It prints the
   relevant test ids on stdout, one per line; an id is non-empty, printable, and contains no whitespace. A deterministic
-  script, so selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails
-  the unit.
+  script, so selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails the
+  unit.
+- **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
+  deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
+  (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
 - **`run`** reads test ids from stdin, one per line, so no id needs shell escaping. It writes
   `$HERD_E2E_ARTIFACTS/results.jsonl`, one line per id (`{"id": ..., "status": "pass" | "fail", "detail": ...}`), and
   per-test evidence (reports, screenshots, view hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. It exits 0
-  if every test passed, 1 if any failed, anything else on an error that isn't a test result.
+  if every test passed, 1 if any failed, anything else on an error that isn't a test result. The herd validates the
+  results before believing them: valid JSON, exactly one record for every requested id and none for any other, and
+  statuses that agree with the exit code (0 means all pass, 1 means at least one fail). A violation means the script is
+  broken, not the test: it's a failed attempt with reason `e2e-contract`, so a script that keeps breaking escalates
+  instead of passing a change by accident.
 
 **The commands come from the default branch, never the change branch.** They are what decides whether the loop can go
 red at all, so an implementer that rewrote `select` to print nothing, or `run` to report success, would switch the
@@ -701,8 +711,10 @@ The layers:
    that task: it runs them, reads the results, fixes what's red and reruns until they're green, before it commits. This
    is where the loop does its work: the agent gets the same feedback a person would, in the same unit, as often as it
    needs.
-2. **Red/green proof.** A test the task adds or changes has to show that it actually tests the change: it must fail on
-   the build of the commit the task started from, and pass on the task's own commit. The implementer runs both and
+2. **Red/green proof.** A test the task adds or changes has to show that it actually tests the change: it must fail
+   against the app as it was when the task started, and pass on the task's own commit. The red run uses the starting
+   commit's tree with the task's versions of the `e2e.tests` files laid over it, since the starting commit has the old
+   test or none: `prepare` builds the old app, and `run` runs the new test against it. The implementer runs both and
    records them in an `E2E:` section of its commit message, in the fixed format of `Guarded:`
    (`- <test id> red <start sha>` for an added or changed test, `- <test id> green` for an unchanged one); the green run
    is on the commit that carries the section, which a commit can't name by its own SHA, so it's implicit. A test that's
@@ -736,9 +748,9 @@ The layers:
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
    proposer's call.
 
-Updating a test to make it pass is always explicit: a project's end-to-end tests belong in `guarded.tests` (for Driving
-Log, `maestro/**`), so a commit that changes one declares it under `Guarded:` with the spec delta that justifies it, and
-the task review has to accept it (see Who commits, who pushes).
+Updating a test to make it pass is always explicit: a project's end-to-end test files are named by `e2e.tests` (for
+Driving Log, `maestro/**`), which makes them built-in guarded paths, so any commit that changes one declares it under
+`Guarded:` with the spec delta that justifies it, and the task review has to accept it (see Who commits, who pushes).
 
 **CI artifacts for triage.** A triage unit for a failed CI check gets the job's logs and uploaded artifacts (the
 end-to-end reports and screenshots, for instance): the orchestrator fetches them through the GitHub App (which therefore
@@ -1327,6 +1339,8 @@ logs:
   event_log_keep: 90d                  # the event log, rotated daily
 disk:
   warn_below: 50GB
+e2e:
+  max_emulators: 1                     # emulators running at once across all units (see End-to-end tests)
 ```
 
 The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
