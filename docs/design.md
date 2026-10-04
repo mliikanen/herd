@@ -840,14 +840,17 @@ the unit starts and removed when it ends, holding only that worker and the netwo
 sniff or redirect, and no other unit's token to steal; workers also run with every Linux capability dropped
 (`--cap-drop=all`). The plain-HTTP hop between a worker and the proxy below is therefore private to that unit. The
 worker's only way out is the proxy, which serves two purposes:
-- **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`,
-  or the harness's equivalent, points at the gateway, with a placeholder key). The gateway checks the unit's token,
-  swaps in the backend's real key and calls the provider over HTTPS. It also sets the provider endpoint and the
-  model itself, from the token's registered backend, overwriting whatever the request named (one key can authorize
-  several models), and rejects requests to any other endpoint. So workers never hold an API key, the gate and the
-  agent-written code it runs have none to leak, and a unit can only call the model its slot assigns, at the price
-  its reservation assumed.
-  Local backends go through the gateway too, which keeps that rule uniform.
+- **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`, or
+  the harness's equivalent, points at the gateway, with a placeholder key). The gateway checks the unit's token, swaps
+  in the backend's real key and calls the provider over HTTPS. It also sets the provider endpoint and the model itself,
+  from the token's registered backend, overwriting whatever the request named (one key can authorize several models),
+  and rejects requests to any other endpoint. Beyond that it allow-lists what a request may contain: the inference route
+  only, known headers, and body features that run entirely on tokens. Server-executed tools (a provider's web search,
+  web fetch or code execution) would reach outside the egress allow-list and add fees the reservation doesn't price, so
+  they're rejected, as are batch, file and other separately billed APIs, unless the herd constrains and meters them
+  itself. So workers never hold an API key, the gate and the agent-written code it runs have none to leak, and a unit
+  can only call the model its slot assigns, at the price its reservation assumed. Local backends go through the gateway
+  too, which keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
   the hosts on the unit's list: the manifest's `egress`, which a role can narrow. The proxy serves every unit's network,
   so the tunnel authenticates with the same unit token (`Proxy-Authorization`, set through the standard proxy
@@ -954,11 +957,15 @@ Host config records each project's checkout (`herd init` fills it in, since it r
 directory. A project without a checkout gets its workspace without a planner pane.
 
 **Launch.**
-- `herd` (no arguments) checks the orchestrator's heartbeat in `/var/lib/herd/shared/`, and says so loudly when
-  it's stale (with the command to inspect the `herd` user's unit). It doesn't start the orchestrator: that runs
-  under the `herd` account, which the operator doesn't drive. Then it makes sure the `herd` workspace exists with
-  the bridge running in it (creating them through the `herdr` CLI if not: `herdr workspace create --label herd`,
-  then `herdr pane run` for the bridge), and attaches to herdr. One command either way, and detaching (closing the
+- `herd` (no arguments) checks the orchestrator's heartbeat in `/var/lib/herd/shared/`, and says so loudly when it's
+  stale (with the command to inspect the `herd` user's unit). It doesn't start the orchestrator: that runs under the
+  `herd` account, which the operator doesn't drive. Then it makes sure herdr's server is running: herdr's workspace and
+  pane commands talk to an existing server and fail with `server_not_running` otherwise, so on a cold start (first
+  install, or after a reboot without the login unit below) `herd` starts it headless (`herdr server`) and waits for its
+  socket. Then it makes sure the `herd` workspace exists with the bridge running in it (creating them through the
+  `herdr` CLI if not: `herdr workspace create --label herd`, then `herdr pane run` for the bridge), and attaches a
+  client (`herdr`). The install script also adds an operator user unit that starts `herdr server` at login, so the
+  bridge, and with it desktop alerts, runs without anyone attaching. One command either way, and detaching (closing the
   terminal) leaves everything running.
 - `herd <project>` does the same and focuses that project's workspace, re-creating its planner pane if the
   person closed it.
@@ -1081,13 +1088,14 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   calls finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the
   operator's call to raise the budget or wait for the month to turn. Besides the monthly counter, the orchestrator keeps
   a usage ledger, totals per project and change, so the status snapshot's spend per proposal survives a restart. Counter
-  and ledger are the one control state that reads something besides git, kept in the herd's own files and allowed as
-  recovery input. They decide only whether cloud calls go out, never a change's state. A reservation refused because it
-  would cross the budget pauses cloud dispatch the same way, so units aren't dispatched only to have their first call
-  refused; the refused unit ends with a `budget` reason, which counts neither as a failed attempt nor as an
-  infrastructure failure, and is retried once dispatch resumes. If the counter is lost, cloud dispatch pauses until the
-  operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's billing), a request
-  the orchestrator records in the event log before dispatch resumes.
+  and ledger are the budget's control state, kept in the herd's own files and allowed as recovery input; with the alert
+  queue (below), they're the only state the orchestrator reads back besides git. They decide only whether cloud calls go
+  out, never a change's state. A reservation refused because it would cross the budget pauses cloud dispatch the same
+  way, so units aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason,
+  which counts neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If
+  the counter is lost, cloud dispatch pauses until the operator sets this month's spend with
+  `herd budget set --spent <amount>` (read from the provider's billing), a request the orchestrator records in the event
+  log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
   warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after` all
   raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like the budget
@@ -1195,7 +1203,8 @@ Steps marked **(manual)** need a human.
    `/etc/herd/`
    and `/var/lib/herd/`, puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with
    its `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is
-   installed, and installs herdr's integration for the planner agent.
+   installed, installs herdr's integration for the planner agent, and adds the operator's login unit for
+   `herdr server`.
 7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read
    by the network proxy only); a GitHub App for the herd, installed on the registered repositories, with
    repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit statuses* and
