@@ -646,22 +646,23 @@ silently dropped — comes from two rules together, not from the scan alone:
   final approval covers.
 
   **The effective final-approval record** is kept per **phase**: each final-approval record names its phase, `container`
-  (written by an `e2e` unit) or `human` (written through `herd-resolve`), and a phase's effective record is its latest
-  record in git order: a `pass`, a `fail`, or a `rerun` (the one exception is `final-approval rerun: <reason>`, which
-  names no phase: it applies to every phase the change requires). A change requires the phases of the approval kind
-  fixed at its first dispatch (see Emulators in workers), not whatever the manifest says now: the `human` phase with
-  `kind: human`, the `container` phase with `kind: container`, and both, container first, with `kind: container` and
-  `human_after: true`, where the human pass also has to be newer than the current container pass, so the person's check
-  always follows the container run it's meant to follow; *awaiting-approval* holds until every required phase's
-  effective record is a pass, and states 7 and 8's "the effective final-approval record a pass" means every required
-  phase. History is additive, so an old pass stays in `review-notes.md`, but only a pass that's newer than any `rerun`
-  or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until each required phase has a new
-  pass. The records are single lines in `review-notes.md` with a fixed syntax, so the scan never interprets prose:
-  `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also names the merge-base it
-  was tested against before the colon (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`)
-  and, before the archive, is current only while the change's merge-base is unchanged (from the archive on, the pin is
-  frozen and a later merge doesn't invalidate it; see The pin) (phase `container`, written by an `e2e` unit, or `human`,
-  written through `herd-resolve`; the detail is free text after the colon), `final-approval rerun: <reason>`,
+  (written by an `e2e` unit) or `human` (written through `herd-resolve`), and a phase's effective record is the latest
+  in git order among that phase's `pass` and `fail` records and the phase-less `final-approval rerun: <reason>` records,
+  which name no phase and apply to every phase the change requires (there is no per-phase rerun). A change requires the
+  phases of the approval kind fixed at its first dispatch (see Emulators in workers), not whatever the manifest says
+  now: the `human` phase with `kind: human`, the `container` phase with `kind: container`, and both, container first,
+  with `kind: container` and `human_after: true`, where the human pass also has to be newer than the current container
+  pass, so the person's check always follows the container run it's meant to follow; *awaiting-approval* holds until
+  every required phase's effective record is a pass, and states 7 and 8's "the effective final-approval record a pass"
+  means every required phase. History is additive, so an old pass stays in `review-notes.md`, but only a pass that's
+  newer than any `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until each
+  required phase has a new pass. The records are single lines in `review-notes.md` with a fixed syntax, so the scan
+  never interprets prose: `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also
+  names the merge-base it was tested against before the colon
+  (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`) and, before the archive, is current
+  only while the change's merge-base is unchanged (from the archive on, the pin is frozen and a later merge doesn't
+  invalidate it; see The pin) (phase `container`, written by an `e2e` unit, or `human`, written through `herd-resolve`;
+  the detail is free text after the colon), `final-approval rerun: <reason>`,
   `final-approval-triaged <sha of the commit that added the fail record>`, and
   `e2e-waive <test id> <default sha> <files digest>: <reason>`.
 
@@ -856,9 +857,10 @@ The commands' contract, so the orchestrator can handle ids and results determini
   failure not yet triaged, and each failure's copy is deleted as soon as its triage verdict is committed, or as soon as
   the failure's record stops being effective without one (a `rerun`, a newer content tip), so a change never holds more
   than its untriaged failures' evidence, each bounded by the per-run caps, however long it lives. A closed PR keeps its
-  evidence, since the change may be reopened; it's deleted with the change branch. If the evidence is missing when
-  triage is due (lost in a restore, say), the failure isn't triaged blind: the orchestrator records
-  `final-approval rerun: evidence lost` and the run happens again.
+  evidence for `e2e.closed_evidence` (host config, default 14 days), since the change may be reopened, and then it's
+  deleted, as it is with the change branch; a change reopened after that takes the evidence-lost path below. If the
+  evidence is missing when triage is due (lost in a restore, say), the failure isn't triaged blind: the orchestrator
+  records `final-approval rerun: evidence lost` and the run happens again.
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
   that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
@@ -1978,6 +1980,7 @@ e2e:
   max_emulators: 0                     # emulators at once across all units; 0 (the default) turns e2e off
                                        # until the emulator probe passes (see End-to-end tests)
   max_artifacts: { bytes: 2GB, files: 10000 }   # per run's $HERD_E2E_ARTIFACTS; past it the run fails
+  closed_evidence: 14d                 # how long a closed PR keeps its untriaged failures' evidence
 ```
 
 The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
