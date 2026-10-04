@@ -14,13 +14,13 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 
 - **Proposer**: a human with an interactive cloud SOTA agent. Unchanged, plus one step: marking the proposal ready
   (see The hand-off).
-- **Implementer**: an LLM run non-interactively, one task at a time. The harness must support a local backend
-  (Ollama or similar) and a cloud API behind the same interface, switchable by config rather than a code change
-  (see Models).
-- **Reviewer**: cloud SOTA (Claude Code, `claude -p`, non-interactive), reviewing each task's commit and, once
-  every task is accepted, the whole change holistically. Also triages the PR's review feedback into tasks (see
-  Following up on PR review), and runs the archive step once final approval passes and review is done, since syncing
-  spec deltas can need judgment.
+- **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot,
+  local (Ollama or similar) or a cloud API, and one host can mix them (see Models).
+- **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
+  slot like the implementer; a task review never runs on the model that wrote the commit (see Models). It reviews each
+  task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
+  into tasks (see Following up on PR review), and runs the archive step once final approval passes and review is done,
+  since syncing spec deltas can need judgment.
 - **Orchestrator**: plain code (no LLM, no LLM API key), owns the queue and git/GitHub plumbing — assigns work,
   creates/tears down working copies, starts worker containers, derives task/review state, pushes, opens and
   updates PRs. The orchestrator opens the PR and marks it ready, so it also watches the PR for review feedback until
@@ -33,7 +33,7 @@ One herd instance runs per host and serves every **registered project**. The spl
 | Generic (the herd repo) | Per project (`.herd/` in the project's repo) |
 |---|---|
 | Orchestrator, state machine, queue, crash recovery | Toolchain image: what a worker needs to build and test (`toolchain.Dockerfile`) |
-| Role layers: implementer harness, `claude`, `git`, `openspec` | Gate: the commands that must pass before a commit is accepted |
+| Role layers: implementer harness, `claude`, `git`, `openspec` | Gate: the commands that must pass before a commit is accepted, and what the tamper guard protects |
 | Role system prompts | Optional prompt additions per role (appended, never replacing) |
 | Planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), installed by `herd init` | A short workflow doc for the project's people: what's specific to them (see What a project knows) |
 | Commit validation, push, PR lifecycle, update-branch | Network egress beyond the model endpoint (package registries) |
@@ -61,11 +61,15 @@ workflow: openspec
 branch_prefix: change/
 toolchain:
   dockerfile: .herd/toolchain.Dockerfile     # Debian/Ubuntu-based; the herd adds its role layer on top
-  caches: [/home/agent/.gradle]              # per-project, per-role Docker volumes
+  caches: [/home/agent/.gradle]              # per-project, per-role volumes
   egress: [repo.maven.apache.org, maven.google.com, dl.google.com, plugins.gradle.org, services.gradle.org]
 gate:                                         # implementer runs it before committing; reviewer re-runs it
   - ./gradlew check
   - openspec validate --all --strict
+guarded:                                      # the tamper guard (see Who commits, who pushes)
+  tests: ["**/src/test/**", "**/src/*Test/**"]  # deleting or emptying one needs a declared reason
+  skip_markers: ["@Ignore", "@Disabled"]      # adding one needs a declared reason
+  paths: [config/detekt/baseline.xml]         # e.g. lint baselines: any change needs a declared reason
 final_approval:
   kind: human                                 # or: none
   instructions: |                             # shown in the herd's status pane and in the draft PR body
@@ -173,8 +177,9 @@ The herd can start observing a new project at any time, without restarting anyth
   orchestrator. The orchestrator gets that file **read-only**, so registering stays a host-side, human action that
   no agent or orchestrator bug can widen.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
-  a `.herd/project.yaml` that parses, the orchestrator's GitHub token can push to the repo, and the project's
-  toolchain image builds. Otherwise it's *inactive*, and the status pane says which check failed. Nothing records
+  a `.herd/project.yaml` that parses, the orchestrator's GitHub token can push to the repo, the project's
+  toolchain image builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's
+  *inactive*, and the status pane says which check failed. Nothing records
   that `herd doctor` passed. `doctor` is the human's deeper check (gate in a real worker, branch protection, model
   backend) to run before trusting a project, not a switch the orchestrator reads.
 - **First scan of a new project.** The orchestrator creates the project's bare mirror and builds its images. It
@@ -221,8 +226,8 @@ It gets the change, code and archive together, as the one merge of the change's 
   (storage → UI → cross-cutting logic → end-to-end tests → verification). Building scheduling for intra-proposal
   parallelism isn't worth it for v1.
 - **Multiple proposals run concurrently**, across and within projects, each on its own branch
-  (`<branch_prefix><name>`), each bound to at most one active worker at a time. A host-level `max_workers` caps
-  the total; projects share that capacity round-robin, so one project's backlog can't starve another.
+  (`<branch_prefix><name>`), each bound to at most one active worker at a time. The host's worker slots (see
+  Models) cap the total; projects share them round-robin, so one project's backlog can't starve another.
 - Each unit of work (one task's implementation, one round of addressing review feedback, or one review) gets a
   **fresh, ephemeral clone** of the proposal branch's current tip, taken from that project's local bare mirror (see
   Containers), handed to a new worker container, and deleted when that unit of work ends. The branch is the
@@ -251,7 +256,44 @@ status file on exit. The orchestrator then validates the commit before pushing i
 - the commit contains the expected state transition (see below) and nothing outside the change's scope (e.g. an
   implementer commit must not touch `review-notes.md` or flip a checkbox to `[x]`; no worker commit may touch
   `.herd/`);
-- the status file agrees with the commit.
+- the status file agrees with the commit;
+- **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying
+  a file matching the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a
+  `guarded.paths` file (a lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the
+  commit message. The task review must then accept or reject each declared item, and validation of the verdict commit
+  checks that it does. An undeclared one fails validation before any review is spent. Legitimate cases (removing a
+  feature removes its tests) still pass, but never silently. Assertions weakened into tautologies need judgment, so
+  catching them stays with the reviewer. (The idea comes from no_human, see Prior art.)
+
+  The format is fixed, so validation never has to interpret prose. In the commit message, one line per item:
+
+  ```
+  Guarded:
+  - G1 delete "shared/src/commonTest/kotlin/vehicle/HidingTest.kt": task 2.3 removes vehicle hiding
+  - G2 change "config/detekt/baseline.xml": the renamed class keeps its two existing findings
+  - G3 skip "shared/src/commonTest/kotlin/fuel/OcrTest.kt" x2: both cases need the camera fake from task 4.1
+  ```
+
+  `- <id> <action> <path>[ x<n>]: <reason>`, where the id (`G1`, `G2`, …) is unique within the commit, the action is
+  `delete`, `empty`, `skip` or `change`, one per guard rule, and the path is a JSON string, so any valid Git path (one
+  containing ` x2` or `: `, say) parses unambiguously. There's one declaration per action and path; a `skip` declaration
+  covers every marker added to that file and gives their number (`x2`). The orchestrator computes the guarded items from
+  the diff itself and requires a one-to-one match on action and path, and on the count for `skip`. The task review
+  answers each in `review-notes.md` as `guarded <commit sha> <id>: accept|reject — <reason>`. Each task review gives
+  exactly one decision per item it covers, validation of the verdict commit checks that, and when an item has decisions
+  from several reviews (a reject, then a later accept), the latest in git order governs. A rejected item sends the task
+  back to `[ ]` like any revise verdict, and **stays open**: the next attempt starts on top of the rejected commit, so
+  leaving the file alone would leave the rejected change in place. A task can't be accepted while any of its guarded
+  items is open. An item closes when a later commit of the task demonstrably reverses it (the file restored to its
+  content before the task, the skip markers gone, the guarded path back as it was), which the orchestrator checks from
+  the diff, or when a later task review explicitly accepts its current state (a new `guarded <commit sha> <id>: accept`,
+  naming the original commit). Every open item is in scope for each later task review of the task. Validation of an
+  accept verdict refuses while any item is open.
+
+  The guard covers implementer commits because those are the ones a task review follows. Reviewer commits are
+  held to a narrow scope instead, so they can't touch guarded files at all: a verdict or triage commit only
+  `tasks.md` and `review-notes.md`, an archive commit only what `openspec archive` changes under `openspec/`.
+  `herd doctor` flags a `guarded` pattern that reaches into `openspec/`, where it would collide with the archive.
 
 A commit that fails validation is discarded like any crashed attempt. Worker containers never hold GitHub
 credentials; the orchestrator's GitHub token is the only push-capable credential in the system.
@@ -280,13 +322,13 @@ workers racing on the same branch while the process is alive.
 **The scan loop.** The orchestrator doesn't keep a work list between passes. It runs the same full scan on start
 and then repeatedly: every few minutes (`scan_interval` in host config), and right away when the `herd` CLI pokes
 it after changing the config or recording a human action. Each scan re-reads the host config, fetches every
-registered project's bare mirror, derives each proposal's state, and dispatches work up to `max_workers`. A
+registered project's bare mirror, derives each proposal's state, and dispatches work to free worker slots. A
 project, a proposal or a human fix that appeared since the last pass is picked up by the next one with no restart,
 because nothing is remembered between passes to go stale. Crash recovery (below) is just the first scan.
 
 **Crash recovery** (orchestrator container restart or a full host reboot look identical from here, given
-Compose's `restart: unless-stopped`): on start, the orchestrator, for every registered project, (1) lists every
-change branch without a merged PR, (2) reads each one's `.openspec.yaml` and
+its systemd unit's `Restart=always` and lingering, see Containers): on start, the orchestrator, for every
+registered project, (1) lists every change branch without a merged PR, (2) reads each one's `.openspec.yaml` and
 `tasks.md`/`review-notes.md` to compute its exact next action from scratch — no assumption carried over from
 before the crash, (3) reconciles against running worker containers (kill any orphaned worker rather than adopt
 it — its state is suspect) and `gh pr list` (don't open a second PR for a branch that already has one), (4)
@@ -476,37 +518,116 @@ unit (Containers), so what lingers is a change's branch and a planner's worktree
 
 ## Models
 
-Model backends are host config (`~/.config/herd/config.yaml`), with an optional per-project override there too —
-not in the project manifest, since which model runs is the operator's cost/privacy decision, not the project's.
-The backend (model name + endpoint) reaches the worker as env at container start, so switching between a local
-model and a cloud API is a config change, not a rebuild. **Local vs. cloud for the implementer is not decided** —
-no local LLM is provisioned yet (see Build plan step 2).
+Which model runs a unit is the operator's cost and privacy decision, so it's host config
+(`~/.config/herd/config.yaml`), never the project manifest. Named **backends** say what a model is; **worker slots**
+say which backend runs which kind of unit:
+
+```yaml
+backends:
+  opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY }
+  sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY }
+  local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
+  local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
+slots:                                 # each slot runs one unit at a time
+  - name: gpu
+    implementer: local-coder
+    reviewer: { archive: local-coder }  # only the unit kinds listed run here
+  - name: gpu-private
+    projects: [some-project]            # reserved: only these projects' units run here
+    implementer: local-coder
+    reviewer: local-reviewer            # a different model, so it may review local-coder's work
+  - name: cloud-1
+    implementer: sonnet
+    reviewer: { task: sonnet, holistic: opus, triage: opus, archive: sonnet }
+  - name: cloud-2
+    implementer: sonnet
+    reviewer: opus                      # one backend for every reviewer unit kind
+projects:
+  some-project: { slots: [gpu, gpu-private] }   # optional: e.g. code that must not leave the host
+```
+
+A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
+has four that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release
+notes), `triage` (PR review findings and final-approval failures into tasks) and `archive` (mostly running
+`openspec archive`). A slot that doesn't list a role or kind never runs it, and a slot with `projects` runs only
+those projects' units. Slots that share a GPU share it in turn: the model server queues their requests.
+
+- **The slots are the capacity.** The scheduler gives each unit to a free slot that can run its kind for its project,
+  round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
+- **Any capable slot can take any unit.** Every unit starts from a fresh clone, so a task implemented on one slot can
+  be revised or reviewed on another.
+- **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots.
+  Backend names are only labels, so two backends naming the same model (same `kind` and `model`) count as the same
+  model for this rule and the ones below. A holistic review spans commits that may come from several models, so
+  excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable
+  slot has one.
+- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover
+  `implement` and every reviewer kind, and for each implementer backend among them, some slot must offer a `task`
+  review on a different model. A project that fails is shown *inactive* with the reason ("no slot can review
+  local-coder's work"), before any of its changes start, rather than stalling one after its first task.
+- **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
+  an implementer on a different model, when one exists, before the task escalates.
+- **Each worker commit records its model, backend and unit kind** in trailers (`Herd-Model: ollama/<coder model>`,
+  `Herd-Backend: local-coder`, `Herd-Unit: implement`), captured when the worker starts, and commit validation
+  checks them against the slot. Backend names can be repointed in host config at any time, so the rules above and
+  any metrics read `Herd-Model`, the model that actually ran, never the name. How often each model's work is
+  accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks
+  the herd has already accepted on the candidate and compare. There's no separate metrics store.
+- **A container gets only its backend's settings.** Endpoint and model name as env, and the secret only if the
+  backend names one; a local slot's workers never see an API key. Egress is that backend's endpoint plus the
+  manifest's list.
+- **The harness follows the backend kind.** The implementer harness serves every kind. The reviewer runs `claude -p`
+  on `anthropic` backends and the implementer harness with the review prompt otherwise; both produce the same
+  structured verdict.
+- `herd doctor` checks that every backend answers, and warns when `holistic` or `triage` runs on a local backend,
+  and when a project's slots offer only one implementer model (so the stronger-attempt rule can't apply).
+
+Switching a slot between local and cloud, or adding a slot, is a config change: the scan re-reads host config, and a
+running unit finishes on the backend it started with.
 
 ## Containers
 
-The orchestrator runs under Docker Compose (project name `herd`); the herdr session that displays it runs on the host (see Launching and watching the herd). Workers are **not** Compose
-services: the orchestrator starts one container per unit of work (it has to, to mount that unit's clone), from a
-per-project, per-role image:
+**Runtime: rootless Podman.** Everything runs as an ordinary user's containers, with no root daemon. The
+orchestrator is a container defined by a Quadlet unit (`herd-orchestrator.container`), run by the user's systemd
+with `Restart=always`. Lingering (`loginctl enable-linger`) starts the user's systemd at boot without anyone logged
+in, but not the service itself: a Quadlet-generated service can't be `systemctl enable`d, so the `.container` file
+carries `[Install] WantedBy=default.target`, which starts it with the user's systemd. The herdr
+session that displays it runs on the host (see Launching and watching the herd). Workers are **not** units: the
+orchestrator starts one container per unit of work (it has to, to mount that unit's clone), through the Podman API,
+from a per-project, per-role image:
 
 - **Toolchain image** — built from the project's `.herd/toolchain.Dockerfile` (read from the default branch),
   tagged with the hash of that file, rebuilt when it changes. Contains the language runtimes and SDKs the gate
   needs. Must be Debian/Ubuntu-based so the role layer can install onto it.
 - **Role layer** — generic, from the herd repo, applied with `FROM <toolchain image>`:
-  - *implementer*: the implementer harness (concrete default: [Aider](https://aider.chat), which supports both an
-    Ollama-served local model and cloud APIs behind the same `--model` config — the hard requirement is that
-    property, not the specific tool), `git`, the `openspec` CLI (gates typically run `openspec validate`), and the generic `SYSTEM_PROMPT.md` plus the project's optional
-    addition. Gets its clone as a volume; reads its task from an env var/arg; runs the gate; commits; writes a
-    status file on exit.
-  - *reviewer*: `claude -p` with the review system prompt (structured accept/revise output), `git`, and the
-    `openspec` CLI for the archive. Re-runs the gate itself rather than trusting the implementer's claim. Needs
-    `ANTHROPIC_API_KEY`.
+  - *implementer*: the implementer harness, `git`, the `openspec` CLI (gates typically run `openspec validate`),
+    and the generic `SYSTEM_PROMPT.md` plus the project's optional addition. Gets its clone as a volume; reads its
+    task from an env var/arg; runs the gate; commits; writes a status file on exit. The harness must serve a local
+    (Ollama-served) model and cloud APIs behind one config and run headless; the specific tool is secondary. Two
+    candidates, compared on the same tasks at Build plan step 3:
+    - [Aider](https://aider.chat): a thin edit loop with a `--model` config.
+    - [OpenHands](https://docs.openhands.dev) headless: a fuller agent loop (tool use, running tests, correcting
+      itself), any model through LiteLLM. It normally starts its own sandbox container; in a herd worker it must
+      run in-process instead, since the worker is the sandbox and has no Podman socket. With Ollama it needs a
+      context of at least 22k tokens, which narrows the local models a small GPU can serve.
+  - *reviewer*: `claude -p` (and the implementer harness, for non-Anthropic backends) with the review system
+    prompt (structured accept/revise output), `git`, and the `openspec` CLI for the archive. Re-runs the gate
+    itself rather than trusting the implementer's claim.
+- **Local model server** — when a backend is local: Ollama (or similar) as its own container on the workers'
+  internal network, with no egress of its own (the operator pulls models). It's the only container given the GPU,
+  however the vendor exposes it to rootless Podman. An Intel or AMD card is `--device /dev/dri`, and since the
+  device usually belongs to the `render` group, which a rootless container doesn't keep by default, also
+  `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in
+  `render`. An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container
   lifecycle, commit validation, push, `gh pr create`/update-branch/mark-ready. Needs a GitHub token (scoped to the
-  registered repos), the Docker socket, and the host config read-only; no LLM key. It's the one privileged component, which is acceptable
-  because it runs no model and no project code.
+  registered repos), the user's rootless Podman API socket, and the host config read-only; no LLM key. It's the one
+  privileged component, which is acceptable because it runs no model and no project code. Rootless, the socket is
+  worth the user's account, not root: it could still start a container that mounts the user's home (see Open
+  questions).
 
 **Repo access: a local bare mirror per project, one fresh clone per unit of work.** The orchestrator keeps a bare
-mirror of each registered repo in a Docker volume (fetched before each assignment). For each unit of work it clones
+mirror of each registered repo in a volume (fetched before each assignment). For each unit of work it clones
 the proposal branch from the mirror into a per-unit volume, mounts that into the worker, and after the worker exits
 fetches the worker's commit back from the clone, validates it, pushes it to GitHub, and deletes the clone. This is
 used instead of `git worktree` on a bind-mounted host checkout because worktrees record absolute `gitdir` paths
@@ -516,19 +637,19 @@ network instead.
 
 **Least privilege for worker containers** (implementer and reviewer):
 - Each image contains **exactly** what the role needs: the project's toolchain plus the role layer, nothing else.
-  No `gh`, no `docker`, no `ssh`/`curl`-style network tools, no package managers at runtime, no general-purpose
+  No `gh`, no `podman`, no `ssh`/`curl`-style network tools, no package managers at runtime, no general-purpose
   extras "just in case". Adding a tool is a reviewed change to the toolchain Dockerfile (project) or the role
   layer (herd), not something an agent can do itself — and since `.herd/` is read from the default branch and
   off-limits to worker commits, an agent can't do it through its own branch either.
 - **No filesystem access outside the project.** The only mounts are the unit's own clone, the project's declared
   cache volumes, and (when provided) the read-only inputs volume. No host bind mounts (not the host checkout, not
-  `$HOME`, not the Docker socket), no access to other units' clones, other projects' volumes or the bare mirrors.
+  `$HOME`, not the Podman socket), no access to other units' clones, other projects' volumes or the bare mirrors.
   The container's root filesystem is read-only apart from those mounts and a scratch `tmpfs`. Secrets reach a
   container only as the env vars its role needs.
 - **Caches** are per project *and* per role, so one project's worker can never read or poison another's. A project
   that declares none gets the strict per-clone behavior (slower, nothing shared).
 - Network egress is the model endpoint plus the manifest's `egress` list — not open internet. Enforced by putting
-  workers on an internal Docker network behind an allow-listing proxy.
+  workers on an internal Podman network (`--internal`) behind an allow-listing proxy.
 
 ## Outside content
 
@@ -561,19 +682,19 @@ and watched through herdr; there is no herd-specific dashboard.** "The herd" is 
 the orchestrator, the active worker containers, and the `herd` session in herdr that shows them.
 
 **Launch: attach-or-create.**
-- `herd` (no arguments) first runs `docker compose -p herd up -d`. This is idempotent: it does nothing when the
-  orchestrator is already running, and Compose's project name is the singleton key, so no lock file is needed.
+- `herd` (no arguments) first runs `systemctl --user start herd-orchestrator`. This is idempotent: it does nothing
+  when the orchestrator is already running, and the unit name is the singleton key, so no lock file is needed.
   Then it hands over to `herdr --session herd`, which launches the named herdr session or attaches to it if it
   already exists. One command either way, and detaching (closing the terminal) leaves everything running.
-- The orchestrator does not depend on herdr. It runs under Compose (`restart: unless-stopped`) whether or not
-  anyone is attached, and a host reboot brings it back without herdr.
+- The orchestrator does not depend on herdr. It runs as a systemd user unit whether or not anyone is
+  attached, and lingering brings it back after a host reboot without herdr.
 
 **The bridge: what the session shows.** A small display-only process, `herd watch`, runs in the session's first
 pane. Because it runs *inside* herdr, it drives the session through the `herdr` CLI with the session context it
 inherits, so the orchestrator container never needs herdr's socket. Every few seconds it reconciles the session
 layout against the orchestrator's event log and the running worker containers:
 - **one workspace per registered project**, with workspace metadata showing that project's in-flight count;
-- **one pane per active unit of work**, running `docker logs -f <worker>` (read-only; the workers are
+- **one pane per active unit of work**, running `podman logs -f <worker>` (read-only; the workers are
   non-interactive), named `<change> · <role> · task <n>`, with pane metadata for the proposal's state and review
   round. The bridge closes the pane when the unit ends, and only closes panes it created itself;
 - **a status pane** (`herd status --follow`) listing every proposal in flight with its state (from the enum
@@ -602,8 +723,9 @@ source of truth. Losing the log, the bridge or the herdr session loses only what
 - `herd doctor [<project>]`: proves a project is ready. It builds the project's worker images, runs the gate on
   the default branch inside a worker container with the real mount/egress limits (proving the toolchain is
   sufficient and the egress list complete), checks branch protection and required checks via `gh`, and checks
-  that the model backend answers. It also checks that `herdr` is installed. Run it before trusting a project; it
-  doesn't switch anything on (see Registering projects).
+  that every model backend answers (see Models). It also checks that `herdr` is installed, lingering is on and the
+  orchestrator's unit is set to start at boot.
+  Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
@@ -616,25 +738,71 @@ flagged human-review-worth items from the holistic review, final-approval instru
 `release_notes: true` — a `## Release notes` section the reviewer writes in its holistic pass, for the project's
 own release automation to lift if it wants to.
 
+## Prior art
+
+Checked 2026-10-04 for a free, open-source tool that does this end to end; none does. What exists, and what the
+herd takes from it:
+
+- **OpenHands** (MIT): a sandboxed coding agent with a headless mode and a GitHub issue resolver, one agent per
+  issue. No task loop, separate reviewer or state machine. Taken: a candidate implementer harness (Containers).
+- **no_human**: ticket to reviewed PR on your own machine, with an adversarial review by a different model and a
+  guard against tampering with tests. Taken: the tamper guard (Who commits, who pushes), and the same rule as the
+  herd's that a review never runs on the model that wrote the code.
+- **Hydra** (Conduction): the closest workflow, an OpenSpec pipeline from `tasks.md` through containerized quality
+  checks, code and security review and `needs-input` escalation to a human merge. But it's Conduction's internal
+  pipeline in a private repository, PHP/Nextcloud-only and Claude-only; its agents are GitHub users that push and
+  open PRs; its state lives in labels and GitHub Projects; and it archives after merge. Taken as data points: iptables
+  egress allow-lists per agent (Open questions), and a separate security review.
+- **Symphony** (OpenAI, Apache-2.0): a spec and reference implementation that gives each ticket an agent workspace
+  until its PR lands. Tied to Codex and Linear.
+- **CrewAI** (MIT) and similar agent frameworks: they put an LLM in charge of coordination, the opposite of an
+  orchestrator that runs no model, and don't cover git and GitHub plumbing, state or isolation, which are the hard
+  parts here.
+- Worktree-based session runners (Orbi, Contrabass, Composio's orchestrator and others): agents work in host
+  worktrees and hold credentials, the security model the herd avoids.
+
 ## Build plan
 
 Steps marked **(manual)** need a human.
 
 1. ~~Create the herd repository~~: done (`herd`, starting with this file).
-2. **(manual, decide with the user before building anything else)** Local vs. cloud for the implementer. If local:
-   install Ollama on the host (or as its own container) and pull a coder model; if using a GPU, install the NVIDIA
-   Container Toolkit first — Docker can't pass a GPU through without it. If cloud (even temporarily): just the API
-   key, same shape as the reviewer's. The harness choice makes this swappable later without rework.
+2. ~~Local vs. cloud for the implementer~~: decided 2026-10-04. Backends are per worker slot and can be mixed (see
+   Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for
+   a pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel
+   Arc Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context.
+   It's bounded by the rule that a task's last review round goes to an implementer on a different model, which
+   holds here because the cloud slots stay. The B70 runs under
+   official Ollama's Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as
+   `/dev/dri`. The runtime is rootless Podman, already on the host.
+
+   **(manual) Reality check before any local backend or slot goes into host config.** The B70 figures above are
+   assumptions from published specs and benchmarks; the host had an RTX 3080 when this was written. Each of these
+   must hold, measured on the host itself:
+   - **The card is there and usable:** `lspci` shows it, the kernel's `xe` driver binds it, `/dev/dri/renderD*`
+     exists, and the herd's user is in the `render` group.
+   - **The container sees it:** a rootless Ollama container given `/dev/dri` and `keep-groups` reports the Vulkan
+     device and loads a model onto it, not onto the CPU.
+   - **The model fits with real context:** the candidate loads fully into VRAM at the context the harness needs
+     (OpenHands: at least 22k tokens; a real task's prompt plus files is more), with no CPU offload.
+   - **It's fast enough:** time per task, measured on the replayed tasks, is acceptable next to the cloud
+     backend's. A task that takes hours locally holds up its change for hours.
+   - **It's good enough:** replaying the smoke test's accepted tasks on the candidate (see Models), its first-review
+     acceptance rate is close enough to the cloud backend's that the extra rounds cost less than they save.
+   - **The host copes:** the gate (a Gradle build, say) and the model running at once don't run the host out of
+     RAM or throttle it.
+
+   If any fails, the herd stays cloud only, and the result goes in Open questions.
 3. Role layers and generic `SYSTEM_PROMPT.md` per role; the toolchain-image + role-layer build.
 4. The orchestrator: per-project bare mirror and per-unit clone lifecycle, worker container lifecycle, intake from
-   `ready: true`, round-robin assignment under `max_workers`, the state derivation above, commit validation and
+   `ready: true`, round-robin assignment to worker slots, the state derivation above, commit validation and
    push, escalation markers, draft PR, update-branch, mark-ready, PR body template, watching PRs for review and
    posting the reviewer's replies, and deleting merged change branches.
 5. The event log and the herdr bridge (`herd watch`, `herd status`).
-6. `docker-compose.yml` and the `herd` CLI: launch (Compose up, then `herdr --session herd`), `init`, `doctor`,
-   `provide`; an install script that puts `herd` on `PATH`, creates `~/.config/herd/`, and checks that `herdr`
-   is installed.
-7. **(manual)** Host secrets: `ANTHROPIC_API_KEY` (reviewer, and implementer if cloud); a fine-grained GitHub
+6. The orchestrator's Quadlet unit and the `herd` CLI: launch (start the unit, then `herdr --session herd`),
+   `init`, `doctor`, `provide`; an install script that puts `herd` on `PATH`, creates `~/.config/herd/`, installs
+   the Quadlet unit (with its `[Install]` section), enables lingering and the Podman API socket, and checks that
+   `herdr` is installed.
+7. **(manual)** Host secrets: `ANTHROPIC_API_KEY` (for every `anthropic` backend); a fine-grained GitHub
    token limited to the registered repos with contents + pull-request scopes, for the orchestrator only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
@@ -643,12 +811,21 @@ Steps marked **(manual)** need a human.
 
 ## Open questions deferred, not forgotten
 
-- **Local vs. cloud for the implementer** — Build plan step 2.
-- Implementer harness choice (Aider vs. something custom) — the requirement is local + cloud behind one config.
+- Implementer harness: Aider or OpenHands headless (see Containers), compared on the same tasks; something custom
+  only if neither fits.
+- Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
+  too: decide by replaying accepted tasks (see Models).
+- Whether the herd runs as a dedicated `herd` user instead of the operator's account. Rootless Podman keeps the
+  orchestrator's socket off root, but under the operator's account it could still mount their home. A dedicated
+  user closes that, at the cost of the `herd` command and `herd watch` having to reach another user's Podman.
 - The `review_rounds`, `added_tasks` and `gate_fixes` defaults (3 each): tune from the first smoke tests. Projects
   can override them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see The
   project manifest).
-- Egress enforcement mechanism (allow-listing proxy vs. per-host firewall rules) — decide at Build plan step 3.
+- Egress enforcement mechanism (allow-listing proxy vs. per-host firewall rules) — decide at Build plan step 3. Hydra
+  enforces per-agent allow-lists with iptables, giving its security reviewer less egress than its builder: a tested
+  data point for the firewall option (it needs checking under rootless Podman's networking).
+- A separate security-review unit kind (static analysis such as Semgrep plus a security-focused prompt), run beside
+  task or holistic review, as Hydra does.
 - A second workflow besides OpenSpec — only when a project needs it.
 - Whether to automate final approval for projects whose end-to-end tests can run in a container (e.g. an
   emulator with KVM passthrough), as a `final_approval.kind: container` with its own image.
