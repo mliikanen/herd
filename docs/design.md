@@ -531,7 +531,8 @@ A proposal stops and waits for a human when any of these happens:
   map to a task (see Following up on PR review);
 - merging the default branch into the change branch conflicts (see Keeping up with the default branch);
 - a unit keeps failing (crash, timeout, red gate, rejected commit) past `caps.failed_attempts` (see Failed attempts);
-- CI keeps failing after an update-branch past `caps.gate_fixes` fix tasks (see Keeping up with the default branch);
+- a required CI check keeps failing before the archive (after an update-branch merge or otherwise) past
+  `caps.gate_fixes` fix tasks (see Failing checks before the archive);
 - the holistic review rejects with feedback that can't be mapped to a specific task;
 - a task needs something in the manifest's `missing_capabilities`, or anything else the pipeline doesn't have (a
   device, a credential, a change to CI workflows), or content from outside the project (see Outside content);
@@ -933,18 +934,20 @@ the one that can reach their desktop: it reads alerts the orchestrator appends, 
 in `/var/lib/herd/shared/`, and shows each with `herdr notification show "<title>" --body "<details>"`. The bridge's one
 piece of state is a cursor in the operator's own state directory (`~/.local/state/herd/alerts.cursor`), the sequence
 number of the last alert it showed, updated after each one. After a restart it shows the alerts queued since the cursor,
-so nothing raised while it was down is missed. Delivery is at-least-once: a crash between showing an alert and saving
-the cursor shows that one alert again. Without a cursor (first run, or lost) it shows only the last hour's alerts rather
-than replaying the whole queue; the status pane still lists everything waiting. The orchestrator drops queued alerts
-older than 7 days, far beyond the replay window; a cursor that points before the oldest one left starts from there. With
-herdr's `[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached,
-as long as herdr's server is running in the operator's session. The `herd` user has no desktop session to notify, so it
-sends only push alerts (see Monitoring).
+so nothing raised while it was down is missed, as long as it was down for less than the queue's 7-day retention; a
+cursor older than the oldest alert left resumes from that oldest alert. Delivery is at-least-once: a crash between
+showing an alert and saving the cursor shows that one alert again. Without a cursor (first run, or lost) it shows only
+the last hour's alerts rather than replaying the whole queue; the status pane still lists everything waiting. The
+orchestrator drops queued alerts older than 7 days, far beyond the replay window. With herdr's `[ui.toast] delivery =
+"system"`, that goes through the OS notification service even when no client is attached, as long as herdr's server is
+running in the operator's session. The `herd` user has no desktop session to notify, so it sends only push alerts (see
+Monitoring).
 
-**The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit
-pushed, review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`. **Both the
-event log and the herdr layout are display-only. The orchestrator never reads them back**, so git stays the only
-source of truth. Losing the log, the bridge or the herdr session loses only what's on screen.
+**The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit pushed,
+review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`, rotated daily and kept for 90
+days (`logs.event_log_keep` in host config). **Both the event log and the herdr layout are display-only. The
+orchestrator never reads them back**, so git stays the only source of truth. Losing the log, the bridge or the herdr
+session loses only what's on screen.
 
 **The `herd` CLI.** The herd repo installs `herd` on the host:
 - `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
@@ -992,6 +995,7 @@ alerts:
   infra_after: 30m                     # alert when infrastructure failures persist this long
 logs:
   keep_after_end: 30d                  # from merge, abandonment, removal or closing; failed attempts: twice as long
+  event_log_keep: 90d                  # the event log, rotated daily
 disk:
   warn_below: 50GB
 ```
