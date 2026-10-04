@@ -269,24 +269,26 @@ status file on exit. The orchestrator then validates the commit before pushing i
 
   ```
   Guarded:
-  - G1 delete shared/src/commonTest/kotlin/vehicle/HidingTest.kt: task 2.3 removes vehicle hiding
-  - G2 change config/detekt/baseline.xml: the renamed class keeps its two existing findings
-  - G3 skip shared/src/commonTest/kotlin/fuel/OcrTest.kt x2: both cases need the camera fake from task 4.1
+  - G1 delete "shared/src/commonTest/kotlin/vehicle/HidingTest.kt": task 2.3 removes vehicle hiding
+  - G2 change "config/detekt/baseline.xml": the renamed class keeps its two existing findings
+  - G3 skip "shared/src/commonTest/kotlin/fuel/OcrTest.kt" x2: both cases need the camera fake from task 4.1
   ```
 
-  `- <id> <action> <path>[ x<n>]: <reason>`, where the id (`G1`, `G2`, …) is unique within the commit and the
-  action is `delete`, `empty`, `skip` or `change`, one per guard rule. There's one declaration per action and
-  path; a `skip` declaration covers every marker added to that file and gives their number (`x2`). The orchestrator
-  computes the guarded items from the diff itself and requires a one-to-one match on action and path, and on the
-  count for `skip`. The task review answers each in
-  `review-notes.md` as `guarded <commit sha> <id>: accept|reject — <reason>`, and validation of the verdict commit
-  requires exactly one answer per declared id. A rejected item sends the task back to `[ ]` like any revise
-  verdict, and **stays open**: the next attempt starts on top of the rejected commit, so leaving the file alone
-  would leave the rejected change in place. A task can't be accepted while any of its guarded items is open. An
-  item closes when a later commit of the task demonstrably reverses it (the file restored to its content before the
-  task, the skip markers gone, the guarded path back as it was), which the orchestrator checks from the diff, or
-  when a later task review explicitly accepts its current state (`guarded <commit sha> <id>: accept`, naming the
-  original commit). Validation of an accept verdict refuses while any item is open.
+  `- <id> <action> <path>[ x<n>]: <reason>`, where the id (`G1`, `G2`, …) is unique within the commit, the action is
+  `delete`, `empty`, `skip` or `change`, one per guard rule, and the path is a JSON string, so any valid Git path (one
+  containing ` x2` or `: `, say) parses unambiguously. There's one declaration per action and path; a `skip` declaration
+  covers every marker added to that file and gives their number (`x2`). The orchestrator computes the guarded items from
+  the diff itself and requires a one-to-one match on action and path, and on the count for `skip`. The task review
+  answers each in `review-notes.md` as `guarded <commit sha> <id>: accept|reject — <reason>`. Each task review gives
+  exactly one decision per item it covers, validation of the verdict commit checks that, and when an item has decisions
+  from several reviews (a reject, then a later accept), the latest in git order governs. A rejected item sends the task
+  back to `[ ]` like any revise verdict, and **stays open**: the next attempt starts on top of the rejected commit, so
+  leaving the file alone would leave the rejected change in place. A task can't be accepted while any of its guarded
+  items is open. An item closes when a later commit of the task demonstrably reverses it (the file restored to its
+  content before the task, the skip markers gone, the guarded path back as it was), which the orchestrator checks from
+  the diff, or when a later task review explicitly accepts its current state (a new `guarded <commit sha> <id>: accept`,
+  naming the original commit). Every open item is in scope for each later task review of the task. Validation of an
+  accept verdict refuses while any item is open.
 
   The guard covers implementer commits because those are the ones a task review follows. Reviewer commits are
   held to a narrow scope instead, so they can't touch guarded files at all: a verdict or triage commit only
@@ -565,8 +567,10 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   local-coder's work"), before any of its changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
-- **Each worker commit records its backend and unit kind** in trailers (`Herd-Backend: local-coder`,
-  `Herd-Unit: implement`), and commit validation checks them against the slot. How often each backend's work is
+- **Each worker commit records its model, backend and unit kind** in trailers (`Herd-Model: ollama/<coder model>`,
+  `Herd-Backend: local-coder`, `Herd-Unit: implement`), captured when the worker starts, and commit validation
+  checks them against the slot. Backend names can be repointed in host config at any time, so the rules above and
+  any metrics read `Herd-Model`, the model that actually ran, never the name. How often each model's work is
   accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks
   the herd has already accepted on the candidate and compare. There's no separate metrics store.
 - **A container gets only its backend's settings.** Endpoint and model name as env, and the secret only if the
@@ -575,7 +579,8 @@ those projects' units. Slots that share a GPU share it in turn: the model server
 - **The harness follows the backend kind.** The implementer harness serves every kind. The reviewer runs `claude -p`
   on `anthropic` backends and the implementer harness with the review prompt otherwise; both produce the same
   structured verdict.
-- `herd doctor` checks that every backend answers, and warns when `holistic` or `triage` runs on a local backend.
+- `herd doctor` checks that every backend answers, and warns when `holistic` or `triage` runs on a local backend,
+  and when a project's slots offer only one implementer model (so the stronger-attempt rule can't apply).
 
 Switching a slot between local and cloud, or adding a slot, is a config change: the scan re-reads host config, and a
 running unit finishes on the backend it started with.
@@ -765,7 +770,8 @@ Steps marked **(manual)** need a human.
    Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for
    a pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel
    Arc Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context.
-   It's bounded by the rule that a task's last review round goes to a different model. The B70 runs under
+   It's bounded by the rule that a task's last review round goes to an implementer on a different model, which
+   holds here because the cloud slots stay. The B70 runs under
    official Ollama's Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as
    `/dev/dri`. The runtime is rootless Podman, already on the host.
 
