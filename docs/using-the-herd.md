@@ -134,10 +134,12 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
   commit you tested:
   - **pass**: the change moves on to review;
   - **fail**: describe the failing check and what happened. The herd checks it the way it checks any failing test: if
-    you also report it flaky on a rerun, or failing on the default branch too, or the spec doesn't say which behavior is
-    right, it stops and asks you; otherwise it turns the failure into new tasks, and the draft PR just gets more
-    commits. `/herd-resolve` asks for the rerun when you record a fail, and for an end-to-end test the change didn't add
-    or change, a try on the default branch (a test the change did add or change is expected to fail there).
+    you also report it flaky on a rerun, or failing on the commit the change branched from too, or the spec doesn't say
+    which behavior is right, it stops and asks you; otherwise it turns the failure into new tasks, and the draft PR just
+    gets more commits. `/herd-resolve` asks for the rerun when you record a fail, and for an end-to-end test the change
+    didn't add or change, a try on the commit the change branched from, which it checks out for you (not the default
+    branch's latest, which may already have an unrelated fix; a test the change did add or change is expected to fail
+    there).
 
 ## Review
 

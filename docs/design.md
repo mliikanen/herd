@@ -712,14 +712,16 @@ checks the branch out, follows them, and records the result in `review-notes.md`
 - **fail** → the human writes the failure as the note. While that `fail` is the effective record and hasn't been
   triaged, *awaiting-approval*'s next action is a `triage` unit: the triage unit applies the same Test or implementation
   rule as every other failure, with the person's note as its evidence (`herd-resolve` asks them, when a check fails, to
-  rerun it once and, for an end-to-end test this change didn't touch, to try it on the default branch, and records both
-  in the note): a flake or a pre-existing failure the person reported, or a failure the spec doesn't settle, escalates
-  to `needs-human` as it would anywhere else, and otherwise it turns the failure into appended task(s) under "(added
-  during final approval)", and the proposal goes back to *implementing*. Either way its verdict commit records
-  `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the stop (a waiver,
-  say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once those tasks are
-  accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail` already
-  triaged, and the next action is the human again. The draft PR stays open throughout and simply gets more commits.
+  rerun it once and, for an end-to-end test this change didn't touch, to try it on a build of the change's merge-base,
+  which `herd-resolve` checks out for them, never the default branch's current tip, which may already carry an unrelated
+  fix, and records both in the note): a flake or a pre-existing failure the person reported, or a failure the spec
+  doesn't settle, escalates to `needs-human` as it would anywhere else, and otherwise it turns the failure into appended
+  task(s) under "(added during final approval)", and the proposal goes back to *implementing*. Either way its verdict
+  commit records `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the
+  stop (a waiver, say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once
+  those tasks are accepted and the holistic review is current again, the change returns to *awaiting-approval* with the
+  `fail` already triaged, and the next action is the human again. The draft PR stays open throughout and simply gets
+  more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
