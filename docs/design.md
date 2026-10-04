@@ -612,14 +612,14 @@ silently dropped — comes from two rules together, not from the scan alone:
   *implementing*; `flaky` adds no task, and the commit that records it is itself a push, which runs the check again on
   the new tip (required workflows run on every push; see Requirements on a project); `preexisting` adds no task and
   escalates to `needs-human` ("fails on the default branch too"). Those tasks count toward `caps.gate_fixes`; past it,
-  the orchestrator escalates. A "fails on the default branch too" stop resolved as fixed on the default branch, that no
-  update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
-  by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next
-  action is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path
-  for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
-  still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
-  wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
-  since a stuck CI is for a person to look at.
+  the orchestrator escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default
+  branch, that no update-branch merge has followed yet, comes before everything else in every state before the archive
+  (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to
+  merge): the next action is update-branch, so the retry runs against a branch that contains the default branch's fix.
+  This is the path for a CI failure after an update-branch merge too (see Keeping up with the default branch). A
+  required check that still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely
+  expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the
+  archive or after it, since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -691,9 +691,11 @@ left to the whole-change approval and CI. What follows describes the `human` pha
 the same way, by an `e2e` unit.
 
 When a proposal reaches *awaiting-approval*, the orchestrator makes sure its **draft** PR exists (normally opened by
-`herd-propose` at proposal time) and puts in its body the
-manifest's `final_approval.instructions`. The human checks the branch out, follows them, and records the result in
-`review-notes.md`, pinned to the SHA tested (`herd-resolve` writes the entry):
+`herd-propose` at proposal time) and puts in its body the `final_approval.instructions` from the same manifest its
+`e2e-mode` line was pinned from (the one at its merge-base when it was first dispatched), not the current one, so the
+instructions always match the phase the change owes even if the manifest has since changed or dropped them. The human
+checks the branch out, follows them, and records the result in `review-notes.md`, pinned to the SHA tested
+(`herd-resolve` writes the entry):
 - **pass** → the proposal moves to *in-review* (GitHub's review of the PR), and from there to *archiving* once no
   review thread is open;
 - **fail** → the human writes the failure as the note. While that `fail` is the effective record and hasn't been
@@ -819,11 +821,11 @@ The layers:
    checks that every test in the effective selection has its green line, every waived one its waived line, every
    change-local test its red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and
    the task isn't done. The exception is a **test-maintenance task**, one whose diff changes nothing outside `e2e.tests`
-   (fixing a flaky test, refactoring a helper): it doesn't change the app, so there's no behavior for a red run to
-   prove, and its change-local tests instead must pass on the baseline too, recorded as
-   `- <test id> green <baseline sha>` in place of the red line. Validation accepts that line only when the task's diff
-   stays inside `e2e.tests`, and the task review checks that `tasks.md` describes the task as test maintenance and that
-   the change doesn't weaken what the test checks.
+   apart from the task's own checkbox in `tasks.md`, which every implementer commit flips (fixing a flaky test,
+   refactoring a helper): it doesn't change the app, so there's no behavior for a red run to prove, and its change-local
+   tests instead must pass on the baseline too, recorded as `- <test id> green <baseline sha>` in place of the red line.
+   Validation accepts that line only when the task's diff stays inside `e2e.tests`, and the task review checks that
+   `tasks.md` describes the task as test maintenance and that the change doesn't weaken what the test checks.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
@@ -847,7 +849,10 @@ The layers:
    commit, and CI triage records `ci-triage "<check>" <sha> <check run id>: flaky`. Flaky outcomes are counted from
    those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change escalates
    to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever; the
-   person fixes the test or its environment in a separate change, or waives it like a pre-existing failure.
+   person fixes the test or its environment in a separate change and resolves the stop once that's merged (update-branch
+   comes first, as for a "fails on the default branch too" stop), and the test's flake count starts over from that
+   resolution. A flaky test can't be waived: a waiver needs a failure on the merge-base to point at, and a flake may not
+   have one.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
    the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
    branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like

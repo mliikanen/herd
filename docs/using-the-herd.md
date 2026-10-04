@@ -103,8 +103,9 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
 - PR review didn't come clean within the allowed rounds, or a reviewer asked for a change of scope;
 - a task needs something the pipeline doesn't have (a device, a credential, a missing capability, or a change to
   the project's CI workflows or the local actions they use, which the herd isn't allowed to make);
-- an end-to-end test is flaky past the allowed retries, fails on the default branch too (you fix it there or waive it
-  for this change), or fails in a way the spec doesn't settle as an outdated test or a regression;
+- an end-to-end test is flaky past the allowed retries (you fix it on the default branch), fails on the default branch
+  too (you fix it there or waive it for this change), or fails in a way the spec doesn't settle as an outdated test or a
+  regression;
 - something went wrong after the change was archived (a failed check, a review finding, or a new commit that
   needs review), when fixing it would mean un-archiving;
 - a task needs a file from outside the project.
