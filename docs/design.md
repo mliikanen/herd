@@ -831,7 +831,7 @@ planner: { agent: claude }              # the interactive agent in each project'
 projects:
   some-project:
     checkout: ~/src/some-project        # the operator's checkout, for its herdr workspace (herd init fills it in)
-    locality: host                      # optional: code must not leave the host (no cloud, no rented backends)
+    locality: host                      # optional: the herd's agents send its code to no cloud or rented backend
     slots: [gpu, gpu-private]           # optional: the slots this project may use
 ```
 
@@ -854,9 +854,12 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
   different model. A project with `locality: host` may use only slots whose every backend is local, for every role and
   unit kind; a config that maps one of its slots to a cloud or rented backend, including by repointing a backend later,
-  fails this check, so its code can't leave the host through a config change. A project that fails is shown *inactive*
-  with the reason ("no slot can review local-coder's work"), before any of its changes start, rather than stalling one
-  after its first task.
+  fails this check, so its code can't leave the host through a config change. The policy covers what the herd sends: its
+  workers' model traffic. The planner pane is the person's own session, outside the herd's control, so for a
+  `locality: host` project the herd doesn't start a cloud planner there by default: the pane opens a plain shell, with a
+  note saying why, unless the project names a local planner agent (`projects.<project>.planner`). A project that fails
+  is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes start, rather
+  than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -1123,10 +1126,10 @@ revision below).
   only privileged component. `doctor` checks that the endpoint answers through the tunnel, and that the inference port
   is closed at the peer's public address. The endpoint's host is on the proxy's egress for that machine's backends only.
   The gateway applies the same rules as to any backend: it pins the attested model ID, allow-lists the inference route
-  and token-only features, and bounds the requested output by the backend's `context`, which a rented backend must
-  declare (the OpenAI-compatible model list doesn't report it); `doctor` checks the value with a request near that
-  length.
-
+  and token-only features, and checks each request against the backend's `context`, which a rented backend must declare
+  (the OpenAI-compatible model list doesn't report it): the prompt's upper bound (counted as for a reservation, see
+  Monitoring) plus the requested output must fit, and a request that can't is refused rather than sent to fail on the
+  server. `doctor` checks the value with a request near that length.
 - **Lifecycle.** At first the operator starts and stops the machine. The herd dispatches a unit to a rented backend only
   while that backend is ready: its machine's endpoint answers health checks **and** the machine's model list still
   contains the backend's own `<model>@<revision>` (one machine may serve several models, and one can disappear while the
@@ -1135,7 +1138,9 @@ revision below).
   key, a broken tunnel, a crashed model server or a network blip look exactly like a stopped machine while the provider
   keeps billing. Only the operator can say a machine is stopped, with `herd machines stopped <machine or snapshot id>`
   (a request; see The herd's own account), which closes that machine's billing-related alerts until its endpoint answers
-  again.
+  again. Since unhealthy may still mean billing, an active machine whose health checks fail for longer than
+  `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns
+  or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
@@ -1149,10 +1154,12 @@ revision below).
   files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
   times, so the snapshot id, not the name, is what identifies it. The snapshot's credentials can't depend on files the
   operator may rotate or delete for the replacement machine, so when a snapshot is retained the proxy copies the secrets
-  it uses into its own store (`~herd/secrets/retained/<snapshot id>/`, mode `0600`), keeps that copy unchanged, and
-  deletes it only when the snapshot is retired. The snapshot takes no new units, its running units finish on it (as
-  Models promises), and it keeps accruing cost and raises a "retained machine not confirmed stopped" alert episode,
-  shown with its id, until its units have finished **and** the operator runs `herd machines stopped <snapshot id>`.
+  it uses into its own store, keeps that copy unchanged, and deletes it only when the snapshot is retired. That store is
+  a dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate
+  from `~herd/secrets/`, whose key files the proxy only mounts read-only one by one, so it never sees the orchestrator's
+  App key. The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps accruing
+  cost and raises a "retained machine not confirmed stopped" alert episode, shown with its id, until its units have
+  finished **and** the operator runs `herd machines stopped <snapshot id>`.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
@@ -1211,10 +1218,12 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
 Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator, the
 model keys the proxy. They're kept in `~herd/secrets/`, owned by `herd` with mode `0700`, one file per key at `0600`, so
 no other host user (the operator included) and no group can read them whatever the umask was when they were created;
-each container mounts only its own key file, read-only. The install script, which runs with root, creates the directory
-with those modes and checks every key file. Neither half of `herd doctor` can see inside it (the operator isn't `herd`,
-and the orchestrator mounts only its own key), so `doctor` checks the owner and modes through `sudo -u herd` when the
-operator has sudo, and otherwise reports the check as skipped rather than passed.
+each container mounts only its own key file, read-only. The one exception is the proxy's store of retained
+rented-machine credentials, a separate volume only the proxy mounts, read-write (see Rented GPU backends). The install
+script, which runs with root, creates the directory with those modes and checks every key file. Neither half of
+`herd doctor` can see inside it (the operator isn't `herd`, and the orchestrator mounts only its own key), so `doctor`
+checks the owner and modes through `sudo -u herd` when the operator has sudo, and otherwise reports the check as skipped
+rather than passed.
 
 ## Outside content
 
@@ -1257,12 +1266,13 @@ instance*: the orchestrator, the active worker containers, and the herdr workspa
   `needs-human`, and `awaiting-approval` when its next action is the human's final approval, not when it's a `triage`
   unit for an untriaged failure.
 - **One workspace per registered project**, opened in the operator's checkout of it (`--cwd`), holding:
-  - **The planner pane**: the operator's interactive agent (host config `planner.agent`, default `claude`) running
-    in that checkout. This is where `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get
-    written. It's created with the workspace, by default, and it belongs to the person: the herd never prompts it,
-    closes it or restarts it. herdr's integration for that agent (`herdr integration install claude`, done by the
-    install script) tells herdr which session the agent is in, so herdr resumes it after a restart. herdr reads
-    the agent's working/blocked/idle state from its screen; Claude Code's integration doesn't report it.
+  - **The planner pane**: the operator's interactive agent (host config `planner.agent`, default `claude`; a
+    `locality: host` project gets a plain shell instead unless it names a local agent, see Models) running in that
+    checkout. This is where `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get written. It's
+    created with the workspace, by default, and it belongs to the person: the herd never prompts it, closes it or
+    restarts it. herdr's integration for that agent (`herdr integration install claude`, done by the install script)
+    tells herdr which session the agent is in, so herdr resumes it after a restart. herdr reads the agent's
+    working/blocked/idle state from its screen; Claude Code's integration doesn't report it.
   - **One pane per running unit**, following that unit's log (read-only; workers are non-interactive). The bridge
     reports it to herdr as `working` (`pane.report_agent`) and sets its title to
     `<change> · <role> · task <n> · round <r>`, with the proposal's state as a named token
@@ -1443,18 +1453,19 @@ The values above are placeholders, tuned after the smoke test like the caps (see
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after`, an idle rented machine (see Rented GPU backends), a rented machine not confirmed stopped after
-  the budget limit, and a retained rented machine not confirmed stopped all raise an alert. The queue doubles as the
-  orchestrator's own record of alerts, an operational control like the budget counter: unlike the event log, the
-  orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id derived from
-  facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of
-  its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget,
-  infrastructure failures, an idle rented machine, a rented machine not confirmed stopped after the budget limit, a
-  retained rented machine not confirmed stopped) is an **episode**: the scan that first sees it appends an opening
-  entry, the scan that sees it gone appends a `cleared` entry, and a new opening after a `cleared` one starts a new
-  episode, so a second outage on the same day alerts again. The alert is keyed by the episode, and a daily reminder
-  while it lasts by the episode and the day. Losing the queue costs at most one repeated alert per open condition.
-  Delivery on both channels is at-least-once: push delivery is recorded per id after the service accepts it, so a crash
-  in between sends that one again, never none. Alerts go out on two channels from two accounts:
+  the budget limit, a retained rented machine not confirmed stopped, and an unhealthy rented machine not confirmed
+  stopped all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like
+  the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's
+  state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert
+  about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing
+  condition (a project inactive, low disk, the budget, infrastructure failures, an idle rented machine, a rented machine
+  not confirmed stopped after the budget limit, a retained rented machine not confirmed stopped, an unhealthy rented
+  machine not confirmed stopped) is an **episode**: the scan that first sees it appends an opening entry, the scan that
+  sees it gone appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second
+  outage on the same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the
+  episode and the day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels
+  is at-least-once: push delivery is recorded per id after the service accepts it, so a crash in between sends that one
+  again, never none. Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
