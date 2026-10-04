@@ -602,20 +602,21 @@ silently dropped — comes from two rules together, not from the scan alone:
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
   next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
-  outcome in `review-notes.md` as `ci-triage <check> <sha> <check run id>: fix | flaky | preexisting`, keyed by the
-  exact check run, since a re-run keeps the check's name and commit; the scan never dispatches triage for the same
-  failed run twice, and a re-run that fails again is a new run, triaged and counted afresh. `fix` adds a fix task under
-  "(added for CI)", sending the change back to *implementing*; `flaky` adds no task, and the commit that records it is
-  itself a push, which runs the check again on the new tip (required workflows run on every push; see Requirements on a
-  project); `preexisting` adds no task and escalates to `needs-human` ("fails on the default branch too"). Those tasks
-  count toward `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" stop resolved
-  as fixed on the default branch, that no update-branch merge has followed yet, comes before everything else in every
-  state before the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there
-  may be nothing newer to merge): the next action is update-branch, so the retry runs against a branch that contains the
-  default branch's fix. This is the path for a CI failure after an update-branch merge too (see Keeping up with the
-  default branch). A required check that still has no result `pr_review.checks_timeout` after the push it's for (queued,
-  running or merely expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and
-  alerts, before the archive or after it, since a stuck CI is for a person to look at.
+  outcome in `review-notes.md` as `ci-triage "<check>" <sha> <check run id>: fix | flaky | preexisting`, with the
+  check's name as a JSON string since names may contain spaces, keyed by the exact check run, since a re-run keeps the
+  check's name and commit; the scan never dispatches triage for the same failed run twice, and a re-run that fails again
+  is a new run, triaged and counted afresh. `fix` adds a fix task under "(added for CI)", sending the change back to
+  *implementing*; `flaky` adds no task, and the commit that records it is itself a push, which runs the check again on
+  the new tip (required workflows run on every push; see Requirements on a project); `preexisting` adds no task and
+  escalates to `needs-human` ("fails on the default branch too"). Those tasks count toward `caps.gate_fixes`; past it,
+  the orchestrator escalates. A "fails on the default branch too" stop resolved as fixed on the default branch, that no
+  update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
+  by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next
+  action is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path
+  for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
+  still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
+  wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
+  since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -780,12 +781,17 @@ switch the safety net off. So:
   the toolchain image (by digest), both as they are at that same commit. So every unit of the change runs the same
   `select` and `run`, with the same configuration and the same image, and an implementer's `E2E:` section is checked
   against the same harness that produced it. The pin, all three together, moves only when update-branch merges a newer
-  default branch into the change, and only before the archive: from the archive commit on, it's frozen, since an
-  archived change can't go back to *awaiting-approval*, and CI's full suite covers anything a later merge brings in.
-  When the pin moves before the archive, the change's `container`-phase pass is no longer current, even if the merge is
-  otherwise bookkeeping: that pass was earned under the old harness, so the final e2e runs again under the new pin
-  (which is also when a waiver that lapsed on the merge gets its test run). This is the one exception to clean merges
-  keeping final-approval records; the `human` phase isn't affected. The `container` record names its pin for this
+  default branch into the change, and only before the archive, and only to a commit whose manifest can still serve the
+  change's recorded `e2e-mode`: if the newer default branch has dropped the `e2e` block or the harness, or no longer
+  builds the emulator image a `container` mode needs, the merge goes ahead but the pin stays where it was, no longer the
+  branch's merge-base (the scan derives it as the latest of the change's merge-bases whose manifest can serve the mode),
+  so the change keeps the last environment that can run its red/green proofs and final e2e for the rest of its life, and
+  the scan notes it on the status pane. And from the archive commit on, it's frozen, since an archived change can't go
+  back to *awaiting-approval*, and CI's full suite covers anything a later merge brings in. When the pin moves before
+  the archive, the change's `container`-phase pass is no longer current, even if the merge is otherwise bookkeeping:
+  that pass was earned under the old harness, so the final e2e runs again under the new pin (which is also when a waiver
+  that lapsed on the merge gets its test run). This is the one exception to clean merges keeping final-approval records;
+  the `human` phase isn't affected. The `container` record names its pin for this
   (`final-approval container pass <tested sha> harness <pin sha>: <detail>`).
 
 The layers:
@@ -809,7 +815,12 @@ The layers:
    change-local test; and an additional `- <test id> flaky` line for each test that flaked along the way. Validation
    checks that every test in the effective selection has its green line, every waived one its waived line, every
    change-local test its red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and
-   the task isn't done.
+   the task isn't done. The exception is a **test-maintenance task**, one whose diff changes nothing outside `e2e.tests`
+   (fixing a flaky test, refactoring a helper): it doesn't change the app, so there's no behavior for a red run to
+   prove, and its change-local tests instead must pass on the baseline too, recorded as
+   `- <test id> green <baseline sha>` in place of the red line. Validation accepts that line only when the task's diff
+   stays inside `e2e.tests`, and the task review checks that `tasks.md` describes the task as test maintenance and that
+   the change doesn't weaken what the test checks.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
@@ -830,7 +841,7 @@ The layers:
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
    `E2E:` section (`- <test id> flaky`), a task review, `e2e` or `triage` unit adds `e2e-flaky <test id> <sha>` to its
-   verdict commit, and CI triage records `ci-triage <check> <sha> <check run id>: flaky`. Flaky outcomes are counted
+   verdict commit, and CI triage records `ci-triage "<check>" <sha> <check run id>: flaky`. Flaky outcomes are counted
    from those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change
    escalates to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle
    forever; the person fixes the test or its environment in a separate change, or waives it like a pre-existing failure.

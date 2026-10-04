@@ -125,9 +125,9 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
 
 - **The herd runs it** (`container`): an emulator in a worker runs every end-to-end test relevant to the change, after
   the herd has already run each task's relevant tests while implementing it, with every test a task adds or changes
-  shown failing before the task and passing after it. You only step in if a failure can't be settled from the spec, or
-  if the project also asks for your own check afterwards for something only a real device can do. CI runs the full suite
-  on the PR either way.
+  shown failing before the task and passing after it. You only step in if a failure can't be settled from the spec, a
+  test stays flaky past the allowed retries or fails on the default branch too, or if the project also asks for your own
+  check afterwards for something only a real device can do. CI runs the full suite on the PR either way.
 - **You run it** (`human`): when a change reaches it, the draft PR (and the status pane) shows the project's
   instructions. Check out the branch, follow them, and record the result with `/herd-resolve`, which pins it to the
   commit you tested:
