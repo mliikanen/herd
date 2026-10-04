@@ -14,8 +14,8 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 
 - **Proposer**: a human with an interactive cloud SOTA agent. Unchanged, plus one step: marking the proposal ready
   (see The hand-off).
-- **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot,
-  local (Ollama or similar) or a cloud API, and one host can mix them (see Models).
+- **Implementer**: an LLM run non-interactively, one task at a time. Host config sets which model each worker slot runs:
+  a local one (Ollama or similar), one on a rented GPU, or a cloud API, and one host can mix them (see Models).
 - **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
   slot like the implementer; a task review never runs on the model that wrote the commit (see Models). It reviews each
   task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
@@ -423,7 +423,8 @@ bare mirror, derives each proposal's state, and dispatches work to free worker s
 fix that appeared since the last pass is picked up by the next one with no restart, because no proposal state is
 remembered between passes to go stale. Crash recovery (below) is just the first scan. The only things the orchestrator
 keeps across passes are operational stores that decide nothing about any proposal: the budget counter and usage ledger,
-and the alert queue (see Monitoring). It reads them back on start.
+the alert queue (see Monitoring), and the rented-machine definitions, current and retained (see Rented GPU backends). It
+reads them back on start.
 
 **Crash recovery** (orchestrator container restart or a full host reboot look identical from here, given its systemd
 unit's `Restart=always` and lingering, see Containers): on start, the orchestrator, for every registered project, (1)
@@ -431,11 +432,12 @@ lists every change branch without a merged PR, (2) reads each one's `.openspec.y
 compute its exact next action from scratch — no assumption carried over from before the crash, (3) reconciles against
 running containers (kill any orphaned worker or model pull rather than adopt it — its state is suspect — and wait for a
 pull to exit before local dispatch resumes; the model server alone is adopted) and `gh pr list` (don't open a second PR
-for a branch that already has one), (4) reads back the operational stores (budget counter, usage ledger, alert queue)
-and starts a new proxy epoch (see Network and secrets), (5) re-enqueues and resumes. The cost of a crash is bounded to
-whatever unpushed work was sitting in a worker's ephemeral clone — redone from the last pushed commit (and, per the rule
-above, that redo never reuses the discarded partial work) — which is cheap specifically because workers are stateless
-and task granularity is small (one `tasks.md` item at a time).
+for a branch that already has one), (4) reads back the operational stores (budget counter, usage ledger, alert queue,
+rented-machine definitions, current and retained) and starts a new proxy epoch (see Network and secrets), (5)
+re-enqueues and resumes. The cost of a crash is bounded to whatever unpushed work was sitting in a worker's ephemeral
+clone — redone from the last pushed commit (and, per the rule above, that redo never reuses the discarded partial work)
+— which is cheap specifically because workers are stateless and task granularity is small (one `tasks.md` item at a
+time).
 
 **The proposal states at a glance.** A summary of the state list below, which is the authority: the diagram leaves out
 *closed* (a closed PR is dormant until it's reopened) and most of the ways a change can stop at *needs-human*.
@@ -799,11 +801,24 @@ say which backend runs which kind of unit:
 ```yaml
 backends:
   opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY,
+                 account: anthropic:<workspace id>,                   # a billing scope used by the herd alone
                  price: { input: <per Mtok>, output: <per Mtok> } }   # budget.currency; input = highest input rate
   sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY,
+                 account: anthropic:<workspace id>,
                  price: { input: <per Mtok>, output: <per Mtok> } }
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
   local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
+  rented-coder:   { kind: openai, machine: h100-a, model: <open-weight coder>, revision: <commit>,
+                    context: 131072,       # see Rented GPU backends
+                    weights: <label> }     # optional: same label = same model for review exclusion
+machines:                              # rented GPU machines: what's billed, once per machine
+  h100-a: { instance: <provider>:<account>:<instance id>,
+            endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
+            price: { per_hour: <rate> }, idle_alert: 30m }
+  # with access: wireguard instead, endpoint: http://10.66.0.1:8000/v1 (the tunnel address), no `secret` (tunnel
+  # membership is the authentication), and the machine adds:
+  #   wireguard: { peer: <public host>:51820, peer_public_key: <key>, address: 10.66.0.2/32,
+  #                allowed_ips: 10.66.0.1/32, private_key_secret: RENTED_WG_KEY }
 slots:                                 # each slot runs one unit at a time
   - name: gpu
     implementer: local-coder
@@ -822,7 +837,8 @@ planner: { agent: claude }              # the interactive agent in each project'
 projects:
   some-project:
     checkout: ~/src/some-project        # the operator's checkout, for its herdr workspace (herd init fills it in)
-    slots: [gpu, gpu-private]           # optional: e.g. code that must not leave the host
+    locality: host                      # optional: the herd's agents send its code to no cloud or rented backend
+    slots: [gpu, gpu-private]           # optional: the slots this project may use
 ```
 
 A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
@@ -835,35 +851,55 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
 - **Any capable slot can take any unit.** Every unit starts from a fresh clone, so a task implemented on one slot can
   be revised or reviewed on another.
-- **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots.
-  Backend names are only labels, so two backends naming the same model (same `kind` and `model`) count as the same
-  model for this rule and the ones below. A holistic review spans commits that may come from several models, so
-  excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable
-  slot has one.
-- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover
-  `implement` and every reviewer kind, and for each implementer backend among them, some slot must offer a `task`
-  review on a different model. A project that fails is shown *inactive* with the reason ("no slot can review
-  local-coder's work"), before any of its changes start, rather than stalling one after its first task.
+- **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots. Backend
+  names are only labels, so models are compared by their normalized `Herd-Model` value (kind, model, and the weights'
+  digest or revision wherever the backend has one: a local model's digest, a rented model's revision): two backends
+  naming the same model count as the same model for this rule and the ones below, and two revisions of one model, being
+  different weights, count as different models. The same open weights served two ways (`ollama/…` on the B70, `openai/…`
+  on a rented machine) have different names, though, so a backend can declare `weights: <label>`: the label is recorded
+  in a `Herd-Weights` trailer and only ever adds an equivalence: sameness is the transitive closure of both links over
+  every commit and backend the herd knows: two commits are the same model when a chain of matching `Herd-Model` values
+  and shared labels connects them, so a label can unify servings but never split one model into two, and a renamed label
+  can't break a chain. Config validation also rejects two backends that serve one `Herd-Model` under different labels,
+  which keeps the chains short. `herd doctor` warns when backends of different kinds look like the same model (the same
+  base name) without a shared label. A holistic review spans commits that may come from several models, so excluding all
+  of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable slot has one.
+- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
+  and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
+  different model. A project with `locality: host` may use only slots whose every backend is local, and local means the
+  herd's own model server: an `ollama` backend's `endpoint` must be that server's address on the internal network, which
+  validation enforces on every reload for every backend, so repointing one at a remote server is rejected rather than
+  quietly exporting code, for every role and unit kind; a config that maps one of its slots to a cloud or rented
+  backend, including by repointing a backend later, fails this check, so its code can't leave the host through a config
+  change. The policy covers what the herd sends: its workers' model traffic. The planner pane is the person's own
+  session, outside the herd's control, so for a `locality: host` project the herd doesn't start a cloud planner there by
+  default: the pane opens a plain shell, with a note saying why, and the person can start whatever local agent they like
+  in it. A project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any
+  of its changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
   (`Herd-Model: ollama/<coder model>@<digest>`, the digest where the backend has one, `Herd-Backend: local-coder`,
-  `Herd-Unit: implement`), captured when the worker starts, and commit validation checks them against the slot. Backend
-  names can be repointed in host config at any time, so the rules above and any metrics read `Herd-Model`, the model
-  that actually ran, never the name. How often each model's work is accepted comes straight from git history, which is
-  how to judge a local model against a cloud one: replay tasks the herd has already accepted on the candidate and
-  compare. There's no separate metrics store.
-- **No worker holds an API key.** A unit's container gets its backend's model name and the address of the
-  herd's model gateway, plus a token for that unit only. The gateway adds the backend's real key on the way out
-  (see Network and secrets), and accepts the unit's token only for that unit's backend.
+  `Herd-Unit: implement`, and `Herd-Weights` when the backend declares one), captured when the worker starts, and commit
+  validation checks them against the slot. Backend names can be repointed in host config at any time, so the rules above
+  and any metrics read `Herd-Model`, the model that actually ran, never the name. How often each model's work is
+  accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks the
+  herd has already accepted on the candidate and compare. There's no separate metrics store.
+- **No worker holds an API key.** A unit's container gets its backend's model name and the address of the herd's model
+  gateway, plus a token for that unit only. The gateway strips that token on the way out and adds the backend's real key
+  where it has one (a WireGuard-protected rented backend has none; see Network and secrets), and accepts the unit's
+  token only for that unit's backend.
 - **The harness follows the backend kind.** The implementer harness serves every kind. The reviewer runs `claude -p`
   on `anthropic` backends and the implementer harness with the review prompt otherwise; both produce the same
   structured verdict.
 - `herd doctor` checks that every backend answers, and warns when `holistic` or `triage` runs on a local backend,
   and when a project's slots offer only one implementer model (so the stronger-attempt rule can't apply).
 
-Switching a slot between local and cloud, or adding a slot, is a config change: the scan re-reads host config, and a
-running unit finishes on the backend it started with.
+Switching a slot between local, rented and cloud backends, or adding a slot, is a config change: the scan re-reads host
+config, and a running unit finishes on the backend it started with. The exception is a project that becomes
+`locality: host`: a policy that let code leave the host after it loaded would promise nothing, so the scan that loads it
+stops the project's running units on non-local backends (their work is discarded like any crashed attempt, an `infra`
+failure that doesn't count), and the project reports itself host-local only once none is left.
 
 ## Containers
 
@@ -905,7 +941,9 @@ from a per-project, per-role image:
   model and output limit are fields in the request body (for Anthropic and Ollama alike), and metering needs the usage
   in each response, so it parses and rewrites provider requests and reads their responses. The **egress allow-list** is
   an off-the-shelf forward proxy configured for authenticated `CONNECT` with destination checks. It holds the model
-  backends' API keys and nothing else, and runs no model and no project code.
+  backends' credentials and nothing else: the cloud providers' API keys, the rented machines' HTTPS keys and WireGuard
+  private keys (read from `~herd/secrets/machines/`), and its own store of their copies (see Rented GPU backends), and
+  runs no model and no project code.
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container lifecycle,
   commit validation, push, `gh pr create`/update-branch/mark-ready. Needs the GitHub App's private key, the `herd`
   user's rootless Podman API socket, and the host config read-only (which host ownership enforces; see The herd's own
@@ -947,16 +985,20 @@ sniff or redirect, and no other unit's token to steal; workers also run with eve
 worker's only way out is the proxy, which serves two purposes:
 - **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`, or
   the harness's equivalent, points at the gateway, and the SDK's credential, `ANTHROPIC_API_KEY` or its equivalent,
-  holds the unit's token). The gateway validates that token first, and only then replaces it with the backend's real key
-  and calls the provider over HTTPS. It also sets the provider endpoint and the model itself, from the token's
-  registered backend, overwriting whatever the request named (one key can authorize several models), and rejects
-  requests to any other endpoint. Beyond that it allow-lists what a request may contain: the inference route only, known
-  headers, and body features that run entirely on tokens. Server-executed tools (a provider's web search, web fetch or
-  code execution) would reach outside the egress allow-list and add fees the reservation doesn't price, so they're
-  rejected, as are batch, file and other separately billed APIs, unless the herd constrains and meters them itself. So
-  workers never hold an API key, the gate and the agent-written code it runs have none to leak, and a unit can only call
-  the model its slot assigns, at the price its reservation assumed. Local backends go through the gateway too, which
-  keeps that rule uniform.
+  holds the unit's token). The gateway validates that token first, and only then strips it, so the unit's token never
+  leaves the proxy: it calls the provider over HTTPS with the backend's real key in its place, or, for a rented backend
+  with `access: wireguard`, which has no key, over plain HTTP inside the WireGuard tunnel the proxy holds, with no
+  credential header at all, since the tunnel already encrypts and authenticates both ends (see Rented GPU backends). It
+  also sets the provider endpoint and the model itself, from the token's registered backend, overwriting whatever the
+  request named (one key can authorize several models), and rejects requests to any other endpoint. Beyond that it
+  allow-lists what a request may contain: the inference route only, known headers, and body features that run entirely
+  on tokens. Server-executed tools (a provider's web search, web fetch or code execution) would reach outside the egress
+  allow-list and add fees the reservation doesn't price, so they're rejected, as are batch, file and other separately
+  billed APIs, unless the herd constrains and meters them itself. So workers never hold an API key, the gate and the
+  agent-written code it runs have none to leak, and a unit can only call the model its slot assigns, under its backend's
+  accounting rule: a cloud call within the reservation that priced it, a rented call only with the orchestrator's
+  authorization while its machine's hours are accrued, a local call with no charge at all (see Monitoring and Rented GPU
+  backends). Local backends go through the gateway too, which keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
   the destinations on the unit's list, each a host and port (`host[:port]`, 443 when no port is given, and always TLS; a
   `CONNECT` tunnel carries arbitrary TCP, so a hostname alone would open every port on it): the manifest's `egress`,
@@ -1066,6 +1108,216 @@ models:                                # host config; only read when a local bac
   reports how long the load took; a test pull of a small model proves `models.registry_egress` is complete. The host
   half confirms the `herd` user is in `render` (or that CDI is set up).
 
+## Rented GPU backends
+
+
+Between the local model server and a cloud API sits a third option, especially for coding agents: an open-weight model
+on a GPU machine rented by the hour from a GPU cloud or marketplace. It can run models far larger than a desktop card
+holds (a coder model that needs 80 GB or more), it's billed per hour rather than per token, and the harnesses already
+speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-compatible API.
+
+The bill belongs to a **machine**, not to a model, so host config describes them separately. A `machines` entry is one
+rented machine: its `instance`, which is what identifies the machine (the provider's ID for the rented instance,
+qualified so it's unique across providers: `<provider>:<account>:<instance id>`, with a region or project added where
+the provider's IDs are only unique within one; the operator copies it in), its endpoint, how it's protected, its secret,
+its hourly `price` and its `idle_alert`. A backend of `kind: openai` that names a `machine` is a rented backend (the
+`machine` field is what marks it; there's no separate flag), and gives its model, revision and context; several backends
+may share a machine (two models served by one server), and the machine is still billed once. Validation rejects two
+entries in the current config with the same `instance` or the same endpoint, since that would bill one machine twice,
+and a machine's endpoint must reach that machine alone (the operator's assertion, like the model revision below). A
+conflict with a retained definition isn't a config error but an operational block: a replacement instance that reuses
+its predecessor's endpoint isn't activated (no units, but it is health-checked, and while the shared endpoint answers
+both definitions accrue, since the herd can't tell which instance is answering and both may be billing; the status pane
+says why, and a "replacement blocked, possibly billing" alert episode opens as soon as the block does, whether or not
+the endpoint answers (a silent machine may still be billing), cleared only when the block lifts or the replacement is
+confirmed stopped, with the daily reminder like any episode) until the retained snapshot holding that endpoint is
+confirmed stopped and retired, since until then both would answer at the same URL. For the same reason an endpoint stays
+bound to its instance until that definition is retired, or moves to another endpoint by an in-place update and its
+in-flight calls on the old one have finished (see Removing or repointing a machine), whichever comes first: the operator
+gives a replacement instance a new endpoint, or keeps the old URL leading to the old machine until it's confirmed
+stopped and retired. The herd can't see where a URL leads, so this is the operator's assertion too, like an endpoint
+reaching one machine alone; repointing a URL under a retained snapshot would charge the new machine's traffic to the old
+one.
+
+- **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
+  model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
+  convention: the server must serve the model under the ID `<model>@<revision>` (vLLM, for one, takes the weights'
+  revision and a served-model name as separate options), `herd doctor` checks that the server's model list contains
+  exactly that ID, and the gateway sets it as the request's model. That's the operator's attestation, since they set up
+  the server, not a cryptographic proof of what weights are loaded; it's what keeps acceptance rates from silently
+  mixing two versions. `Herd-Model` records the same ID (`openai/<model>@<revision>`).
+
+- **Trust.** The machine's provider can see prompts and code, as a cloud API's can, often without the data commitments a
+  model vendor gives. A rented backend counts as leaving the host, so a project with `locality: host` (see Models) never
+  gets a rented slot, which config validation enforces; whether to use rented hardware at all is the operator's call,
+  per project.
+
+- **Network.** The model gateway is the only client, and the endpoint is never an open port. A machine declares how it's
+  protected with `access`: `https-key`, HTTPS with a key (`secret`, kept in `~herd/secrets/machines/` and read by the
+  proxy alone, like a provider key), for which `herd doctor` checks that a request without the key, and one with a wrong
+  key, are both refused; or `wireguard`, reachable only through a WireGuard tunnel the proxy holds, where tunnel
+  membership is the authentication (so `secret` belongs to `https-key` alone, and validation rejects it on a `wireguard`
+  machine). The machine's `wireguard` block gives everything the proxy needs to bring the tunnel up itself: the
+  machine's public address and port (`peer`), its public key, the proxy's own tunnel `address`, the `allowed_ips` it
+  routes into the tunnel (the machine's tunnel address only), and the proxy's private key as a secret
+  (`private_key_secret`, in `~herd/secrets/machines/`); the `endpoint` is then an `http://` URL at the machine's tunnel
+  address, with no TLS inside the tunnel, since WireGuard already encrypts the traffic and authenticates the peer by its
+  key. The operator sets up the other side on the machine. The proxy runs WireGuard in userspace, with the tunnel served
+  by an in-process network stack rather than a kernel interface, so it needs no TUN device and no `NET_ADMIN`, and the
+  orchestrator stays the only privileged component. `doctor` checks that the endpoint answers through the tunnel, and
+  that the inference port is closed at the peer's public address. The endpoint's host is on the proxy's egress for that
+  machine's backends only. The gateway applies the same rules as to any backend: it pins the attested model ID,
+  allow-lists the inference route and token-only features, and checks each request against the backend's `context`,
+  which a rented backend must declare (the OpenAI-compatible model list doesn't report it): the prompt's upper bound
+  (counted as for a reservation, see Monitoring) plus the requested output must fit, and a request that can't is refused
+  rather than sent to fail on the server. `doctor` checks the value with a request near that length.
+- **Lifecycle.** At first the operator starts and stops the machine. The herd dispatches a unit to a rented backend only
+  while that backend is ready: its machine isn't confirmed stopped, its endpoint answers health checks, **and** the
+  machine's model list still contains the backend's own `<model>@<revision>` (one machine may serve several models, and
+  one can disappear while the endpoint stays up), a backend that stays unready past `alerts.infra_after` while its
+  machine is healthy (its model gone from the list, say) raises an "unready backend" alert episode, since its units
+  would otherwise just wait without any other alert noticing; and a unit whose machine disappears mid-call (spot and
+  marketplace machines can be reclaimed), or whose assigned model disappears from a machine that's still up (a
+  model-not-found answer, which the gateway checks against the model list), ends as an `infra` failure and is retried,
+  never charged as an attempt. **Endpoint health decides dispatch, never whether billing stopped**: an expired key, a
+  broken tunnel, a crashed model server or a network blip look exactly like a stopped machine while the provider keeps
+  billing. Only the operator can say a machine is stopped, with `herd machines stopped <machine or snapshot id>` (a
+  request; see The herd's own account). Requests are consumed asynchronously and a name can be repointed in between, so
+  the CLI resolves a machine name to its current definition id when it's run (from the status snapshot) and the request
+  carries that id; a request made by name must still be that name's current definition when it's consumed, and is
+  rejected and reported otherwise, never applied to whatever the name points at now or to the definition it just left
+  behind (the snapshot might be published a scan late). A retained snapshot is confirmed only by its own snapshot id,
+  given explicitly. The orchestrator handles the request in a crash-safe order: it validates it, durably records the
+  confirmation in the persisted machine definitions against the exact current definition or snapshot id, and only then
+  deletes the request file, so a crash in between at worst handles the same request twice, which changes nothing, and
+  never loses the confirmation; it closes that machine's billing-related alerts, stops its accrual, and takes it out of
+  dispatch: a confirmed-stopped machine gets no new units, the gateway refuses its calls, and units still running on it
+  end as `infra` failures, retried elsewhere and never charged as attempts. For a current machine, the confirmation
+  clears only explicitly, with `herd machines started <machine>` (a request, validated and persisted the same way), so
+  nothing depends on the orchestrator having watched the machine go down and come back. Health checks keep running
+  through a confirmation, and any successful one after it restores the machine's accrual for the time it was seen up, so
+  a wrong confirmation never drops known-up time. An endpoint that keeps answering past `alerts.infra_after` after its
+  confirmation means the machine wasn't stopped after all: that raises a "confirmed stopped but still answering" alert
+  episode and restores the machine's accrual back to the confirmation, as continuous; for a retained snapshot, which
+  never returns to dispatch, it also withdraws the confirmation, so retiring the snapshot needs a fresh
+  `herd machines stopped <snapshot id>` once it really has stopped, since it may well have been billing all along
+  (health checks keep running through the confirmation, so the herd knows the endpoint was up the whole time), while
+  dispatch stays off until the operator runs `herd machines started` (stopping the machine for real leaves the
+  confirmation in place, now simply true). Since unhealthy may still mean billing, an active machine whose health checks
+  fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared
+  when its health returns or the operator confirms it stopped.
+- **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
+  alert: up and healthy with no call in flight for its `idle_alert` (default 30 minutes), counted from the end of the
+  last call, or, for a machine that hasn't served one since it became healthy, from the start of that healthy interval,
+  so a long generation never looks idle and a machine never used can't escape the alert. It's an alert episode like an
+  ongoing condition in Monitoring, opened when the threshold passes and cleared when the next call starts, when the
+  machine stops being healthy (the unhealthy alert takes over), or by the operator confirming it stopped, so a machine
+  idle all day alerts once plus the daily reminder.
+- **Removing or repointing a machine.** Host config can change a machine entry at any scan. A machine's identity is its
+  `instance`, so a change to anything else (`endpoint`, `access` and its `wireguard` block, `price`, `idle_alert`, a
+  rotated `secret`) is an update in place: the same machine, reached the new way or billed at the new rate from that
+  moment on, still accrued once. A unit's token is bound to the definition, not to a connection, so when the endpoint or
+  access changes the gateway sends every new call, running units' included, over the new connection from that step on. A
+  call already in flight can't move: it finishes on the old connection, which the gateway keeps open only for that, and
+  once the last one has finished the old URL belongs to no definition and may be reused. A change of `instance`, or
+  dropping the entry, means a different machine, or none, from the herd's point of view, but the old machine doesn't
+  stop with it: the orchestrator keeps the old definition (tunnel, credentials, health checks, hourly accrual, alerts)
+  as a **retained snapshot** under its definition id, the immutable id every definition gets when it's first persisted
+  (the machine's name and the moment it was first loaded, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own
+  files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
+  times, so the definition id, not the name, is what identifies it. Likewise the `instance`, not the name, decides which
+  machine an entry is: an entry whose `instance` matches an existing definition, current or retained, takes that
+  definition over rather than starting a second one, so a rename keeps the machine's id, accrual and credential copy,
+  and a retained machine that comes back into config becomes current again. One physical machine never has two
+  definitions, which keeps accrual once per machine (validation already rejects two entries with one endpoint). Noticing
+  the change doesn't depend on a scan seeing the old config: the orchestrator persists every machine definition it puts
+  into use (with the hash of its credential copy, below) in that same store before any health check, dispatch or accrual
+  uses it, and every scan, the first after a restart included, compares host config with those persisted definitions,
+  not with what the previous scan read. So a config change made while the orchestrator was down, or a crash before a
+  scan finished, still finds the old machine to retain. The snapshot's credentials can't depend on files the operator
+  may already have rotated or deleted as part of the very config change that retains it, so copying them at that point
+  would be too late. Instead the proxy copies a machine's credentials into its own store as soon as it first loads the
+  machine definition, keyed by the content's hash, and every definition in use (current or retained) runs on its own
+  copy: editing or deleting the operator's file later only affects definitions loaded after the change, and a retained
+  snapshot simply keeps the copy it already had, until it's retired. Since copies are keyed by content, definitions that
+  share a credential share one copy, so a copy is deleted only once no persisted definition, current or retained, still
+  references its hash. That store is a dedicated persistent volume mounted read-write into the proxy alone (directories
+  `0700`, files `0600`), separate from the operator's files it copies from. Those live in a directory of their own,
+  `~herd/secrets/machines/` (`0700`, files `0600`), holding machine keys only, which the proxy mounts whole and
+  read-only, so a machine added or a secret renamed at any scan is readable without recreating the proxy; the rest of
+  `~herd/secrets/` (provider keys, the orchestrator's App key) stays mounted one file at a time, and the App key never
+  reaches the proxy. The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps
+  accruing cost and raises a "retained machine not confirmed stopped" alert episode, shown with its id. The two ends are
+  separate: the operator's `herd machines stopped <snapshot id>` closes the alert and stops the accrual at once, like
+  any confirmation, and the snapshot is retired (its record and, if nothing else references it, its credential copy
+  deleted) once it's confirmed stopped, its units have finished, **and** its endpoint has stayed silent for
+  `alerts.infra_after` since the confirmation; until then it stays health-checked, so a confirmation that turns out
+  wrong still raises the "confirmed stopped but still answering" alert and resumes accrual, and a replacement waiting
+  for its endpoint stays inactive.
+- **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
+  use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
+  the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
+  provider's bill: health checks miss time (while the orchestrator is down, say), so the operator reconciles against the
+  bill with `herd budget set --spent <amount> --as-of <time> --source <source>`, giving what one bill charged up to its
+  cutoff. A source is what one bill covers: a cloud billing scope that carries the herd's traffic alone, named by the
+  backend's `account` (`<provider>:<scope id>`: a dedicated account, or a workspace or project within one whose usage
+  the provider reports separately, say `anthropic:<workspace id>`; a scope shared with other use would put that use's
+  spend in the herd's budget and could never reconcile; backends billed to one account share it whatever keys they use,
+  and a key's rotation or rename doesn't change it) or a rented machine, keyed by its qualified `instance`, never by its
+  name, since names can be renamed and repointed (the command also accepts a current name, resolved when it's run, with
+  the request carrying both the name and the definition it resolved to, and accepted only if the name still points at
+  that definition when it's consumed, as for `machines stopped`; a retained machine is named only by its snapshot id or
+  `instance`), and every ledger entry records its source, since bills from different providers arrive with different
+  cutoffs. The orchestrator doesn't overwrite the counter with it, which could lose or double-count work in flight: in
+  one atomic step, it adds an adjustment for that source, dated at the cutoff: the billed amount (the bill's running
+  total for the billing month up to that cutoff) minus everything already counted for the source up to the cutoff, the
+  herd's own settled accrual (from the ledger's timestamped entries) and any earlier adjustment alike, so the source's
+  total up to the cutoff becomes the billed amount, and a later reconciliation corrects it rather than adding to it. A
+  cutoff earlier than the source's last one, or in the future, is refused. Nothing is deleted: the detailed entries keep
+  their project, change and idle attribution, so spend per proposal is still what the herd measured, and the adjustment
+  is attributed to the source alone, shown separately as reconciliation. Every other source's spend is left alone, and
+  every accrual and reservation after the cutoff stays, along with every reservation still unresolved, whatever its
+  timestamp: a call in flight at the cutoff may or may not be on the bill, so its reservation stays in the counter until
+  it settles and is replaced by the reported usage as usual, dated at the call's start. That can count such a call twice
+  (once in the bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the
+  next reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new
+  one, the cutoff and the reason go to the event log. Restoring a lost counter works the same way, one source at a time,
+  so a later reconciliation never double-counts an unscoped total: the operator gives each source's month-to-date bill
+  with the cutoff at now, and paid dispatch, paused anyway, resumes once every source that may have spend this period
+  has one: every source the config names (every cloud billing account and every rented machine, current or retained),
+  plus every source in the period's source list, a small record kept with the persisted machine definitions, apart from
+  the counter, of every source that could have spent anything this billing period: each cloud billing account that made
+  a call, and every rented-machine definition persisted during the period, whether or not the herd ever saw it healthy,
+  so an account removed or a machine retired earlier in the month is still asked for. Hours are attributed for the usage
+  ledger by time, not tokens: while units are calling the machine, through any of its backends, its time is split evenly
+  among them, and their share goes to their change; time with no call in flight goes to the machine's own idle bucket,
+  never to a change. Hours are what the budget counts, but the ledger also keeps each rented call's token usage (the
+  OpenAI-compatible response's `usage`), per unit and change like a cloud call's: the gateway reports it after the call,
+  with no reservation to replace, so tokens per task stay comparable across backends.
+- **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
+  dispatching to rented slots like any paid backend, and running rented units stop too: the orchestrator ends each one
+  once any call it has in flight finishes, with a `budget` reason (not `infra`, and not a failed attempt), and since
+  rented calls make no per-call reservation, the gateway also asks the orchestrator for a zero-cost authorization on
+  every call and is refused while paid dispatch is paused, so none starts another meanwhile. But the machine keeps
+  billing, so the herd raises an urgent alert asking the operator to stop it (and does the same for every rented machine
+  not confirmed stopped when paid dispatch pauses because the counter was lost, since its hours are then being spent
+  with nothing to count them against), the counter keeps accruing, and the status pane shows "over budget: rented
+  machine not confirmed stopped" until the operator runs `herd machines stopped <machine>` or paid dispatch resumes,
+  whether the operator raised `budget.monthly` or the billing month turned: once the pause is lifted, the budget no
+  longer keeps work off the machine (its readiness still does) and the episode closes with it, rather than asking for a
+  machine to be stopped that the herd is about to use (the idle and unhealthy alerts still cover it from there). For
+  per-token backends the budget is a hard limit; for rented ones it's a hard stop on dispatch and an alert on spend,
+  until the herd can stop the machine itself (see Open questions).
+
+- **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
+  accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
+  Models). Cost per accepted task is measured in an exclusive window, with the machine serving only the replay: the cost
+  is what the provider billed for that window, entered by the operator from the bill, since health-check accrual starts
+  only at the first healthy probe and so misses boot and model loading; that figure includes startup and the gaps
+  between calls (which the ledger would otherwise book to the idle bucket), divided by the tasks the replay got
+  accepted, so other units' calls don't distort it and idle time isn't hidden. The bigger models it can serve are the
+  reason to try it; the replay is what shows whether they pay off.
+
 ## The herd's own account
 
 The herd runs as a dedicated `herd` system user, not the operator's account, so that the orchestrator's Podman socket,
@@ -1096,10 +1348,13 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
 Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator, the
 model keys the proxy. They're kept in `~herd/secrets/`, owned by `herd` with mode `0700`, one file per key at `0600`, so
 no other host user (the operator included) and no group can read them whatever the umask was when they were created;
-each container mounts only its own key file, read-only. The install script, which runs with root, creates the directory
-with those modes and checks every key file. Neither half of `herd doctor` can see inside it (the operator isn't `herd`,
-and the orchestrator mounts only its own key), so `doctor` checks the owner and modes through `sudo -u herd` when the
-operator has sudo, and otherwise reports the check as skipped rather than passed.
+each container mounts only its own key file, read-only. The exceptions serve rented machines, which come and go with
+host config: the proxy mounts `~herd/secrets/machines/`, which holds machine keys only, whole and read-only, and keeps
+its rented-machine credential store, the copies used by every current and retained machine definition, in a separate
+volume only it mounts, read-write (see Rented GPU backends). The install script, which runs with root, creates the
+directory with those modes and checks every key file. Neither half of `herd doctor` can see inside it (the operator
+isn't `herd`, and the orchestrator mounts only its own key), so `doctor` checks the owner and modes through
+`sudo -u herd` when the operator has sudo, and otherwise reports the check as skipped rather than passed.
 
 ## Outside content
 
@@ -1142,12 +1397,13 @@ instance*: the orchestrator, the active worker containers, and the herdr workspa
   `needs-human`, and `awaiting-approval` when its next action is the human's final approval, not when it's a `triage`
   unit for an untriaged failure.
 - **One workspace per registered project**, opened in the operator's checkout of it (`--cwd`), holding:
-  - **The planner pane**: the operator's interactive agent (host config `planner.agent`, default `claude`) running
-    in that checkout. This is where `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get
-    written. It's created with the workspace, by default, and it belongs to the person: the herd never prompts it,
-    closes it or restarts it. herdr's integration for that agent (`herdr integration install claude`, done by the
-    install script) tells herdr which session the agent is in, so herdr resumes it after a restart. herdr reads
-    the agent's working/blocked/idle state from its screen; Claude Code's integration doesn't report it.
+  - **The planner pane**: the operator's interactive agent (host config `planner.agent`, default `claude`; a
+    `locality: host` project gets a plain shell instead, see Models) running in that checkout. This is where
+    `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get written. It's created with the
+    workspace, by default, and it belongs to the person: the herd never prompts it, closes it or restarts it. herdr's
+    integration for that agent (`herdr integration install claude`, done by the install script) tells herdr which
+    session the agent is in, so herdr resumes it after a restart. herdr reads the agent's working/blocked/idle state
+    from its screen; Claude Code's integration doesn't report it.
   - **One pane per running unit**, following that unit's log (read-only; workers are non-interactive). The bridge
     reports it to herdr as `working` (`pane.report_agent`) and sets its title to
     `<change> · <role> · task <n> · round <r>`, with the proposal's state as a named token
@@ -1217,14 +1473,17 @@ for proposal state. Losing the log, the bridge or the herdr session loses displa
 keeps would otherwise drop out of view after a bridge restart. So at the end of every scan the orchestrator also writes
 `status.json` to `/var/lib/herd/shared/`: every registered project and every open proposal with its derived state,
 current task, review round, waiting reason and spend, plus every unit running right now (its id, kind, change and task,
-slot, model, log path and start time), so the bridge can tell live unit logs from finished ones and close panes whose
-unit has ended. It carries `generated_at`, and every consumer shows how old it is: past twice `scan_interval`, the
-status pane, `herd status` and the bridge show it as **stale** (orchestrator not scanning) in place of presenting old
-state as current, alongside the heartbeat check. It's rewritten whole from the scan, never appended, and replaced
-atomically (written to a temporary file, synced, renamed over the old one), so a reader never sees half of it, and no
-stale entries accumulate or make it grow; whether the snapshot itself is current is what `generated_at` tells. The
-status pane, `herd status`, and the bridge's attention panes read the snapshot; the event log is only for history and
-the unit panes' timeline. Like the log, the orchestrator never reads it back.
+slot, model, log path and start time), and every rented-machine definition, current and retained (its name, definition
+id, qualified `instance`, health, whether its stop is confirmed, and whether it's active, with the reason when it isn't,
+such as an endpoint still held by a retained snapshot), which is what `herd machines stopped` resolves a name against,
+so the bridge can tell live unit logs from finished ones and close panes whose unit has ended. It carries
+`generated_at`, and every consumer shows how old it is: past twice `scan_interval`, the status pane, `herd status` and
+the bridge show it as **stale** (orchestrator not scanning) in place of presenting old state as current, alongside the
+heartbeat check. It's rewritten whole from the scan, never appended, and replaced atomically (written to a temporary
+file, synced, renamed over the old one), so a reader never sees half of it, and no stale entries accumulate or make it
+grow; whether the snapshot itself is current is what `generated_at` tells. The status pane, `herd status`, and the
+bridge's attention panes read the snapshot; the event log is only for history and the unit panes' timeline. Like the
+log, the orchestrator never reads it back.
 
 **The `herd` CLI.** The herd repo installs `herd` on the host:
 - `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
@@ -1246,8 +1505,13 @@ the unit panes' timeline. Like the log, the orchestrator never reads it back.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
-- `herd budget set --spent <amount>`: sets this month's spend after the counter was lost (see Monitoring).
+- `herd budget set --spent <amount> --as-of <time> --source <source>`: reconciles one source's spend up to the cutoff
+  with what its bill says (other sources, and anything after the cutoff, stay as counted), after the counter was lost or
+  to reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
+- `herd machines stopped <machine or snapshot id>`: confirms a rented machine is stopped, and
+  `herd machines started <machine>` withdraws that, so the confirmation no longer keeps it out of dispatch (readiness
+  and the budget still apply) (see Rented GPU backends).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
 
@@ -1265,9 +1529,9 @@ timeouts:                              # per unit kind; a unit past either is ki
   triage:    { wall: 20m, quiet: 10m }
   archive:   { wall: 10m, quiet: 5m }
 budget:
-  currency: USD                        # every cloud backend's price is in this currency
+  currency: USD                        # every paid backend's price (per token or per hour) is in this currency
   timezone: UTC                        # where a billing month starts and ends
-  monthly: 200                         # cloud backends only
+  monthly: 200                         # paid backends: cloud APIs and rented GPUs
   warn_at: 80%
 alerts:
   desktop: true                        # through the bridge's herdr (operator's account)
@@ -1289,8 +1553,9 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   answering is an `infra` failure instead, and doesn't count.
 - **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
   the control socket, to reserve the call's maximum cost: an upper bound on its input tokens plus the requested output
-  limit, priced from the backend's `price` in host config (per million input and output tokens). The request body
-  carries no authoritative input count, so the bound comes from the provider's token-counting endpoint where it has one
+  limit, priced from the backend's `price` in host config (per million input and output tokens). A rented backend is
+  priced by the hour instead and counted from its health checks (see Rented GPU backends). The request body carries no
+  authoritative input count, so the bound comes from the provider's token-counting endpoint where it has one
   (Anthropic's does), and otherwise from the request's byte length, which bounds text tokens from above; a call whose
   input neither can bound (an image, for a provider without counting) is refused. `price.input` is the backend's highest
   input rate (cache writes, say), so no billing category can exceed the reservation. If a provider ever reports more
@@ -1302,8 +1567,9 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   the orchestrator replaces the reservation with it and writes a usage event to the event log. A crash between the two
   leaves the reservation counted, so the counter can overcount but never undercount. The orchestrator stays the only
   writer of `/var/lib/herd/shared/` and of the counter, and the key-holding proxy gets no writable shared mount. The
-  status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an alert; at the budget,
-  the orchestrator stops dispatching units to cloud backends and refuses new reservations, running units' in-flight
+  status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an alert; "paid" means
+  cloud APIs and rented GPUs alike, and only local backends are outside the budget; at the budget, the orchestrator
+  stops dispatching units to paid backends (cloud and rented) and refuses new reservations, running units' in-flight
   calls finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the
   operator's call to raise the budget or wait for the month to turn. The counter is keyed by billing period, the
   calendar month in `budget.timezone` (`2026-10`, say), and the orchestrator also records the last period it
@@ -1313,26 +1579,34 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   is charged to the period it was made in, and settled there even if the call finishes after the month turns, so a
   boundary can't move spend between months. Besides the counter, the orchestrator keeps a usage ledger, totals per
   project and change, so the status snapshot's spend per proposal survives a restart. Counter and ledger are the
-  budget's control state, kept in the herd's own files and allowed as recovery input; with the alert queue (below),
-  they're the only state the orchestrator reads back besides git. They decide only whether cloud calls go out, never a
-  change's state. A reservation refused because it would cross the budget pauses cloud dispatch the same way, so units
-  aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason, which counts
-  neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is
-  lost, cloud dispatch pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read
-  from the provider's billing), a request the orchestrator records in the event log before dispatch resumes.
+  budget's control state, kept in the herd's own files and allowed as recovery input; with the alert queue (below) and
+  the persisted rented-machine definitions, current and retained (see Rented GPU backends), they're the only state the
+  orchestrator reads back besides git. They decide only whether calls to paid backends go out, never a change's state. A
+  reservation refused because it would cross the budget pauses paid dispatch the same way, so units aren't dispatched
+  only to have their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed
+  attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is lost, paid dispatch
+  pauses until the operator sets this month's spend per source with
+  `herd budget set --spent <amount> --as-of now --source <source>` (read from the provider's billing), a request the
+  orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
-  `alerts.infra_after` all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational
-  control like the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about
-  any change's state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already
-  hold. An alert about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An
-  ongoing condition (a project inactive, low disk, the budget, infrastructure failures) is an **episode**: the scan that
-  first sees it appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after
-  a `cleared` one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the
-  episode, and a daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated
-  alert per open condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the
-  service accepts it, so a crash in between sends that one again, never none. Alerts go out on two channels from two
-  accounts:
+  `alerts.infra_after`, an idle rented machine, an unready rented backend on a healthy machine (see Rented GPU
+  backends), a rented machine not confirmed stopped after the budget limit or a lost counter paused paid dispatch, a
+  retained rented machine not confirmed stopped, an unhealthy rented machine not confirmed stopped, a rented machine
+  confirmed stopped but still answering, and a blocked replacement machine all raise an alert. The queue doubles as the
+  orchestrator's own record of alerts, an operational control like the budget counter: unlike the event log, the
+  orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id derived from
+  facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of
+  its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget,
+  infrastructure failures, an idle rented machine, an unready rented backend, a rented machine not confirmed stopped
+  after the budget limit or a lost counter paused paid dispatch, a retained rented machine not confirmed stopped, an
+  unhealthy rented machine not confirmed stopped, a rented machine confirmed stopped but still answering, a blocked
+  replacement) is an **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone
+  appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the
+  same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the
+  day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels is at-least-once:
+  push delivery is recorded per id after the service accepts it, so a crash in between sends that one again, never none.
+  Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
@@ -1393,13 +1667,14 @@ Steps marked **(manual)** need a human.
 
 1. ~~Create the herd repository~~: done (`herd`, starting with this file).
 2. ~~Local vs. cloud for the implementer~~: decided 2026-10-04. Backends are per worker slot and can be mixed (see
-   Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for
-   a pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel
-   Arc Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context.
-   It's bounded by the rule that a task's last review round goes to an implementer on a different model, which
-   holds here because the cloud slots stay. The B70 runs under
-   official Ollama's Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as
-   `/dev/dri`. The runtime is rootless Podman, already on the host.
+   Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for a
+   pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel Arc
+   Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context. It's
+   bounded by the rule that a task's last review round goes to an implementer on a different model, which holds here
+   because the cloud slots stay. The B70 runs under official Ollama's Vulkan backend (Intel archived IPEX-LLM in January
+   2026), passed to the Ollama container as `/dev/dri`. The runtime is rootless Podman, already on the host. A rented
+   GPU (see Rented GPU backends) is the third option for the implementer: bigger open-weight coder models than the B70
+   holds, billed by the hour, evaluated by the same replay before it gets a slot.
 
    **(manual) Reality check before any local backend or slot goes into host config.** The B70 figures above are
    assumptions from published specs and benchmarks; the host had an RTX 3080 when this was written. Each of these
@@ -1426,23 +1701,28 @@ Steps marked **(manual)** need a human.
    escalation markers, draft PR, update-branch, mark-ready, PR body template, watching PRs for review and posting the
    reviewer's replies, deleting merged change branches, and the local model server's lifecycle and model requests (see
    The local model server).
-5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring:
-   unit timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd
-   watchdog for the orchestrator), log retention and the disk check.
+5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring: unit
+   timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd watchdog for
+   the orchestrator), log retention and the disk check; rented GPU backends (see Rented GPU backends): the persisted
+   machine definitions, current and retained, and their confirmations, the proxy's credential store and userspace
+   WireGuard, per-backend readiness, hourly accrual and the time-split ledger, budget reconciliation with a cutoff, the
+   idle, unhealthy and retained-machine alerts, and `herd machines stopped` and `started`.
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
    `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
    and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
    (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/` (`shared/` setgid `2750`
    and `requests/` setgid `2770`, both owned by `herd` with group `herd-ops`, and `herd` itself a member of `herd-ops`),
-   creates `~herd/secrets/` (`0700`), puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy,
-   each with its `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is
-   installed, installs herdr's integration for the planner agent, and adds the operator's login unit for `herdr server`.
+   creates `~herd/secrets/` and `~herd/secrets/machines/` (`0700`) and the proxy's credential-store volume, puts `herd`
+   on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its `[Install]` section), enables
+   lingering and the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's integration for
+   the planner agent, and adds the operator's login unit for `herdr server`.
 7. **(manual)** Host secrets, in `~herd/secrets/` (`0700`, files `0600`, see The herd's own account):
    `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
    `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
    repositories, with repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit
    statuses* and *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`),
-   and not *Workflows*; and its private key, read by the orchestrator only.
+   and not *Workflows*; and its private key, read by the orchestrator only; and, for each rented machine, its key or
+   WireGuard private key in `~herd/secrets/machines/`.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
@@ -1465,6 +1745,8 @@ Each waits for the point where it can be answered with evidence rather than gues
     manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same way.
   - Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
     too, once the reality check passes (Build plan step 2): decide by replaying accepted tasks (see Models).
+- **Once a rented backend is in use:** whether the herd should start and stop rented machines itself through the
+  provider's API (on demand, stopped after idle), which provider, and how closely health-check hours track the bill.
 - **When a project needs it:**
   - A second workflow besides OpenSpec.
   - Automating final approval for projects whose end-to-end tests can run in a container (e.g. an emulator with KVM
