@@ -44,9 +44,13 @@ flowchart TD
     H -- "no final approval" --> RV
     E -- "pass" --> RV
     E -- "pass, and the project also wants your check" --> FA
-    E -- "fail: triaged, becomes tasks" --> I
+    E -- "fail: triaged into tasks" --> I
+    E -. "fail: a flake below the cap reruns it" .-> E
+    E -. "fail: pre-existing, unsettled or flaky past the cap" .-> NH
     FA -- "pass" --> RV
-    FA -- "fail: triaged, becomes tasks" --> I
+    FA -- "fail: triaged into tasks" --> I
+    FA -. "fail: a flake below the cap, check again" .-> FA
+    FA -. "fail: pre-existing, unsettled or flaky past the cap" .-> NH
     RV -- "fix tasks" --> I
     RV -- "review done" --> A --> AP --> M
     I -. "something it can't do on its own" .-> NH

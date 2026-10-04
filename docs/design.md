@@ -845,8 +845,10 @@ The commands' contract, so the orchestrator can handle ids and results determini
   may write to, created for that one `run` (no other command gets one; see below). It's a size-limited mount, capped in
   total bytes and file count (`e2e.max_artifacts`, from host config), so a broken or runaway `run` fills its own
   directory, not the host: hitting the cap fails that run, with the reason, like any other failed command. A run's
-  directory is deleted once the herd has read its results and kept what the unit's verdict cites, so retries don't pile
-  up.
+  directory is deleted once the herd has read its results, so retries don't pile up; what the unit's verdict cites (the
+  failing tests' reports, screenshots and logs) is first copied to the change's evidence store, under `/var/lib/herd/`
+  and bounded by the same caps per run, which the orchestrator mounts read-only into the `triage` unit that handles the
+  failure and deletes when the change merges or closes.
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
   that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
@@ -979,12 +981,12 @@ The layers:
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
 4. **Final e2e: `final_approval.kind: container`.** In *awaiting-approval*, an `e2e` unit (a reviewer unit kind) runs
-   every test `select` picks for the whole change (from where it branched off the default branch to its content tip) on
-   one fresh emulator. A pass is recorded as a `container`-phase final-approval pass, a bookkeeping line in
-   `review-notes.md` (see The effective final-approval record); a failure is recorded as a `container`-phase `fail` with
-   the run's results, and a separate `triage` unit then applies the test-or-implementation rule below (see Final
-   approval). The `e2e` unit itself only runs the tests and records the verdict. `final_approval.human_after: true` adds
-   a person's pass after the unit's, for checks only a real device can do.
+   every test `select` picks for the whole change (from its current merge-base to its content tip) on one fresh
+   emulator. A pass is recorded as a `container`-phase final-approval pass, a bookkeeping line in `review-notes.md` (see
+   The effective final-approval record); a failure is recorded as a `container`-phase `fail` with the run's results, and
+   a separate `triage` unit then applies the test-or-implementation rule below (see Final approval). The `e2e` unit
+   itself only runs the tests and records the verdict. `final_approval.human_after: true` adds a person's pass after the
+   unit's, for checks only a real device can do.
 5. **CI: the full suite.** The project's CI runs every end-to-end test as a required check, independent of the herd's
    selection and of its emulator setup. A failure goes through Failing checks before the archive like any other, with
    the job's artifacts handed to the triage unit (see below).
