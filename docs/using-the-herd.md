@@ -16,11 +16,13 @@ commit until it is merged.** The default branch gets a change only as one merge,
 2. **You mark it ready** (`/herd-ready`). From then on the herd owns it.
 3. **The herd** implements `tasks.md` item by item on the branch, has each task reviewed, runs the project's gate,
    reviews the whole change, and updates the draft PR.
-4. **You run final approval**, if the project has one, and record the result.
+4. **Final approval**, if the project has one: the herd runs it on an emulator (`container`), or you run it and
+   record the result (`human`, or `container` with a human check after it).
 5. **The herd** marks the PR ready for review and follows up on what reviewers say, until nothing is open.
 6. **The herd** archives the change as the last change to the proposal's own files. **You merge it.**
 
-Your time goes to steps 1, 2, 4 and 6, and to any `needs-human` stop along the way.
+Your time goes to steps 1, 2 and 6, to step 4 when the project has you run final approval, and to any
+`needs-human` stop along the way.
 
 ## Proposing
 

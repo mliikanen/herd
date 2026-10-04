@@ -560,7 +560,8 @@ silently dropped — comes from two rules together, not from the scan alone:
   `review-notes.md` with a fixed syntax, so the scan never interprets prose:
   `final-approval <phase> <pass|fail> <tested sha>: <detail>` (phase `container`, written by an `e2e` unit, or `human`,
   written through `herd-resolve`; the detail is free text after the colon), `final-approval rerun: <reason>`,
-  `final-approval-triaged <sha of the commit that added the fail record>`, and `e2e-waive <test id>: <reason>`.
+  `final-approval-triaged <sha of the commit that added the fail record>`, and
+  `e2e-waive <test id> <default sha> <files digest>: <reason>`.
 
   **The content tip** is the branch's latest non-bookkeeping commit, except that the archive commit always counts as
   content here: it's bookkeeping for keeping the holistic-accept current, but its generated spec changes still need an
@@ -759,9 +760,14 @@ The layers:
    caused the failure: go on to 3. If it fails there too, the test was already broken, and fixing it isn't this change's
    job. So that can't loop, the triager escalates to `needs-human` ("fails on the default branch too"), and the person
    either fixes the default branch in a separate change and resolves the stop once it's merged, or waives the test for
-   this change with `herd-resolve`, which records `e2e-waive <test id>: <reason>`; the herd's own e2e runs for the
-   change then skip it. A waiver doesn't touch CI: the required check still fails until the default branch is fixed,
-   which keeps the merge blocked on the real problem.
+   this change with `herd-resolve`, which records `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming
+   the default-branch commit the test was found failing on and a digest of the test's `files`; the herd's own e2e runs
+   for the change then skip it. The waiver covers exactly that failure and lapses on its own when either changes: once
+   the test's files on the branch no longer match the digest (a later task touched the test, so it's change-local again
+   and owes its red/green proof), or once the change merges a newer default branch (the baseline moved, so the
+   comparison runs again). A lapsed waiver means the test runs, and if it still fails on the default branch, a fresh
+   escalation. A waiver doesn't touch CI: the required check still fails until the default branch is fixed, which keeps
+   the merge blocked on the real problem.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
