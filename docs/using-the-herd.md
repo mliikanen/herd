@@ -46,11 +46,11 @@ checks these rules, and the project's workflow doc adds its own:
 - **Nothing needs a capability the project lists as missing** (the manifest's `missing_capabilities`). If the project
   has no end-to-end tests the herd knows about, no task *runs* them: tasks may write or update those tests, and running
   them is up to your final approval if the project has one (`final_approval.kind: human`), or to CI alone if it has
-  none. If it has (an `e2e` block; the project's workflow doc says), a task that changes behavior a test can see
-  **always** includes or updates that test. Whether the herd runs it while implementing, shown failing before the task
-  and passing after, depends on whether the herd's host runs end-to-end tests yet. Until it does, a project whose final
-  approval is yours carries on with CI running them, while a project whose final approval the herd runs (`container`)
-  waits until the host can.
+  none. If it has end-to-end tests the herd knows about (an `e2e` block; the project's workflow doc says), a task that
+  changes behavior a test can see **always** includes or updates that test. Whether the herd runs it while implementing,
+  shown failing before the task and passing after, depends on whether the herd's host runs end-to-end tests yet. Until
+  it does, a project whose final approval is yours carries on with CI running them, while a project whose final approval
+  the herd runs (`container`) waits until the host can.
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it.
 - **No task needs a secret.**

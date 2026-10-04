@@ -755,7 +755,10 @@ The commands' contract, so the orchestrator can handle ids and results determini
 
 - Every command runs in the repository root of the unit's clone, against the unit's own emulator, and `run` with
   `$HERD_E2E_ARTIFACTS` naming a fresh, empty directory it may write to, created for that one `run` (no other command
-  gets one; see below).
+  gets one; see below). It's a size-limited mount, capped in total bytes and file count (`e2e.max_artifacts`, from host
+  config), so a broken or runaway `run` fills its own directory, not the host: hitting the cap fails that run, with the
+  reason, like any other failed command. A run's directory is deleted once the herd has read its results and kept what
+  the unit's verdict cites, so retries don't pile up.
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
   that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
@@ -1576,6 +1579,7 @@ disk:
 e2e:
   max_emulators: 0                     # emulators at once across all units; 0 (the default) turns e2e off
                                        # until the emulator probe passes (see End-to-end tests)
+  max_artifacts: { bytes: 2GB, files: 10000 }   # per run's $HERD_E2E_ARTIFACTS; past it the run fails
 ```
 
 The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
