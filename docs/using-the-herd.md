@@ -136,14 +136,14 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
   commit you tested:
   - **pass**: the change moves on to review;
   - **fail**: describe the failing check and what happened. The herd checks it the way it checks any failing test: if it
-    passed when you reran it, it's a flake, and the herd just asks you to check again, until the test has flaked more
-    often than the project allows; if it fails on the commit the change branched from too, or the spec doesn't say which
-    behavior is right, it stops and asks you; otherwise it turns the failure into new tasks, and the draft PR just gets
-    more commits. `/herd-resolve` asks for the rerun when you record a fail, and for an end-to-end test the change
-    didn't add or change, a try on the commit the change branched from, which it checks out for you (not the default
-    branch's latest, which may already have an unrelated fix), and a second try there if the first fails, since one
-    failure there could itself be a flake. A test the change added or changed isn't compared there: the old commit has a
-    different version of it, or none.
+    passed when you reran it, it's a flake, and the herd just asks you to check again, until the test's flake count
+    reaches the project's limit (`caps.flaky_retries`), when it stops and asks you instead; if it fails on the commit
+    the change branched from too, or the spec doesn't say which behavior is right, it stops and asks you; otherwise it
+    turns the failure into new tasks, and the draft PR just gets more commits. `/herd-resolve` asks for the rerun when
+    you record a fail, and for an end-to-end test the change didn't add or change, a try on the commit the change
+    branched from, which it checks out for you (not the default branch's latest, which may already have an unrelated
+    fix), and a second try there if the first fails, since one failure there could itself be a flake. A test the change
+    added or changed isn't compared there: the old commit has a different version of it, or none.
 
 ## Review
 

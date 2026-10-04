@@ -960,9 +960,11 @@ references no secrets and runs in no deployment environment; its token has no wr
 token into an artifact; it calls no reusable workflow; and the workflow isn't triggered by `pull_request_target`; and it
 runs on a GitHub-hosted runner (a `runs-on` label from GitHub's own fixed set, not `self-hosted` or a custom label, nor
 an expression that could resolve to one), which is ephemeral and holds nothing of anyone's beyond the job, whereas test
-code on a self-hosted runner could read the runner host's own files and credentials and copy them into its output.
-Anything the check can't prove from the workflow file disqualifies the job. Artifacts aren't: GitHub scopes them to the
-whole workflow run and doesn't record which job uploaded one, so a listed artifact is passed on only if the run's
+code on a self-hosted runner could read the runner host's own files and credentials and copy them into its output. And
+it holds for every job in the workflow, not just the listed one: any job in a run can download what its siblings
+uploaded, so test code in a secret-free job could otherwise copy a secret-bearing sibling's artifact into its own
+output. Anything the check can't prove from the workflow file disqualifies the job. Artifacts aren't: GitHub scopes them
+to the whole workflow run and doesn't record which job uploaded one, so a listed artifact is passed on only if the run's
 workflow file shows that exactly one job uploads an artifact by that name and it's the listed, secret-free job; an
 artifact that can't be attributed that way is never mounted. `herd doctor` checks all of this against the default
 branch's workflows, and the orchestrator re-checks it against the workflow file of the very run it fetches from.
