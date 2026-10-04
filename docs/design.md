@@ -82,7 +82,7 @@ prompts:                                      # optional, appended to the generi
   reviewer: .herd/reviewer.md
 release_notes: true                           # reviewer writes a "Release notes" section into the PR body
 pr_review:                                    # see Following up on PR review
-  wait_for: [copilot-pull-request-reviewer]   # automated reviewers whose review of the current tip is awaited
+  wait_for: [copilot-pull-request-reviewer]   # automated reviewers whose review of the content tip is awaited
   timeout: 15m                                # after this, a missing review is treated as none, shown in the status pane
 ```
 
@@ -432,31 +432,31 @@ silently dropped — comes from two rules together, not from the scan alone:
   7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
      archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
      finding not yet triaged (including ones in a review's summary, which have no thread), or an awaited reviewer
-     (`pr_review.wait_for`) hasn't reviewed the current tip yet and `pr_review.timeout` hasn't passed since its push.
-     Next action: mark the PR ready for review if it's still a draft, then follow up as Following up on PR review
-     describes. A triaged finding becomes a task under "(added during review)", which sends the change back to
+     (`pr_review.wait_for`) hasn't reviewed the content tip (see below) yet and `pr_review.timeout` hasn't passed since
+     its push. Next action: mark the PR ready for review if it's still a draft, then follow up as Following up on PR
+     review describes. A triaged finding becomes a task under "(added during review)", which sends the change back to
      *implementing*. Review comes before archiving, because a fix after the archive would mean editing the synced main
      specs by hand.
-  8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review
-     done (no open thread or untriaged finding, and every awaited reviewer has reviewed the tip or timed out), change
-     not yet
-     archived on the branch. Next action: the reviewer runs the archive and
-     commits. A crash mid-archive never gets pushed, so it's discarded with the clone and redone, same as any
-     other unit of work.
+  8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
+     open thread or untriaged finding, and every awaited reviewer has reviewed the content tip or timed out), change not
+     yet archived on the branch. Next action: the reviewer runs the archive and commits. A crash mid-archive never gets
+     pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action follows from why:
-     - checks still running, or an awaited reviewer hasn't reviewed the current tip and `pr_review.timeout` hasn't
-       passed: none; wait;
-     - a review of the tip that no `triage` unit has classified yet: a `triage` unit, which records it as `clean`
-       or as a finding in `review-notes.md` (a bookkeeping commit). The orchestrator runs no model, so it can't tell
-       a clean review from one with findings in its free-form summary; only a classified-clean review counts;
+     - checks still running on the current tip, or an awaited reviewer hasn't reviewed the content tip and
+       `pr_review.timeout` hasn't passed: none; wait;
+     - an awaited reviewer's first review of the content tip, not yet classified: a `triage` unit, which records it as
+       `clean` or as a finding in `review-notes.md` (a bookkeeping commit, so the content tip doesn't move). The
+       orchestrator runs no model, so it can't tell a clean review from one with findings in its free-form summary; only
+       a classified-clean review counts;
      - a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
        orchestrator commits a mechanical `needs-human` marker (state 1 then matches). None of these can become a
        task, because fixing anything after the archive would mean un-archiving.
-  10. *ready-to-merge* — archive commit pushed, its checks passing, every awaited reviewer has reviewed the current
-     tip with nothing open or timed out, and the holistic-accept still current (see Current records). Next action:
-     none; a human merges. A later bookkeeping push (a clean update-branch merge, say) moves the change back to
-     *archived-pending* until checks and review catch up.
+  10. *ready-to-merge* — archive commit pushed, checks passing on the current tip, every awaited reviewer's review of
+     the content tip classified clean (or timed out), no open thread, and the holistic-accept still current (see
+     Current records). Next action: none; a human merges. A later bookkeeping push (a clean update-branch merge, say)
+     moves the change back to *archived-pending* until checks pass on the new tip; its review of the content tip still
+     stands.
 
   **Current records.** A holistic-accept or a final-approval pass is pinned to the SHA it evaluated, and recording
   it is itself a commit, so "for the current tip" could never hold. A record is *current* when every commit since
@@ -478,6 +478,20 @@ silently dropped — comes from two rules together, not from the scan alone:
   `pass`, a `fail`, or a `rerun`. History is additive, so an old pass stays in `review-notes.md`, but only a pass
   that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until
   a person records a new pass.
+
+  **The content tip** is the branch's latest non-bookkeeping commit. Checks are judged on the current tip, since
+  GitHub runs them on every push, but awaited reviews are judged on the content tip: a review of it, or of any
+  later commit, counts. Otherwise review couldn't converge, because recording a review's classification is itself a
+  push that the automated reviewer reviews again, which would need classifying in turn. Reviews of later
+  bookkeeping-only tips don't block anything; a thread they open is still an open thread (that needs no model to
+  see), but a finding only in such a review's summary isn't waited for, an accepted trade-off since it reviews the
+  same content.
+
+  **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes
+  first: the next action is a `triage` unit, which turns the failure into a fix task under "(added for CI)",
+  sending the change back to *implementing*. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator
+  escalates. This is the path for a CI failure after an update-branch merge too (see Keeping up with the default
+  branch).
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -570,11 +584,11 @@ work like any other, derived from git and GitHub on each scan, never remembered.
    - which commit each review covers (`commit_id`).
 
    Automated reviewers review again after every push, a few minutes later. So review is done only when every reviewer in
-   `pr_review.wait_for` has reviewed the **current tip**, or `pr_review.timeout` has passed since the push without one
-   (a missing review then counts as none, and the status pane says so), and nothing is left open. Replies the herd
-   itself posted don't count as reviews; filter by author and commit, not by the number of reviews. The herd posts as
-   its GitHub App (`<app>[bot]`), so its replies never look like a person's comments; with a personal token they would,
-   and filtering by author would drop the person's real feedback.
+   `pr_review.wait_for` has reviewed the **content tip** (see the state list), or `pr_review.timeout` has passed since
+   the push without one (a missing review then counts as none, and the status pane says so), and nothing is left open.
+   Replies the herd itself posted don't count as reviews; filter by author and commit, not by the number of reviews. The
+   herd posts as its GitHub App (`<app>[bot]`), so its replies never look like a person's comments; with a personal
+   token they would, and filtering by author would drop the person's real feedback.
 2. **Triage (reviewer).** New findings go to a reviewer unit together with the change, so the reviewer can check each
    claim against the code and the upstream sources it names. For each finding it decides one of:
    - *fix*: it appends a task under "(added during review)". Where the finding is one instance of a class (a missed
@@ -605,11 +619,11 @@ branch protection requires PR branches to be **up to date** before merging, and 
 update-branch (`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`, a merge commit) when the PR is
 behind. That merge triggers the CI checks again, which is where two concurrent proposals that both touched a shared
 file (a dependency catalog, `CLAUDE.md`, a shared spec) actually collide — per-task testing alone won't catch that.
-A conflicting update-branch escalates to `needs-human`; a CI failure after the update gets a fix task, and
-escalates past `caps.gate_fixes` of them. A clean update-branch merge that brings in no change to the change's
-own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or final-approval pass stale:
-CI re-runs the gate, and the human re-runs final approval at their discretion. One that does touch the change's
-files sends it back through holistic review against the merged tip.
+A conflicting update-branch escalates to `needs-human`; a CI failure after the update gets a fix task (see Failing
+checks before the archive), and escalates past `caps.gate_fixes` of them. A clean update-branch merge that brings in no
+change to the change's own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or
+final-approval pass stale: CI re-runs the gate, and the human re-runs final approval at their discretion. One that does
+touch the change's files sends it back through holistic review against the merged tip.
 
 ## Cleaning up after merge
 
