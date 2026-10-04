@@ -477,6 +477,69 @@ whatever unpushed work was sitting in a worker's ephemeral clone — redone from
 above, that redo never reuses the discarded partial work) — which is cheap specifically because workers are stateless
 and task granularity is small (one `tasks.md` item at a time).
 
+**The proposal states at a glance.** A summary of the state list below, which is the authority: the diagram leaves out
+*closed* (a closed PR is dormant until it's reopened) and most of the ways a change can stop at *needs-human*.
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> drafting: herd-propose
+    drafting --> waiting_on_dependency: ready, depends_on not merged
+    drafting --> implementing: ready
+    waiting_on_dependency --> implementing: dependencies merged (update-branch first)
+
+    state implementing {
+        direction LR
+        open: task [ ]
+        awaiting: task [r]
+        accepted: task [x]
+        [*] --> open
+        open --> awaiting: implementer commit
+        awaiting --> accepted: task review accepts
+        awaiting --> open: task review revises
+        accepted --> open: next open task
+    }
+
+    implementing --> holistic_review_pending: every task [x]
+    holistic_review_pending --> implementing: holistic review adds tasks
+    holistic_review_pending --> awaiting_approval: accepted, final approval still needed
+    holistic_review_pending --> in_review: accepted, approval not needed or still effective
+    awaiting_approval --> implementing: fail, triaged into tasks
+    awaiting_approval --> in_review: every required phase passed (e2e unit, person)
+    in_review --> implementing: finding triaged into a task
+    in_review --> archiving: review done
+    archiving --> archived_pending: archive commit
+    archived_pending --> ready_to_merge: up to date, checks pass, archive reviewed or timed out
+    ready_to_merge --> archived_pending: bookkeeping push
+    ready_to_merge --> [*]: a person merges
+
+    awaiting_approval --> implementing: required check failed (CI fix task)
+    in_review --> implementing: required check failed (CI fix task)
+    archiving --> implementing: required check failed (CI fix task)
+
+    archived_pending --> needs_human: failed check, finding or content commit
+    implementing --> needs_human: cap reached
+    in_review --> needs_human: review rounds cap or scope request
+    awaiting_approval --> needs_human: failure pre-existing, flaky past cap or not settled by spec
+    needs_human --> rederived: a person resolves
+    rederived: resumes where the branch now says
+
+    waiting_on_dependency: waiting-on-dependency
+    holistic_review_pending: holistic-review-pending
+    awaiting_approval: awaiting-approval
+    in_review: in-review
+    archived_pending: archived-pending
+    ready_to_merge: ready-to-merge
+    needs_human: needs-human
+
+    note right of needs_human
+        Any state can stop here: caps, conflicts,
+        overdue checks, outside content, missing
+        capabilities. A closed PR is dormant in
+        state closed until it's reopened.
+    end note
+```
+
 **The guarantee that a started-but-unfinished task can never be missed on restart** — not just redone, but never
 silently dropped — comes from two rules together, not from the scan alone:
 - Every state transition is a **single commit, pushed as a unit**. An implementer's "done" flips `tasks.md`'s
