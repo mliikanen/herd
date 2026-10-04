@@ -84,7 +84,7 @@ final_approval:
 e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
   tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
   prepare: ./e2e/prepare.sh                   # (re)builds and installs the app, boots the emulator if needed
-  select: ./e2e/select.sh                     # select <base sha>: relevant test ids, one per line on stdout
+  select: ./e2e/select.sh                     # select <base sha>: relevant tests as JSON lines {id, files}
   run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
   ci_artifacts:                               # what triage may see from CI; the jobs must be secret-free
     - { job: maestro-full, artifact: maestro-results }
@@ -692,10 +692,14 @@ The commands' contract, so the orchestrator can handle ids and results determini
   installed build.
 - **`select <base sha>`** compares the base commit with the **working tree**, committed or not, so the implementer can
   run it before its commit exists, and a reviewer runs it on a checkout of the commit under review. It prints the
-  relevant test ids on stdout, one per line; ids are unique, and each is a safe single path component (only letters,
-  digits, `.`, `_` and `-`, and never `.` or `..`), since it also names the test's evidence directory. Output that
-  breaks this is a failed attempt with reason `e2e-contract`. A deterministic script, so selection is reviewable and
-  repeatable and an agent can't quietly skip a test. Any non-zero exit fails the unit.
+  relevant tests on stdout as JSON lines, one per test: `{"id": ..., "files": [...]}`, where `files` lists the
+  repository paths that define the test (all under `e2e.tests`). That's how the herd knows which selected tests a change
+  adds or changes: a test is change-local if any of its files differs between the base and the working tree, which
+  decides both the required red run and whether step 2 below compares with the default branch; ids are unique, and each
+  is a safe single path component (only letters, digits, `.`, `_` and `-`, and never `.` or `..`), since it also names
+  the test's evidence directory. Output that breaks this is a failed attempt with reason `e2e-contract`. A deterministic
+  script, so selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails the
+  unit.
 - **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
   deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
   (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
@@ -772,15 +776,18 @@ end-to-end reports and screenshots, for instance): the orchestrator fetches them
 has *Actions* read access) and mounts them read-only into the unit, like provided inputs; the triage unit itself has no
 GitHub access. That output crosses into a model-backed worker, so only some of it does: what the manifest lists in
 `e2e.ci_artifacts`, as pairs of a job and an artifact name. A job's logs are attributable to it, so a listed job's logs
-can be passed on once the job is checked secret-free: its workflow definition references no secrets and runs in no
-deployment environment. Artifacts aren't: GitHub scopes them to the whole workflow run and doesn't record which job
-uploaded one, so a listed artifact is passed on only if the run's workflow file shows that exactly one job uploads an
-artifact by that name and it's the listed, secret-free job; an artifact that can't be attributed that way is never
-mounted. `herd doctor` checks all of this against the default branch's workflows, and the orchestrator re-checks it
-against the workflow file of the very run it fetches from. Downloads are capped in size and extracted safely, with no
-symlinks and no path that escapes the mount. Any other failed check reaches triage only as its name and conclusion;
-without the artifacts the triager reasons from far less, which is why the project's end-to-end CI job should be one it
-can list.
+can be passed on once the job is checked secret-free. That takes more than the absence of `secrets.*`: the job
+references no secrets and runs in no deployment environment; its token has no write permission and no `id-token`
+(read-only `contents` at most); every `actions/checkout` sets `persist-credentials: false`, so test code can't copy the
+token into an artifact; it calls no reusable workflow; and the workflow isn't triggered by `pull_request_target`.
+Anything the check can't prove from the workflow file disqualifies the job. Artifacts aren't: GitHub scopes them to the
+whole workflow run and doesn't record which job uploaded one, so a listed artifact is passed on only if the run's
+workflow file shows that exactly one job uploads an artifact by that name and it's the listed, secret-free job; an
+artifact that can't be attributed that way is never mounted. `herd doctor` checks all of this against the default
+branch's workflows, and the orchestrator re-checks it against the workflow file of the very run it fetches from.
+Downloads are capped in size and extracted safely, with no symlinks and no path that escapes the mount. Any other failed
+check reaches triage only as its name and conclusion; without the artifacts the triager reasons from far less, which is
+why the project's end-to-end CI job should be one it can list.
 
 **Emulators in workers.** The project's toolchain image includes what `prepare` needs (an emulator and a system image,
 for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container by
