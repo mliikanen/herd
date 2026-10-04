@@ -141,17 +141,18 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
   - **pass**: the change moves on to review;
   - **fail**: describe the failing check and what happened. The herd checks it the way it checks any failing test: if it
     passed when you reran it, it's intermittent: for an end-to-end test the change didn't add or change, it's then run a
-    few times on the change's merge-base, by the herd when its host can run end-to-end tests, or by you, when
-    `/herd-resolve` asks, when it can't. Stable there means this change made it intermittent, and it becomes a fix task
-    like any regression; flaky there too means it's a flake, and the herd just asks you to check again, until the test's
-    flake count reaches the project's limit (`caps.flaky_retries`), when it stops and asks you instead; if it fails on
-    the change's merge-base too (the default-branch commit the change is currently based on, which moves each time the
-    herd merges the default branch in), or the spec doesn't say which behavior is right, it stops and asks you;
-    otherwise it turns the failure into new tasks, and the draft PR just gets more commits. `/herd-resolve` asks for the
-    rerun when you record a fail, and for an end-to-end test the change didn't add or change, a try on that merge-base,
-    which it checks out for you (not the default branch's latest, which may already have an unrelated fix), and a second
-    try there if the first fails, since one failure there could itself be a flake. A test the change added or changed
-    isn't compared there: the old commit has a different version of it, or none.
+    few times on the change's merge-base, by the herd if the change started with the herd running its end-to-end tests,
+    or by you, when `/herd-resolve` asks, if it didn't (that's fixed when the change starts, even if the host gains
+    emulators later). Stable there means this change made it intermittent, and it becomes a fix task like any
+    regression; flaky there too means it's a flake, and the herd just asks you to check again, until the test's flake
+    count reaches the project's limit (`caps.flaky_retries`), when it stops and asks you instead; if it fails on the
+    change's merge-base too (the default-branch commit the change is currently based on, which moves each time the herd
+    merges the default branch in), or the spec doesn't say which behavior is right, it stops and asks you; otherwise it
+    turns the failure into new tasks, and the draft PR just gets more commits. `/herd-resolve` asks for the rerun when
+    you record a fail, and for an end-to-end test the change didn't add or change, a try on that merge-base, which it
+    checks out for you (not the default branch's latest, which may already have an unrelated fix), and a second try
+    there if the first fails, since one failure there could itself be a flake. A test the change added or changed isn't
+    compared there: the old commit has a different version of it, or none.
 
 ## Review
 
