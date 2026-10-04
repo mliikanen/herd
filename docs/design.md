@@ -962,8 +962,11 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
   renamed into place, so the orchestrator never sees a half-copied file and can't hash and commit a truncated one.
   Requests ask the orchestrator to act; they're never state, so losing one loses only that request.
 
-Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator,
-the model keys the proxy.
+Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator, the
+model keys the proxy. They're kept in `~herd/secrets/`, owned by `herd` with mode `0700`, one file per key at `0600`, so
+no other host user (the operator included) and no group can read them whatever the umask was when they were created;
+each container mounts only its own key file, read-only. The install script creates the directory with those modes, and
+`herd doctor` checks the owner and modes of the directory and every file in it.
 
 ## Outside content
 
@@ -1295,14 +1298,15 @@ Steps marked **(manual)** need a human.
    and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
    (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/` (`shared/` setgid `2750`
    and `requests/` setgid `2770`, both owned by `herd` with group `herd-ops`, and `herd` itself a member of `herd-ops`),
-   puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its `[Install]` section),
-   enables lingering and the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's
-   integration for the planner agent, and adds the operator's login unit for `herdr server`.
-7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by
-   the network proxy only; a worker's own `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for
-   the herd, installed on the registered repositories, with repository permissions *Contents* and *Pull requests* (read
-   and write), *Checks*, *Commit statuses* and *Administration* (read only: CI results for the state machine, branch
-   protection for `herd doctor`), and not *Workflows*; and its private key, read by the orchestrator only.
+   creates `~herd/secrets/` (`0700`), puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy,
+   each with its `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is
+   installed, installs herdr's integration for the planner agent, and adds the operator's login unit for `herdr server`.
+7. **(manual)** Host secrets, in `~herd/secrets/` (`0700`, files `0600`, see The herd's own account):
+   `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
+   `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
+   repositories, with repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit
+   statuses* and *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`),
+   and not *Workflows*; and its private key, read by the orchestrator only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
