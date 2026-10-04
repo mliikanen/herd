@@ -85,7 +85,7 @@ e2e:                                          # end-to-end tests the herd runs i
   harness: e2e/                               # the whole harness, always run from the default branch
   tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
   prepare: ./e2e/prepare.sh                   # (re)builds and installs the app, boots the emulator if needed
-  select: ./e2e/select.sh                     # select <base sha>: relevant tests as JSON lines {id, files}
+  select: ./e2e/select.sh                     # changed paths on stdin; relevant tests as JSON lines {id, files}
   run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
   ci_artifacts:                               # what triage may see from CI; the jobs must be secret-free
     - { job: maestro-full, artifact: maestro-results }
@@ -166,9 +166,11 @@ These are the generic rules `herd-ready` checks. A project's workflow doc adds i
   one review. Split items that aren't; merge items that can't pass the gate on their own.
 - **Sections are in dependency order.** Tasks run strictly in sequence (see Concurrency model).
 - **Nothing needs a `missing_capabilities` entry.** Without an `e2e` block, no task *runs* the final-approval checks:
-  tasks may write or update those tests, and running them is the human's final approval. With one, the herd runs the
-  relevant end-to-end tests itself, and **a task that changes behavior a test can see includes or updates that test**,
-  so the red/green proof has something to prove (see End-to-end tests: the red/green loop).
+  tasks may write or update those tests, and running them is the human's final approval. With one, **a task that changes
+  behavior a test can see includes or updates that test**, whether or not the host runs end-to-end tests yet. Whether
+  the herd actually runs them (the per-task loop, the red/green proof, the final e2e) depends on the host's emulator
+  capacity, which is off until the operator enables it (see End-to-end tests: the red/green loop); until then CI runs
+  them.
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it (see Outside content).
 - **No task needs a secret.**
@@ -695,16 +697,17 @@ The commands' contract, so the orchestrator can handle ids and results determini
   the emulator first only if it isn't already running, and exits 0 once tests can run; any other exit fails the unit.
   The herd runs it before every `run`, so a rerun after an edit always tests the edited code, never the previously
   installed build.
-- **`select <base sha>`** compares the base commit with the **working tree**, committed or not, so the implementer can
-  run it before its commit exists, and a reviewer runs it on a checkout of the commit under review. It prints the
-  relevant tests on stdout as JSON lines, one per test: `{"id": ..., "files": [...]}`, where `files` lists the
-  repository paths that define the test (all under `e2e.tests`). That's how the herd knows which selected tests a change
-  adds or changes: a test is change-local if any of its files differs between the base and the working tree, which
-  decides both the required red run and whether step 2 below compares with the default branch; ids are unique, and each
-  is a safe single path component (only letters, digits, `.`, `_` and `-`, and never `.` or `..`), since it also names
-  the test's evidence directory. Output that breaks this is a failed attempt with reason `e2e-contract`. A deterministic
-  script, so selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails the
-  unit.
+- **`select`** takes no arguments. It reads, on stdin, the paths that differ between a base commit and the working tree,
+  committed or not, one per line, which the herd computes itself (so the implementer can run it before its commit
+  exists, and a reviewer runs it for the commit under review); it can read the `e2e.tests` files, but nothing else of
+  the change (see below). It prints the relevant tests on stdout as JSON lines, one per test:
+  `{"id": ..., "files": [...]}`, where `files` lists the repository paths that define the test (all under `e2e.tests`).
+  That's how the herd knows which selected tests a change adds or changes: a test is change-local if any of its files is
+  among the changed paths, which decides both the required red run and whether step 2 below compares with the default
+  branch. Ids are unique, and each is a safe single path component (only letters, digits, `.`, `_` and `-`, and never
+  `.` or `..`), since it also names the test's evidence directory; output that breaks this is a failed attempt with
+  reason `e2e-contract`. A deterministic script, so selection is reviewable and repeatable and an agent can't quietly
+  skip a test. Any non-zero exit fails the unit.
 - **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
   deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
   (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
@@ -721,27 +724,39 @@ The commands' contract, so the orchestrator can handle ids and results determini
 
 **The harness comes from the default branch, never the change branch.** It decides whether the loop can go red at all,
 so an implementer that rewrote `select` to print nothing, or `run` (or any helper either loads) to report success, would
-switch the safety net off. So the harness is a directory, `e2e.harness`, which the herd copies **whole** from the
-default branch into the unit, like `.herd/`, at a pinned revision: the default-branch commit the change's branch is
-currently based on (its merge-base with the default branch), not the moving tip. Every unit of the change uses that same
-harness, so an implementer and the reviewer who checks its `E2E:` section run the same `select` and `run`, and the pin
-moves only when update-branch merges a newer default branch into the change, and only before the archive: from the
-archive commit on, the pin is frozen, since an archived change can't go back to *awaiting-approval*, and CI's full suite
-covers anything a later merge brings in. When it moves before the archive, the change's `container`-phase pass is no
-longer current, even if the merge is otherwise bookkeeping: that pass was earned under the old harness, so the final e2e
-runs again under the new pin (which is also when a waiver that lapsed on the merge gets its test run). This is the one
-exception to clean merges keeping final-approval records; the `human` phase isn't affected. The `container` record names
-its pin for this (`final-approval container pass <tested sha> harness <pin sha>: <detail>`). and the three commands must
-live in it. The logic that selects tests and reads their results may come only from that copy, from the toolchain image
-(which is built from the default branch too), and from the working tree's `e2e.tests`, the test definitions under test.
-`prepare` is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its
-wrapper and build scripts), which is the change's code, and those build inputs are guarded paths anyway (see Who
-commits, who pushes). `e2e.tests` and `e2e.harness` may not overlap, or copying the harness would replace a changed test
-with its default-branch version: manifest validation rejects a manifest where they do; the change contributes the app
-being tested and its tests, nothing that decides selection or reads results. Everything under `e2e.harness` is a
-built-in guarded path, so a change that edits the harness declares it, and an edit takes effect only once it's merged.
-`herd doctor` runs the harness from its copy with the working tree's own harness directory removed, which shows it
-doesn't reach outside its boundary.
+switch the safety net off. So:
+
+- **A pinned, separate copy runs.** `e2e.harness` names a directory; the herd copies it whole from the default branch
+  and mounts it read-only at `/herd/harness/` in the unit. The three commands must live in it, and their manifest paths
+  are resolved against that copy (with `harness: e2e/`, `run: ./e2e/run.sh` runs `/herd/harness/run.sh`), still with the
+  repository root as working directory. The working tree's own harness directory stays editable, since a task may need
+  to change it, but it's never executed: everything under `e2e.harness` is a built-in guarded path, so an edit is
+  declared, and it takes effect only once it's merged.
+
+- **The boundary is enforced, not just checked.** `select` and `run` run in a sandbox whose filesystem holds only the
+  harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
+  `e2e.tests` files, the test definitions under test, and `$HERD_E2E_ARTIFACTS`; `run` also gets the connection to the
+  unit's emulator. Nothing else of the change is readable to them, so they can't source a helper or load configuration
+  from a branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed paths itself and
+  passes them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts.
+  `prepare` is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its
+  wrapper and build scripts), which is the change's code, so it runs with the whole working tree, in the unit's
+  container but outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). The change
+  contributes the app being tested and its tests, nothing that decides selection or reads results.
+
+- **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
+  default-branch version; manifest validation rejects a manifest where they do.
+
+- **The pin.** The copy is taken at the default-branch commit the change's branch is currently based on (its
+  merge-base), not the moving tip, so every unit of the change runs the same `select` and `run`, and an implementer's
+  `E2E:` section is checked against the same harness that produced it. The pin moves only when update-branch merges a
+  newer default branch into the change, and only before the archive: from the archive commit on, it's frozen, since an
+  archived change can't go back to *awaiting-approval*, and CI's full suite covers anything a later merge brings in.
+  When the pin moves before the archive, the change's `container`-phase pass is no longer current, even if the merge is
+  otherwise bookkeeping: that pass was earned under the old harness, so the final e2e runs again under the new pin
+  (which is also when a waiver that lapsed on the merge gets its test run). This is the one exception to clean merges
+  keeping final-approval records; the `human` phase isn't affected. The `container` record names its pin for this
+  (`final-approval container pass <tested sha> harness <pin sha>: <detail>`).
 
 The layers:
 
