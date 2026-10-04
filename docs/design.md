@@ -78,7 +78,8 @@ guarded:                                      # the tamper guard (see Who commit
     - gradlew
 final_approval:
   kind: human                                 # or: none, or container (see End-to-end tests: the red/green loop)
-  instructions: |                             # shown in the herd's status pane and in the draft PR body
+  instructions: |                             # shown in the status pane and draft PR body; required with any
+                                              # human phase (kind: human, or human_after: true)
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
   # human_after: true                        # with kind: container only: also require a person's pass afterwards
 e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
@@ -743,7 +744,9 @@ with an `e2e` block in the manifest: four commands of its own, which the herd tr
 block, together with emulator capacity on the host (see Emulators in workers), is what turns on the per-task layers (1
 to 3 below) for every change, whatever the project's final-approval kind; `final_approval.kind` only chooses the
 whole-change approval phase, and `kind: container` adds layer 4. `container` requires the block; manifest validation
-rejects `container` without it, and the project is inactive with that reason until it's fixed.
+rejects `container` without it, and the project is inactive with that reason until it's fixed. Likewise, any human phase
+(`kind: human`, or `human_after: true`) requires `final_approval.instructions`, so the person always has a check to
+follow.
 
 The commands' contract, so the orchestrator can handle ids and results deterministically:
 
@@ -1757,9 +1760,10 @@ Each waits for the point where it can be answered with evidence rather than gues
 - **At Build plan step 5** (the herdr bridge): the exact command for attaching a client. herdr's docs (read
   2026-10-04) give the rest: `pane.report_agent`, `pane.report_metadata`, `herdr notification show`.
 - **After the smoke test** (Onboarding a project, step 7):
-  - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each). Projects can override
-    them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see The project
-    manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same way.
+  - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each), and `flaky_retries` (2).
+    Projects can override them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see
+    The project manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same
+    way.
   - Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
     too, once the reality check passes (Build plan step 2): decide by replaying accepted tasks (see Models).
 - **When a project needs it:**
