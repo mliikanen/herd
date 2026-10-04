@@ -429,24 +429,27 @@ silently dropped — comes from two rules together, not from the scan alone:
   7. *in-review* — holistic review accepted and (if required) a final-approval pass recorded, change not archived, and
      review isn't done: the PR has unresolved review threads, a review requesting changes, a review finding not yet
      triaged (including ones in a review's summary, which have no thread), or an awaited reviewer (`pr_review.wait_for`)
-     hasn't reviewed the current tip yet. Next action: mark the PR ready for review if it's still a draft, then follow
-     up as Following up on PR review describes. A triaged finding becomes a task under "(added during review)", which
-     sends the change back to *implementing*. Review comes before archiving, because a fix after the archive would
-     mean editing the synced main specs by hand.
+     hasn't reviewed the current tip yet and `pr_review.timeout` hasn't passed since its push. Next action: mark the PR
+     ready for review if it's still a draft, then follow up as Following up on PR review describes. A triaged finding
+     becomes a task under "(added during review)", which sends the change back to *implementing*. Review comes before
+     archiving, because a fix after the archive would mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if required) a final-approval pass recorded in `review-notes.md`, review
-     done (no open thread or untriaged finding, and every awaited reviewer has reviewed the tip), change not yet
+     done (no open thread or untriaged finding, and every awaited reviewer has reviewed the tip or timed out), change
+     not yet
      archived on the branch. Next action: the reviewer runs the archive and
      commits. A crash mid-archive never gets pushed, so it's discarded with the clone and redone, same as any
      other unit of work.
-  9. *archived-pending* — archive commit pushed, but its checks haven't all passed yet, or an awaited reviewer
-     (`pr_review.wait_for`) hasn't reviewed the current tip. Next action: none; wait. A failing check is treated
-     like a failed gate after an update-branch (fix task, then escalate past `caps.gate_fixes`), and a new review
-     finding escalates to `needs-human` instead of becoming a task, because fixing it would mean un-archiving.
-  10. *ready-to-merge* — archive commit pushed, its checks passing, every awaited reviewer has reviewed the
-     current tip with nothing open, and the holistic-accept still current (see Current records). Next action: none;
-     a human merges. A later bookkeeping push (a clean update-branch merge, say) moves the change back to
-     *archived-pending* until checks and review catch up. Any non-bookkeeping commit after the archive makes the
-     holistic-accept stale and escalates to `needs-human`, since reviewing it again would mean un-archiving.
+  9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
+     ready is here, and its next action follows from why:
+     - checks still running, or an awaited reviewer hasn't reviewed the current tip and `pr_review.timeout` hasn't
+       passed: none; wait;
+     - a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
+       orchestrator commits a mechanical `needs-human` marker (state 1 then matches). None of these can become a
+       task, because fixing anything after the archive would mean un-archiving.
+  10. *ready-to-merge* — archive commit pushed, its checks passing, every awaited reviewer has reviewed the current
+     tip with nothing open or timed out, and the holistic-accept still current (see Current records). Next action:
+     none; a human merges. A later bookkeeping push (a clean update-branch merge, say) moves the change back to
+     *archived-pending* until checks and review catch up.
 
   **Current records.** A holistic-accept or a final-approval pass is pinned to the SHA it evaluated, and recording
   it is itself a commit, so "for the current tip" could never hold. A record is *current* when every commit since
@@ -550,11 +553,12 @@ work like any other, derived from git and GitHub on each scan, never remembered.
    - the PR's conversation comments;
    - which commit each review covers (`commit_id`).
 
-   Automated reviewers review again after every push, a few minutes later. So review is done only when every
-   reviewer in `pr_review.wait_for` has reviewed the **current tip**, and that review leaves nothing open. Replies the
-   herd itself posted don't count as reviews; filter by author and commit, not by the number of reviews. The herd
-   posts as its GitHub App (`<app>[bot]`), so its replies never look like a person's comments; with a personal token
-   they would, and filtering by author would drop the person's real feedback.
+   Automated reviewers review again after every push, a few minutes later. So review is done only when every reviewer in
+   `pr_review.wait_for` has reviewed the **current tip**, or `pr_review.timeout` has passed since the push without one
+   (a missing review then counts as none, and the status pane says so), and nothing is left open. Replies the herd
+   itself posted don't count as reviews; filter by author and commit, not by the number of reviews. The herd posts as
+   its GitHub App (`<app>[bot]`), so its replies never look like a person's comments; with a personal token they would,
+   and filtering by author would drop the person's real feedback.
 2. **Triage (reviewer).** New findings go to a reviewer unit together with the change, so the reviewer can check each
    claim against the code and the upstream sources it names. For each finding it decides one of:
    - *fix*: it appends a task under "(added during review)". Where the finding is one instance of a class (a missed
@@ -934,7 +938,7 @@ alerts:
   push: "ntfy:https://ntfy.sh/<topic>" # from the herd user, reaches the operator anywhere
   infra_after: 30m                     # alert when infrastructure failures persist this long
 logs:
-  keep_after_merge: 30d                # failed attempts' logs: twice as long
+  keep_after_end: 30d                  # from merge, abandonment, removal or closing; failed attempts: twice as long
 disk:
   warn_below: 50GB
 ```
@@ -946,17 +950,21 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   unit's last call to the orchestrator. A killed unit is a failed attempt (reason `timeout`, see Failed
   attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its backend stopped
   answering is an `infra` failure instead, and doesn't count.
-- **Spending.** The model gateway meters every call it forwards (input and output tokens per unit, backend and project)
-  and reports it to the orchestrator over the control socket, the same path it uses for each unit's last call. The
-  orchestrator prices it from each cloud backend's `price` in host config (per million input and output tokens), writes
-  a usage event to the event log and keeps the monthly counter: it stays the only writer of `/var/lib/herd/shared/`, and
-  the key-holding proxy gets no writable shared mount. The status pane shows spend this month against `budget.monthly`.
-  At `warn_at` the operator gets an alert; at the budget, the orchestrator stops dispatching units to cloud backends,
-  running units finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`:
-  it's the operator's call to raise the budget or wait for the month to turn. The budget is the one control that reads
-  something besides git: the orchestrator's monthly counter, kept in the herd's own files. It decides only whether cloud
-  units get dispatched, never a change's state. If the counter is lost, cloud dispatch pauses until the operator
-  confirms, so losing it can't overspend.
+- **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
+  the control socket, to reserve the call's maximum cost: its input tokens plus the requested output limit, priced from
+  the backend's `price` in host config (per million input and output tokens). The orchestrator adds the reservation to
+  the monthly counter, writes it durably, and only then acknowledges; the gateway forwards the call only after that
+  acknowledgement, and refuses it (an `infra` failure for the unit) when the handshake can't complete. After the call,
+  the gateway reports the actual usage the same way, and the orchestrator replaces the reservation with it and writes a
+  usage event to the event log. A crash between the two leaves the reservation counted, so the counter can overcount but
+  never undercount. The orchestrator stays the only writer of `/var/lib/herd/shared/` and of the counter, and the
+  key-holding proxy gets no writable shared mount. The status pane shows spend this month against `budget.monthly`. At
+  `warn_at` the operator gets an alert; at the budget, the orchestrator stops dispatching units to cloud backends and
+  refuses new reservations, running units' in-flight calls finish, and local slots carry on. The status pane shows it as
+  "paused: budget", not as `needs-human`: it's the operator's call to raise the budget or wait for the month to turn.
+  The budget is the one control that reads something besides git: the orchestrator's monthly counter, kept in the herd's
+  own files. It decides only whether cloud calls go out, never a change's state. If the counter is lost, cloud dispatch
+  pauses until the operator confirms.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
   warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after`
   all raise an alert, on two channels from two accounts:
@@ -969,11 +977,13 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   `OnFailure=` pointing at a small notifier, and a systemd timer under the `herd` user alerts when the heartbeat in
   `/var/lib/herd/shared/` goes stale (a hung orchestrator that hasn't exited). Both send push only: they run under
   the `herd` user too, and the bridge may be down with everything else.
-- **Unit logs and transcripts.** Each unit's log, including the agent's transcript where the harness writes
-  one, is the only record of what the agent actually did, and the first thing to read when a change stops at
-  `needs-human` or fails attempts repeatedly. They're kept in `/var/lib/herd/shared/` until `keep_after_merge`
-  after the change merges, and twice as long for failed attempts. The status pane links a stopped change to its
-  recent units' logs. They're never fed back to a worker: a retried unit starts clean (see Concurrency model).
+- **Unit logs and transcripts.** Each unit's log, including the agent's transcript where the harness writes one, is the
+  only record of what the agent actually did, and the first thing to read when a change stops at `needs-human` or fails
+  attempts repeatedly. They're kept in `/var/lib/herd/shared/` for `keep_after_end` after the change ends, and twice as
+  long for failed attempts. A change ends when its PR merges, when a person abandons it (`herd-resolve`), when its
+  project is removed, or when its PR is closed without merging; a closed PR that's reopened starts the clock again when
+  it next ends. The status pane links a stopped change to its recent units' logs. They're never fed back to a worker: a
+  retried unit starts clean (see Concurrency model).
 - **Disk.** Each scan checks free space where the herd's volumes live (images, caches, mirrors, per-unit clones),
   warns in the status pane and alerts below `disk.warn_below`, and stops starting units well before it runs out,
   so a full disk shows up as a warning instead of a string of `infra` failures.
