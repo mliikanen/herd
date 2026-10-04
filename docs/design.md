@@ -535,12 +535,14 @@ silently dropped — comes from two rules together, not from the scan alone:
 
   **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so "for
   the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is **bookkeeping**
-  (a final-approval pass follows its own rule, the effective record below): - a commit that touches only
-  `review-notes.md` (verdict lines, failed-attempt lines, final-approval records, PR triage notes) or only `inputs.md`;
-  - the validated archive commit, whose content `openspec archive` determines (see Who commits, who pushes); - an
-  update-branch merge from the default branch that merged cleanly **and** brought in no change to a file the change
-  itself touches. Default-branch changes elsewhere can still interact with the change, but CI re-runs the gate on the
-  merge; changes to the change's own files are close enough to need another look.
+  (a final-approval pass follows its own rule, the effective record below):
+
+  - a commit that touches only `review-notes.md` (verdict lines, failed-attempt lines, final-approval records, PR triage
+    notes) or only `inputs.md`;
+  - the validated archive commit, whose content `openspec archive` determines (see Who commits, who pushes);
+  - an update-branch merge from the default branch that merged cleanly **and** brought in no change to a file the change
+    itself touches. Default-branch changes elsewhere can still interact with the change, but CI re-runs the gate on the
+    merge; changes to the change's own files are close enough to need another look.
 
   Any other commit (a fix task's code, a person's content push, an update-branch merge that touches the change's files)
   makes the holistic-accept stale, so the change returns to *holistic-review-pending*, and once archived, to
@@ -558,8 +560,10 @@ silently dropped — comes from two rules together, not from the scan alone:
   stays in `review-notes.md`, but only a pass that's newer than any `rerun` or `fail` counts; after a `rerun`, the
   change goes back to *awaiting-approval* until each required phase has a new pass. The records are single lines in
   `review-notes.md` with a fixed syntax, so the scan never interprets prose:
-  `final-approval <phase> <pass|fail> <tested sha>: <detail>` (phase `container`, written by an `e2e` unit, or `human`,
-  written through `herd-resolve`; the detail is free text after the colon), `final-approval rerun: <reason>`,
+  `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also names its harness pin
+  before the colon (`final-approval container pass <tested sha> harness <pin sha>: <detail>`) and is current only while
+  the pin is unchanged (phase `container`, written by an `e2e` unit, or `human`, written through `herd-resolve`; the
+  detail is free text after the colon), `final-approval rerun: <reason>`,
   `final-approval-triaged <sha of the commit that added the fail record>`, and
   `e2e-waive <test id> <default sha> <files digest>: <reason>`.
 
@@ -721,13 +725,17 @@ switch the safety net off. So the harness is a directory, `e2e.harness`, which t
 default branch into the unit, like `.herd/`, at a pinned revision: the default-branch commit the change's branch is
 currently based on (its merge-base with the default branch), not the moving tip. Every unit of the change uses that same
 harness, so an implementer and the reviewer who checks its `E2E:` section run the same `select` and `run`, and the pin
-moves only when update-branch merges a newer default branch into the change, and the three commands must live in it.
-They may load code only from that copy, from the toolchain image (which is built from the default branch too), and from
-the working tree's `e2e.tests`, the test definitions under test; the change contributes the app being tested and its
-tests, nothing that decides selection or reads results. Everything under `e2e.harness` is a built-in guarded path, so a
-change that edits the harness declares it, and an edit takes effect only once it's merged. `herd doctor` runs the
-harness from its copy with the working tree's own harness directory removed, which shows it doesn't reach outside its
-boundary.
+moves only when update-branch merges a newer default branch into the change. When it moves, the change's
+`container`-phase pass is no longer current, even if the merge is otherwise bookkeeping: that pass was earned under the
+old harness, so the final e2e runs again under the new pin (which is also when a waiver that lapsed on the merge gets
+its test run). This is the one exception to clean merges keeping final-approval records; the `human` phase isn't
+affected. The `container` record names its pin for this
+(`final-approval container pass <tested sha> harness <pin sha>: <detail>`). and the three commands must live in it. They
+may load code only from that copy, from the toolchain image (which is built from the default branch too), and from the
+working tree's `e2e.tests`, the test definitions under test; the change contributes the app being tested and its tests,
+nothing that decides selection or reads results. Everything under `e2e.harness` is a built-in guarded path, so a change
+that edits the harness declares it, and an edit takes effect only once it's merged. `herd doctor` runs the harness from
+its copy with the working tree's own harness directory removed, which shows it doesn't reach outside its boundary.
 
 The layers:
 
