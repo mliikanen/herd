@@ -62,7 +62,8 @@ branch_prefix: change/
 toolchain:
   dockerfile: .herd/toolchain.Dockerfile     # Debian/Ubuntu-based; the herd adds its role layer on top
   caches: [/home/agent/.gradle]              # per-project, per-role volumes
-  egress: [repo.maven.apache.org, maven.google.com, dl.google.com, plugins.gradle.org, services.gradle.org]
+  egress:                                    # host[:port], 443 when no port is given
+    [repo.maven.apache.org, maven.google.com, dl.google.com, plugins.gradle.org, services.gradle.org]
 gate:                                         # implementer runs it before committing; reviewer re-runs it
   - ./gradlew check
   - openspec validate --all --strict
@@ -514,8 +515,11 @@ silently dropped — comes from two rules together, not from the scan alone:
   the content tip: a review of it, or of any later commit, counts. Otherwise review couldn't converge, because recording
   a review's classification is itself a push that the automated reviewer reviews again, which would need classifying in
   turn. Reviews of later bookkeeping-only tips don't block anything; a thread they open is still an open thread (that
-  needs no model to see), but a finding only in such a review's summary isn't waited for, an accepted trade-off since it
-  reviews the same content.
+  needs no model to see), but a finding only in such a review's summary isn't waited for, before the archive or after
+  it, including in *ready-to-merge*: an accepted trade-off since it reviews the same content, and triaging every such
+  review would bring back the loop above. So after the archive, what escalates is an open thread, a finding in a review
+  of the content tip, a failed check or a non-bookkeeping commit; a summary-only finding in a later review of a
+  bookkeeping tip doesn't.
 
   **The review window** for an awaited reviewer opens at the later of two moments: the content tip's push, and the PR
   being marked ready for review. A draft PR isn't reviewed, so a content tip pushed during holistic review or final
@@ -862,17 +866,19 @@ worker's only way out is the proxy, which serves two purposes:
   can only call the model its slot assigns, at the price its reservation assumed. Local backends go through the gateway
   too, which keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
-  the hosts on the unit's list: the manifest's `egress`, which a role can narrow. The proxy serves every unit's network,
-  so the tunnel authenticates with the same unit token (`Proxy-Authorization`, set through the standard proxy
-  variables), and the proxy rejects a request without a valid one, or one arriving on a network other than its unit's;
-  that's what tells it whose list applies. A hostname alone doesn't keep a tunnel out of the herd's own networks, since
-  an allowed name could resolve, or be rebound, to an internal address. So the proxy resolves each destination itself
-  and rejects loopback, link-local and every herd network (unit networks, the model server's), whatever the name;
-  another private range (a company registry, say) is reachable only if host config allows it, which is the operator's
-  decision, never the project manifest's. The proxy doesn't break TLS. A tool that ignores the proxy settings can't
-  connect at all, so a mistake fails closed; `herd doctor` proves the real gate works this way. Gradle, for one, needs
-  its proxy and credentials in `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java
-  disables Basic auth for HTTPS tunnels by default.
+  the destinations on the unit's list, each a host and port (`host[:port]`, 443 when no port is given; a `CONNECT`
+  tunnel carries arbitrary TCP, so a hostname alone would open every port on it): the manifest's `egress`, which a role
+  can narrow. The proxy serves every unit's network, so the tunnel authenticates with the same unit token
+  (`Proxy-Authorization`, set through the standard proxy variables), and the proxy rejects a request without a valid
+  one, or one arriving on a network other than its unit's; that's what tells it whose list applies. A hostname alone
+  doesn't keep a tunnel out of the herd's own networks, since an allowed name could resolve, or be rebound, to an
+  internal address. So the proxy resolves each destination itself and rejects loopback, link-local and every herd
+  network (unit networks, the model server's), whatever the name; another private range (a company registry, say) is
+  reachable only if host config allows it, which is the operator's decision, never the project manifest's. The proxy
+  doesn't break TLS. A tool that ignores the proxy settings can't connect at all, so a mistake fails closed;
+  `herd doctor` proves the real gate works this way. Gradle, for one, needs its proxy and credentials in
+  `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java disables Basic auth for HTTPS
+  tunnels by default.
 
 The orchestrator registers each unit's token with the proxy (project, role, backend, egress list) when it starts the
 unit, and revokes it when the unit ends. Tokens don't depend on that revocation: each expires on its own after its unit
@@ -947,8 +953,10 @@ instance*: the orchestrator, the active worker containers, and the herdr workspa
 `/var/lib/herd/shared/`:
 - **The `herd` workspace**: the overview. Its first pane runs the bridge (`herd watch`, below); next to it, a
   status pane (`herd status --follow`) lists every proposal in flight with its state (from the enum above), its
-  current task, review round and spend. Proposals waiting on a person (`needs-human`, `awaiting-approval`) come
-  first, with the reason or the final-approval instructions.
+  current task, review round and spend. Proposals waiting on a person come first, with the reason or the
+  final-approval instructions. "Waiting on a person" follows from the next action, not the state's name:
+  `needs-human`, and `awaiting-approval` when its next action is the human's final approval, not when it's a `triage`
+  unit for an untriaged failure.
 - **One workspace per registered project**, opened in the operator's checkout of it (`--cwd`), holding:
   - **The planner pane**: the operator's interactive agent (host config `planner.agent`, default `claude`) running
     in that checkout. This is where `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get
@@ -1115,27 +1123,32 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   the counter is lost, cloud dispatch pauses until the operator sets this month's spend with
   `herd budget set --spent <amount>` (read from the provider's billing), a request the orchestrator records in the event
   log before dispatch resumes.
-- **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
-  warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after` all
-  raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like the budget
-  counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's state. Each
-  alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert about a
-  waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing condition (a
-  project inactive, low disk, the budget, infrastructure failures) is an **episode**: the scan that first sees it
-  appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after a `cleared`
-  one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the episode, and a
-  daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated alert per open
-  condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the service accepts it,
-  so a crash in between sends that one again, never none. Alerts go out on two channels from two accounts:
+- **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
+  status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
+  `alerts.infra_after` all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational
+  control like the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about
+  any change's state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already
+  hold. An alert about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An
+  ongoing condition (a project inactive, low disk, the budget, infrastructure failures) is an **episode**: the scan that
+  first sees it appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after
+  a `cleared` one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the
+  episode, and a daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated
+  alert per open condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the
+  service accepts it, so a crash in between sends that one again, never none. Alerts go out on two channels from two
+  accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
-    desktop session at all. The push host is on the orchestrator's egress list.
+    desktop session at all. The orchestrator itself sits behind the network proxy with its own registration, and
+    its allow-list is host config (`orchestrator.egress`: GitHub's API and git hosts, and the push service's host),
+    enforced by the proxy like a unit's.
 
   The orchestrator can't report its own death, so a separate check does: the orchestrator's systemd unit has
   `OnFailure=` pointing at a small notifier, and a systemd timer under the `herd` user alerts when the heartbeat in
   `/var/lib/herd/shared/` goes stale (a hung orchestrator that hasn't exited). Both send push only: they run under
-  the `herd` user too, and the bridge may be down with everything else.
+  the `herd` user too, and the bridge may be down with everything else. They run on the host, outside any Podman
+  network, so the proxy doesn't constrain them; they're fixed herd scripts with one destination (`alerts.push`) and
+  take no input an agent can influence, which is what keeps them safe.
 - **Unit logs and transcripts.** Each unit's log, including the agent's transcript where the harness writes one, is the
   only record of what the agent actually did, and the first thing to read when a change stops at `needs-human` or fails
   attempts repeatedly. They're kept in `/var/lib/herd/shared/` for `keep_after_end` after the change ends, and twice as
