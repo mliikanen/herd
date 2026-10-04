@@ -520,7 +520,10 @@ silently dropped — comes from two rules together, not from the scan alone:
   **The review window** for an awaited reviewer opens at the later of two moments: the content tip's push, and the PR
   being marked ready for review. A draft PR isn't reviewed, so a content tip pushed during holistic review or final
   approval starts its window only when the herd marks the PR ready. `pr_review.timeout` counts from that opening,
-  wherever this document says a review timed out.
+  wherever this document says a review timed out. A timeout stands in for a review only while none exists: once a
+  qualifying review of the content tip arrives, even after its window timed out, it has to be classified clean like any
+  other, and until it is, the change isn't *ready-to-merge* (it's back in *archived-pending*, or in *in-review* before
+  the archive).
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes
   first: the next action is a `triage` unit, which turns the failure into a fix task under "(added for CI)",
@@ -1016,10 +1019,13 @@ session loses only what's on screen.
 **The status snapshot.** History expires, but the current picture mustn't: a proposal open for longer than the event log
 keeps would otherwise drop out of view after a bridge restart. So at the end of every scan the orchestrator also writes
 `status.json` to `/var/lib/herd/shared/`: every registered project and every open proposal with its derived state,
-current task, review round, waiting reason and spend. It's rewritten whole from the scan, never appended, and replaced
-atomically (written to a temporary file, synced, renamed over the old one), so a reader never sees half of it, and so it
-can't go stale or grow. The status pane, `herd status`, and the bridge's attention panes read the snapshot; the event
-log is only for history and the unit panes' timeline. Like the log, the orchestrator never reads it back.
+current task, review round, waiting reason and spend. It carries `generated_at`, and every consumer shows how old it is:
+past twice `scan_interval`, the status pane, `herd status` and the bridge show it as **stale** (orchestrator not
+scanning) in place of presenting old state as current, alongside the heartbeat check. It's rewritten whole from the
+scan, never appended, and replaced atomically (written to a temporary file, synced, renamed over the old one), so a
+reader never sees half of it, and so it can't go stale or grow. The status pane, `herd status`, and the bridge's
+attention panes read the snapshot; the event log is only for history and the unit panes' timeline. Like the log, the
+orchestrator never reads it back.
 
 **The `herd` CLI.** The herd repo installs `herd` on the host:
 - `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
