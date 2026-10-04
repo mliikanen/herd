@@ -811,21 +811,23 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   rerun it once and, for an end-to-end test this change didn't touch, to try it on a build of the change's merge-base,
   which `herd-resolve` checks out for them, never the default branch's current tip, which may already carry an unrelated
   fix, and to try it there once more if it fails; it records all of it in the note). A check that passes on the rerun is
-  intermittent, and for an end-to-end test the change didn't touch, `herd-resolve` then has the triage unit run it, when
-  the change's recorded `e2e-mode` is `on`, or the person, when it's `off` (capacity that appears later doesn't change
-  that), run it on the merge-base build `caps.flaky_retries` + 1 times, as step 1 of the rule requires: stable there
-  means this change made it intermittent, a regression that goes on to the spec step and becomes a fix task like any
-  other. A check that both passes and fails there, or that passes on the second merge-base try after failing the first,
-  is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, N counting every flaky outcome seen, including
-  on the merge-base runs) and it counts toward `caps.flaky_retries` like any other, so the next action is the person's
-  check again until the count reaches the cap. A check that fails on every merge-base run is pre-existing (fixed on the
-  default branch or waived), and that, or a failure the spec doesn't settle, escalates to `needs-human` as it would
-  anywhere else, and otherwise the triage unit turns the failure into appended task(s) under "(added during final
-  approval)", and the proposal goes back to *implementing*. Either way its verdict commit records
-  `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the stop (a waiver,
-  say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once those tasks are
-  accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail` already
-  triaged, and the next action is the human again. The draft PR stays open throughout and simply gets more commits.
+  intermittent, and for an end-to-end test the change didn't touch, `herd-resolve` then has the triage unit run it when
+  the change's recorded `e2e-mode` is `on` and the failed check is a test the pinned harness can run (an id its `select`
+  can return), and the person otherwise (capacity that appears later doesn't change that, and a real-device check under
+  `human_after` always stays with the person), run it on the merge-base build `caps.flaky_retries` + 1 times, as step 1
+  of the rule requires: stable there means this change made it intermittent, a regression that goes on to the spec step
+  and becomes a fix task like any other. A check that both passes and fails there, or that passes on the second
+  merge-base try after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, N
+  counting every flaky outcome seen, including on the merge-base runs) and it counts toward `caps.flaky_retries` like
+  any other, so the next action is the person's check again until the count reaches the cap. A check that fails on every
+  merge-base run is pre-existing (fixed on the default branch or waived), and that, or a failure the spec doesn't
+  settle, escalates to `needs-human` as it would anywhere else, and otherwise the triage unit turns the failure into
+  appended task(s) under "(added during final approval)", and the proposal goes back to *implementing*. Either way its
+  verdict commit records `final-approval-triaged <sha of the fail record>`, escalation included, so once a person
+  resolves the stop (a waiver, say) the same fail isn't triaged and escalated again; the same goes for a
+  `container`-phase fail. Once those tasks are accepted and the holistic review is current again, the change returns to
+  *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR stays open
+  throughout and simply gets more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
@@ -999,12 +1001,13 @@ The layers:
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
 4. **Final e2e: `final_approval.kind: container`.** In *awaiting-approval*, an `e2e` unit (a reviewer unit kind) runs
-   every test `select` picks for the whole change (from its current merge-base to its content tip) on one fresh
-   emulator. A pass is recorded as a `container`-phase final-approval pass, a bookkeeping line in `review-notes.md` (see
-   The effective final-approval record); a failure is recorded as a `container`-phase `fail` with the run's results, and
-   a separate `triage` unit then applies the test-or-implementation rule below (see Final approval). The `e2e` unit
-   itself only runs the tests and records the verdict. `final_approval.human_after: true` adds a person's pass after the
-   unit's, for checks only a real device can do.
+   every test `select` picks for the whole change (from its current merge-base to its branch tip, so a clean
+   update-branch merge's result is what's compared, not the pre-merge content tip) on one fresh emulator. A pass is
+   recorded as a `container`-phase final-approval pass, a bookkeeping line in `review-notes.md` (see The effective
+   final-approval record); a failure is recorded as a `container`-phase `fail` with the run's results, and a separate
+   `triage` unit then applies the test-or-implementation rule below (see Final approval). The `e2e` unit itself only
+   runs the tests and records the verdict. `final_approval.human_after: true` adds a person's pass after the unit's, for
+   checks only a real device can do.
 5. **CI: the full suite.** The project's CI runs every end-to-end test as a required check, independent of the herd's
    selection and of its emulator setup. A failure goes through Failing checks before the archive like any other, with
    the job's artifacts handed to the triage unit (see below).
@@ -1088,21 +1091,24 @@ can be passed on once the job is checked secret-free. That takes more than the a
 references no secrets and runs in no deployment environment; its token has no write permission and no `id-token`
 (read-only `contents` at most); every `actions/checkout` sets `persist-credentials: false`, so test code can't copy the
 token into an artifact; it calls no reusable workflow; and the workflow isn't triggered by `pull_request_target`; and it
-runs on a GitHub-hosted runner (a `runs-on` label from GitHub's own fixed set, not `self-hosted` or a custom label, nor
-an expression that could resolve to one), which is ephemeral and holds nothing of anyone's beyond the job, whereas test
-code on a self-hosted runner could read the runner host's own files and credentials and copy them into its output. And
-it holds for every job in the workflow, not just the listed one: any job in a run can download what its siblings
-uploaded, so test code in a secret-free job could otherwise copy a secret-bearing sibling's artifact into its own
-output. Anything the check can't prove from the workflow file disqualifies the job. Artifacts aren't: GitHub scopes them
-to the whole workflow run and doesn't record which job uploaded one, so a listed artifact is passed on only if the run's
-workflow file shows that exactly one job uploads an artifact by that name and it's the listed, secret-free job; an
-artifact that can't be attributed that way is never mounted. `herd doctor` checks all of this against the default
-branch's workflows, and the orchestrator re-checks it against the workflow file of the very run it fetches from.
-Downloads are capped in size, and extraction is bounded while it streams, since a small, highly compressed artifact
-could otherwise fill the disk: total extracted bytes and file count are capped, only regular files are written (no
-symlinks, hard links or devices), and no entry's path may escape the mount. Hitting a limit drops that artifact and
-tells the triager it was too large. Any other failed check reaches triage only as its name and conclusion; without the
-artifacts the triager reasons from far less, which is why the project's end-to-end CI job should be one it can list.
+runs on a GitHub-hosted runner, which the workflow file can only suggest (a `runs-on` label from GitHub's own fixed set,
+not `self-hosted` or a custom label, nor an expression that could resolve to one) and which the orchestrator verifies
+for the very job it fetches from, through the Actions API's record of the job's runner group (GitHub's hosted pool, not
+a self-hosted group, since a self-hosted runner can carry any label), withholding the output when that can't be
+established, which is ephemeral and holds nothing of anyone's beyond the job, whereas test code on a self-hosted runner
+could read the runner host's own files and credentials and copy them into its output. And it holds for every job in the
+workflow, not just the listed one: any job in a run can download what its siblings uploaded, so test code in a
+secret-free job could otherwise copy a secret-bearing sibling's artifact into its own output. Anything the check can't
+prove from the workflow file disqualifies the job. Artifacts aren't: GitHub scopes them to the whole workflow run and
+doesn't record which job uploaded one, so a listed artifact is passed on only if the run's workflow file shows that
+exactly one job uploads an artifact by that name and it's the listed, secret-free job; an artifact that can't be
+attributed that way is never mounted. `herd doctor` checks all of this against the default branch's workflows, and the
+orchestrator re-checks it against the workflow file of the very run it fetches from. Downloads are capped in size, and
+extraction is bounded while it streams, since a small, highly compressed artifact could otherwise fill the disk: total
+extracted bytes and file count are capped, only regular files are written (no symlinks, hard links or devices), and no
+entry's path may escape the mount. Hitting a limit drops that artifact and tells the triager it was too large. Any other
+failed check reaches triage only as its name and conclusion; without the artifacts the triager reasons from far less,
+which is why the project's end-to-end CI job should be one it can list.
 
 **Emulators in workers.** The project's toolchain image includes what `boot` and `prepare` need (an emulator and a
 system image, for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container
