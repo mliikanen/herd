@@ -846,9 +846,13 @@ The commands' contract, so the orchestrator can handle ids and results determini
   total bytes and file count (`e2e.max_artifacts`, from host config), so a broken or runaway `run` fills its own
   directory, not the host: hitting the cap fails that run, with the reason, like any other failed command. A run's
   directory is deleted once the herd has read its results, so retries don't pile up; what the unit's verdict cites (the
-  failing tests' reports, screenshots and logs) is first copied to the change's evidence store, under `/var/lib/herd/`
-  and bounded by the same caps per run, which the orchestrator mounts read-only into the `triage` unit that handles the
-  failure and deletes when the change merges or closes.
+  failing tests' reports, screenshots and logs) is first copied to the change's evidence store under `/var/lib/herd/`,
+  which the orchestrator mounts read-only into the `triage` unit that handles the failure. It holds evidence only for a
+  failure not yet triaged, and each failure's copy is deleted as soon as its triage verdict is committed, so a change
+  never holds more than its untriaged failures' evidence, each bounded by the per-run caps, however long it lives. A
+  closed PR keeps its evidence, since the change may be reopened; it's deleted with the change branch. If the evidence
+  is missing when triage is due (lost in a restore, say), the failure isn't triaged blind: the orchestrator records
+  `final-approval rerun: evidence lost` and the run happens again.
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
   that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
