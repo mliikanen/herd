@@ -736,13 +736,15 @@ from a per-project, per-role image:
     itself rather than trusting the implementer's claim. The holistic review's prompt includes a security
     checklist; there's no separate security-review unit. A project that wants static analysis (Semgrep, say)
     adds it to its gate, where it runs on every task.
-- **Local model server** — when a backend is local: Ollama (or similar) as its own container on the workers'
-  internal network, with no egress of its own (the operator pulls models). It's the only container given the GPU,
+- **Local model server** — when a backend is local: Ollama (or similar) as its own container on an internal
+  network shared only with the network proxy, never with workers, with no egress of its own (the operator pulls
+  models). Workers reach it only through the model gateway, like any backend. It's the only container given the GPU,
   however the vendor exposes it to rootless Podman. An Intel or AMD card is `--device /dev/dri`, and since the
   device usually belongs to the `render` group, which a rootless container doesn't keep by default, also
   `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in
   `render`. An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
-- **Network proxy** — generic image, on both the workers' internal network and the outside one: the model
+- **Network proxy** — generic image, on every unit's internal network (see Network and secrets), the model
+  server's, and the outside one: the model
   gateway and the egress allow-list (see Network and secrets). It holds the model backends' API keys and nothing
   else, and runs no model and no project code.
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container
@@ -776,21 +778,25 @@ network instead.
 - Network egress is the unit's model backend plus the manifest's `egress` list — not open internet (see Network
   and secrets).
 
-**Network and secrets.** Workers sit on an internal Podman network (`--internal`) with no route out. Their only
-way out is the herd's network proxy, which serves two purposes:
+**Network and secrets.** Each unit gets its **own** internal Podman network (`--internal`, no route out), created when
+the unit starts and removed when it ends, holding only that worker and the network proxy (attached with `podman network
+connect`). No two workers share a network, so a compromised worker has no peer whose traffic it could sniff or redirect,
+and no other unit's token to steal; workers also run with every Linux capability dropped (`--cap-drop=all`). The
+plain-HTTP hop between a worker and the proxy below is therefore private to that unit. The worker's only way out is the
+proxy, which serves two purposes:
 - **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`,
   or the harness's equivalent, points at the gateway, with a placeholder key). The gateway checks the unit's token,
   swaps in the backend's real key and calls the provider over HTTPS. So workers never hold an API key, the gate
   and the agent-written code it runs have none to leak, and a unit can only call the backend its slot assigns.
   Local backends go through the gateway too, which keeps that rule uniform.
-- **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed
-  only to the hosts on the unit's list: the manifest's `egress`, which a role can narrow. Every unit shares the
-  internal network, so the tunnel authenticates with the same unit token (`Proxy-Authorization`, set through the
-  standard proxy variables), and the proxy rejects a request without a valid one; that's what tells it whose list
-  applies. The proxy doesn't break TLS. A tool that ignores the proxy settings can't connect at all, so a mistake
-  fails closed; `herd doctor` proves the real gate works this way. Gradle, for one, needs its proxy and credentials
-  in `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java disables Basic auth for
-  HTTPS tunnels by default.
+- **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
+  the hosts on the unit's list: the manifest's `egress`, which a role can narrow. The proxy serves every unit's network,
+  so the tunnel authenticates with the same unit token (`Proxy-Authorization`, set through the standard proxy
+  variables), and the proxy rejects a request without a valid one, or one arriving on a network other than its unit's;
+  that's what tells it whose list applies. The proxy doesn't break TLS. A tool that ignores the proxy settings can't
+  connect at all, so a mistake fails closed; `herd doctor` proves the real gate works this way. Gradle, for one, needs
+  its proxy and credentials in `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java
+  disables Basic auth for HTTPS tunnels by default.
 
 The orchestrator registers each unit's token with the proxy (project, role, backend, egress list) when it starts
 the unit, and revokes it when the unit ends. That control interface isn't on any network a worker can reach: it's
@@ -905,10 +911,11 @@ piece of state is a cursor in the operator's own state directory (`~/.local/stat
 number of the last alert it showed, updated after each one. After a restart it shows the alerts queued since the cursor,
 so nothing raised while it was down is missed. Delivery is at-least-once: a crash between showing an alert and saving
 the cursor shows that one alert again. Without a cursor (first run, or lost) it shows only the last hour's alerts rather
-than replaying the whole queue; the status pane still lists everything waiting. With herdr's `[ui.toast] delivery =
-"system"`, that goes through the OS notification service even when no client is attached, as long as herdr's server is
-running in the operator's session. The `herd` user has no desktop session to notify, so it sends only push alerts (see
-Monitoring).
+than replaying the whole queue; the status pane still lists everything waiting. The orchestrator drops queued alerts
+older than 7 days, far beyond the replay window; a cursor that points before the oldest one left starts from there. With
+herdr's `[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached,
+as long as herdr's server is running in the operator's session. The `herd` user has no desktop session to notify, so it
+sends only push alerts (see Monitoring).
 
 **The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit
 pushed, review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`. **Both the
