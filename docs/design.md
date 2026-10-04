@@ -719,10 +719,27 @@ Steps marked **(manual)** need a human.
    Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for
    a pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel
    Arc Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context.
-   It's gated by replaying the smoke test's accepted tasks on the candidate model (see Models), and bounded by
-   the rule that a task's last review round goes to a different backend. The B70 runs under official Ollama's
-   Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as `/dev/dri`. The
-   runtime is rootless Podman, already on the host.
+   It's bounded by the rule that a task's last review round goes to a different backend. The B70 runs under
+   official Ollama's Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as
+   `/dev/dri`. The runtime is rootless Podman, already on the host.
+
+   **(manual) Reality check before any local backend or slot goes into host config.** The B70 figures above are
+   assumptions from published specs and benchmarks; the host had an RTX 3080 when this was written. Each of these
+   must hold, measured on the host itself:
+   - **The card is there and usable:** `lspci` shows it, the kernel's `xe` driver binds it, `/dev/dri/renderD*`
+     exists, and the herd's user is in the `render` group.
+   - **The container sees it:** a rootless Ollama container given `/dev/dri` reports the Vulkan device and loads
+     a model onto it, not onto the CPU.
+   - **The model fits with real context:** the candidate loads fully into VRAM at the context the harness needs
+     (OpenHands: at least 22k tokens; a real task's prompt plus files is more), with no CPU offload.
+   - **It's fast enough:** time per task, measured on the replayed tasks, is acceptable next to the cloud
+     backend's. A task that takes hours locally holds up its change for hours.
+   - **It's good enough:** replaying the smoke test's accepted tasks on the candidate (see Models), its first-review
+     acceptance rate is close enough to the cloud backend's that the extra rounds cost less than they save.
+   - **The host copes:** the gate (a Gradle build, say) and the model running at once don't run the host out of
+     RAM or throttle it.
+
+   If any fails, the herd stays cloud only, and the result goes in Open questions.
 3. Role layers and generic `SYSTEM_PROMPT.md` per role; the toolchain-image + role-layer build.
 4. The orchestrator: per-project bare mirror and per-unit clone lifecycle, worker container lifecycle, intake from
    `ready: true`, round-robin assignment to worker slots, the state derivation above, commit validation and
