@@ -805,9 +805,9 @@ and to CI.
 (normally opened by `herd-propose` at proposal time) and dispatches an `e2e` unit, which records its verdict in
 `review-notes.md` as a `container` pass or fail, pinned to the SHA tested. Its result is also published as a commit
 status, `herd/final-e2e`: on the tested commit, and, since statuses belong to one SHA, copied by the orchestrator onto
-every later head it pushes while that record stays effective (and set to `pending` on any head once a rerun is owed), so
-the PR's current head always shows it next to CI (the App's one write permission outside *Contents* and *Pull requests*;
-see Build plan):
+every later head of the branch it observes, whoever pushed it, while that record stays effective (and set to `pending`
+on any head once a rerun is owed), so the PR's current head always shows it next to CI (the App's one write permission
+outside *Contents* and *Pull requests*; see Build plan):
 - **pass** → the proposal moves to *in-review*, and the PR is marked ready;
 - **fail** → while that `fail` is the effective record and hasn't been triaged, *awaiting-approval*'s next action is a
   `triage` unit, which applies the Test or implementation rule (see End-to-end tests) with the run's evidence: a real
@@ -822,14 +822,16 @@ see Build plan):
 them is enough) and how (`instructions`). Both are pinned with the change's `e2e-mode` line, from the manifest at its
 merge-base when it was first dispatched, so a change always shows the check it owes even if the manifest has since
 changed or dropped it. When the PR is marked ready, the orchestrator puts the instructions in the PR body and requests a
-review from the listed people. The check passes with an **Approve** review from one of them on the current content tip,
-submitted after the PR was marked ready and the review was requested for that tip (an approval given earlier, on a draft
-without the instructions or before the final e2e passed, doesn't count): bookkeeping commits after it (a clean
-update-branch merge, a verdict line) don't undo it, but a new content tip does, and the orchestrator requests the review
-again. Until then the change can't leave *in-review*, and the status pane shows it as waiting on that person (see
-Monitoring). There's no timeout: unlike an automated reviewer's, this review is required. It's judged before the archive
-only: the archive commit is a new content tip for automated reviewers, but the person's approval of the change's content
-still stands, and their merge is the last word anyway.
+review from the listed people. If none of them can be requested (a mistyped login, a removed collaborator: the request
+fails for every one of them), the change escalates to `needs-human` ("can't request the person's check") instead of
+waiting forever. The check passes with an **Approve** review from one of them on the current content tip, submitted
+after the PR was marked ready and the review was requested for that tip (an approval given earlier, on a draft without
+the instructions or before the final e2e passed, doesn't count): bookkeeping commits after it (a clean update-branch
+merge, a verdict line) don't undo it, but a new content tip does, and the orchestrator requests the review again. Until
+then the change can't leave *in-review*, and the status pane shows it as waiting on that person (see Monitoring).
+There's no timeout: unlike an automated reviewer's, this review is required. It's judged before the archive only: the
+archive commit is a new content tip for automated reviewers, but the person's approval of the change's content still
+stands, and their merge is the last word anyway.
 
 A **Request changes** or comment review is triaged like any other review (see Following up on PR review): a finding
 becomes a task under "(added during review)". A failed check in it goes through the same Test or implementation rule as
@@ -852,8 +854,9 @@ merge-base repetitions itself; a real-device check always stays with the person.
   `needs-human` ("flaky test");
 - failing on every merge-base run: pre-existing breakage, escalated to `needs-human` ("fails on the default branch
   too"). The person fixes the default branch in a separate change, or, for this change, waives an end-to-end test
-  (`e2e-waive`, see End-to-end tests) or approves despite a manual check, naming it as a known default-branch failure in
-  the approving review, which the PR body repeats;
+  (`e2e-waive`, see End-to-end tests) or approves despite a manual check: `/herd-resolve` then resolves the stop and
+  submits the approving review naming the known default-branch failure in one go, so the resolution and the approval
+  land together, and the PR body repeats it;
 - a failure the spec doesn't settle: `needs-human` ("spec doesn't settle it").
 
 Archiving happens only after the final e2e and the review (the person's check included), deliberately:
