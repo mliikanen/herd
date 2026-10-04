@@ -135,8 +135,9 @@ its implementation, comes back to you as a `needs-human` stop, because scope is 
 
 Once review is done, the herd archives the change (syncing its spec deltas into the main specs) as the last commit
 that changes content; only the herd's own notes, or a merge of the default branch, can follow it. When the checks pass
-and the archive has been reviewed, the change is ready to merge, and **you merge it**. If the default branch has moved
-on, the herd merges it into the change branch first. A conflict there stops at `needs-human`.
+and the archive has been reviewed (or the automated reviewer didn't answer within the configured timeout), the change
+is ready to merge, and **you merge it**. If the default branch has moved on, the herd merges it into the change branch
+first. A conflict there stops at `needs-human`.
 
 ## After merge
 

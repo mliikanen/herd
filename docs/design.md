@@ -765,10 +765,12 @@ from a per-project, per-role image:
   device usually belongs to the `render` group, which a rootless container doesn't keep by default, also
   `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in
   `render`. An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
-- **Network proxy** — generic image, on every unit's internal network (see Network and secrets), the model
-  server's, and the outside one: the model
-  gateway and the egress allow-list (see Network and secrets). It holds the model backends' API keys and nothing
-  else, and runs no model and no project code.
+- **Network proxy** — one container on every unit's internal network (see Network and secrets), the model server's, and
+  the outside one, with two parts. The **model gateway** is the herd's own small component, not a generic proxy: the
+  model and output limit are fields in the request body (for Anthropic and Ollama alike), and metering needs the usage
+  in each response, so it parses and rewrites provider requests and reads their responses. The **egress allow-list** is
+  an off-the-shelf forward proxy configured for authenticated `CONNECT` with destination checks. It holds the model
+  backends' API keys and nothing else, and runs no model and no project code.
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container
   lifecycle, commit validation, push, `gh pr create`/update-branch/mark-ready. Needs the GitHub App's private key,
   the `herd` user's rootless Podman API socket, and the host config read-only; no LLM key. It's the one privileged
@@ -978,6 +980,7 @@ session loses only what's on screen.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
+- `herd budget set --spent <amount>`: sets this month's spend after the counter was lost (see Monitoring).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
 
@@ -1030,11 +1033,19 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   units to cloud backends and refuses new reservations, running units' in-flight calls finish, and local slots carry on.
   The status pane shows it as "paused: budget", not as `needs-human`: it's the operator's call to raise the budget or
   wait for the month to turn. The budget is the one control that reads something besides git: the orchestrator's monthly
-  counter, kept in the herd's own files. It decides only whether cloud calls go out, never a change's state. If the
-  counter is lost, cloud dispatch pauses until the operator confirms.
+  counter, kept in the herd's own files. It decides only whether cloud calls go out, never a change's state. A
+  reservation refused because it would cross the budget pauses cloud dispatch the same way, so units aren't dispatched
+  only to have their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed
+  attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is lost, cloud dispatch
+  pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's
+  billing), a request the orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
-  warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after`
-  all raise an alert, on two channels from two accounts:
+  warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after` all
+  raise an alert. The orchestrator keeps no memory between scans, so each alert gets a stable id derived from current
+  facts, and the queue adds only ids it doesn't already hold: an alert about a waiting change is keyed by the commit of
+  its `needs-human` marker or final-approval state, and an ongoing condition (a project inactive, low disk, the budget)
+  by the condition and the day, which also makes it a daily reminder while it lasts. Push delivery is recorded per id in
+  the queue, so a restart neither repeats nor drops one. Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
@@ -1148,8 +1159,8 @@ Each waits for the point where it can be answered with evidence rather than gues
 - **At Build plan step 3** (role layers and images):
   - Implementer harness: Aider or OpenHands headless (see Containers), compared on the same tasks; something
     custom only if neither fits.
-  - Which proxy software the network proxy uses (a reverse proxy that can add headers, plus a `CONNECT`
-    allow-list).
+  - Which forward proxy serves the egress allow-list (authenticated `CONNECT` with destination checks); the model
+    gateway is the herd's own component.
 - **At Build plan step 5** (the herdr bridge): the exact command for attaching a client. herdr's docs (read
   2026-10-04) give the rest: `pane.report_agent`, `pane.report_metadata`, `notification.show`.
 - **After the smoke test** (Onboarding a project, step 7):
