@@ -180,14 +180,15 @@ device or a GUI. There are two kinds, and the project's workflow doc says which 
   - **Request changes**, describing what failed: the herd handles it like any other review finding, and checks a failed
     check the way it checks any failing test. For a failed check, run `/herd-resolve` and let it submit the review for
     you, with what the herd needs attached: a rerun of the failing check, and, for an end-to-end test the change didn't
-    add or change, runs on the change's merge-base (the default-branch commit the change is currently based on, which it
-    checks out for you; not the default branch's latest, which may already have an unrelated fix). If the check passed
-    on your rerun and is stable on the merge-base, the change made it intermittent, and it becomes a fix task; if it's
-    flaky there too, the herd asks you to check again, until the test's flake count reaches the project's limit
-    (`caps.flaky_retries`), when it stops and asks you instead. If it fails on the merge-base too, or the spec doesn't
-    say which behavior is right, it stops and asks you; you can fix the default branch, waive an end-to-end test for
-    this change, or approve despite a manual check by naming it as a known default-branch failure in your review.
-    Otherwise the failure becomes new tasks, and the PR gets more commits.
+    add or change that the herd can't run itself (its own emulator runs them when it can, after you submit), runs on the
+    change's merge-base (the default-branch commit the change is currently based on, which it checks out for you; not
+    the default branch's latest, which may already have an unrelated fix). If the check passed on your rerun and is
+    stable on the merge-base, the change made it intermittent, and it becomes a fix task; if it's flaky there too, the
+    herd asks you to check again, until the test's flake count reaches the project's limit (`caps.flaky_retries`), when
+    it stops and asks you instead. If it fails on the merge-base too, or the spec doesn't say which behavior is right,
+    it stops and asks you; you can fix the default branch, waive an end-to-end test for this change, or approve despite
+    a manual check by naming it as a known default-branch failure in your review. Otherwise the failure becomes new
+    tasks, and the PR gets more commits.
 
 ## Review
 

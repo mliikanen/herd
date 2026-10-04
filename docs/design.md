@@ -582,32 +582,35 @@ silently dropped — comes from two rules together, not from the scan alone:
      ensure a PR exists (a **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into
      one), and then an `e2e` unit (see End-to-end tests: the red/green loop). A change of kind `none` skips this state.
   7. *in-review* — holistic review accepted and (for kind `container`) the effective final-approval record a pass,
-     change not archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a
-     review finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip
-     (see below) yet while its review window (see below) hasn't timed out, an awaited reviewer's first review of the
-     content tip that no `triage` unit has classified yet, or, when the change owes a person's check, no Approve on the
-     content tip yet from one of its reviewers (no timeout: see Final approval). The orchestrator runs no model and
-     can't tell a clean review from one with findings only in its free-form summary, so every such review is classified
-     (`clean`, or findings triaged), before the archive as after it. Next action, the first that applies: a required
-     check is past `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before
-     the archive); a required check failed on the current tip and that run is neither triaged nor verified all-waived,
-     so CI triage (see Failing checks before the archive); otherwise mark the PR ready for review if it's still a draft
-     (requesting the person's check, when the change owes one), then follow up as Following up on PR review describes. A
-     triaged finding becomes a task under "(added during review)", which sends the change back to *implementing*. Review
-     comes before archiving, because a fix after the archive would mean editing the synced main specs by hand.
+     change not archived, and review isn't done: the PR has unresolved review threads, a review requesting changes whose
+     findings aren't all triaged and resolved yet, a review finding not yet triaged, an awaited reviewer
+     (`pr_review.wait_for`) that hasn't reviewed the content tip (see below) yet while its review window (see below)
+     hasn't timed out, an awaited reviewer's first review of the content tip that no `triage` unit has classified yet,
+     or, when the change owes a person's check, no counting Approve yet: one from one of its reviewers on the content
+     tip, submitted after the PR was marked ready and the review was requested for that tip (no timeout: see Final
+     approval). The orchestrator runs no model and can't tell a clean review from one with findings only in its
+     free-form summary, so every such review is classified (`clean`, or findings triaged), before the archive as after
+     it. Next action, the first that applies: a required check is past `pr_review.checks_timeout` with no result, so the
+     orchestrator escalates (see Failing checks before the archive); a required check failed on the current tip and that
+     run is neither triaged nor verified all-waived, so CI triage (see Failing checks before the archive); otherwise
+     mark the PR ready for review if it's still a draft (requesting the person's check, when the change owes one), then
+     follow up as Following up on PR review describes. A triaged finding becomes a task under "(added during review)",
+     which sends the change back to *implementing*. Review comes before archiving, because a fix after the archive would
+     mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (for kind `container`) the effective final-approval record a pass, review
      done (no open thread or untriaged finding, every awaited reviewer's first review of the content tip either
      classified clean or with all its findings triaged and resolved, or timed out, and, when the change owes a person's
-     check, an Approve on the content tip from one of its reviewers), change not yet archived on the branch. Next
-     action, the first that applies: a required check is past `pr_review.checks_timeout` with no result, so the
-     orchestrator escalates (see Failing checks before the archive); a required check failed on the current tip and
-     hasn't been handled yet, so the CI-failure handling in Failing checks before the archive applies (a `triage` unit,
-     whose outcome may be fix tasks, a flaky rerun or an escalation, or no unit at all for a run whose every failure is
-     waived); the branch is behind the default branch, so update-branch (a merge that touches the change's files sends
-     it back through holistic review, which is still possible before the archive); while a required check is still
-     running, none; wait (a failure then goes through Failing checks before the archive, never past it). Once the branch
-     is up to date and every required check on its tip has passed, the reviewer runs the archive and commits. A crash
-     mid-archive never gets pushed, so it's discarded with the clone and redone, same as any other unit of work.
+     check, a counting Approve: one from one of its reviewers on the content tip, submitted after the PR was marked
+     ready and the review was requested for that tip), change not yet archived on the branch. Next action, the first
+     that applies: a required check is past `pr_review.checks_timeout` with no result, so the orchestrator escalates
+     (see Failing checks before the archive); a required check failed on the current tip and hasn't been handled yet, so
+     the CI-failure handling in Failing checks before the archive applies (a `triage` unit, whose outcome may be fix
+     tasks, a flaky rerun or an escalation, or no unit at all for a run whose every failure is waived); the branch is
+     behind the default branch, so update-branch (a merge that touches the change's files sends it back through holistic
+     review, which is still possible before the archive); while a required check is still running, none; wait (a failure
+     then goes through Failing checks before the archive, never past it). Once the branch is up to date and every
+     required check on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive never gets
+     pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action is the first of these that applies, in this order:
      1. a check failed or is past `pr_review.checks_timeout` with no result, a review finding is open, or a
@@ -834,7 +837,10 @@ archive commit is a new content tip for automated reviewers, but the person's ap
 stands, and their merge is the last word anyway.
 
 A **Request changes** or comment review is triaged like any other review (see Following up on PR review): a finding
-becomes a task under "(added during review)". A failed check in it goes through the same Test or implementation rule as
+becomes a task under "(added during review)". A Request changes review stops blocking once its findings are all triaged
+and resolved, like any review's: the herd judges from the reviews and its own records, not from GitHub's "changes
+requested" badge, and once the fixes land as a new content tip it requests the check again, so what's needed next is a
+counting approval from any listed reviewer. A failed check in it goes through the same Test or implementation rule as
 any failing test, with the person's review as its evidence, and that evidence comes with the review: a person reporting
 a failed check runs `/herd-resolve`, which gathers it and submits the Request changes review with the evidence attached,
 so triage never starts before it exists (a failed check reported in a plain review is triaged with whatever it says, and
@@ -842,9 +848,11 @@ the triage unit asks for the missing runs in a reply, which puts the change back
 `/herd-resolve` gathers it like this: it asks the person to rerun the failing check once and, for an end-to-end test the
 change didn't add or change, to run it on a build of the change's merge-base, which it checks out for them (never the
 default branch's current tip, which may already carry an unrelated fix): `caps.flaky_retries` + 1 times when the rerun
-passed, or a second time when the first try there failed. It includes the results in the review it submits. When the
-change's `e2e-mode` is `on` and the failing check is a test the pinned harness can run, the `triage` unit runs those
-merge-base repetitions itself; a real-device check always stays with the person. The outcomes:
+passed, or a second time when the first try there failed. It includes the results in the review it submits. The
+merge-base runs have one owner each: when the change's `e2e-mode` is `on` and the failing check is a test the pinned
+harness can run, `/herd-resolve` gathers only the person's rerun, and the `triage` unit runs the merge-base repetitions
+itself after the review is submitted; otherwise `/herd-resolve` gathers them from the person before submitting, and a
+real-device check always stays with the person. The outcomes:
 - passing on the rerun but stable on the merge-base: the change made it intermittent, a regression that becomes a fix
   task like any other;
 - passing and failing on the merge-base: a pre-existing flake, recorded as `e2e-flaky <id> <sha> xN` (the harness's test
