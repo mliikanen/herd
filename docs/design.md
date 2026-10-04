@@ -69,7 +69,12 @@ gate:                                         # implementer runs it before commi
 guarded:                                      # the tamper guard (see Who commits, who pushes)
   tests: ["**/src/test/**", "**/src/*Test/**"]  # deleting or emptying one needs a declared reason
   skip_markers: ["@Ignore", "@Disabled"]      # adding one needs a declared reason
-  paths: [config/detekt/baseline.xml]         # e.g. lint baselines: any change needs a declared reason
+  paths:                                      # any change needs a declared reason
+    - config/detekt/**                        # lint config and baselines
+    - "**/build.gradle.kts"                   # build configuration that defines what the gate runs
+    - settings.gradle.kts
+    - gradle/**
+    - gradlew
 final_approval:
   kind: human                                 # or: none
   instructions: |                             # shown in the herd's status pane and in the draft PR body
@@ -262,8 +267,14 @@ status file on exit. The orchestrator then validates the commit before pushing i
 - the status file agrees with the commit;
 - the commit doesn't touch anything under `.github/` (workflows, local actions, CODEOWNERS and the like). CI is the
   independent second net, so the herd's App isn't granted GitHub's `workflows` permission, and a task that needs a
-  CI change escalates. Scripts outside `.github/` that CI runs can weaken it too, so they belong in the project's
-  `guarded.paths`; `herd doctor` warns about any repository script a workflow references that isn't covered;
+  CI change escalates. CI still runs the repository's own build, though, so anything outside `.github/` that defines
+  what the gate checks can weaken both nets at once: scripts a workflow calls, and the build configuration itself (for
+  Gradle, the build scripts, settings, wrapper and lint configuration, since editing `build.gradle.kts` can drop tests
+  without touching a test file). All of it belongs in the project's `guarded.paths`, so changing it is allowed but
+  needs a declared reason and the reviewer's explicit acceptance. `herd init` proposes that coverage for the build
+  tool it detects, and `herd doctor` warns, best effort per toolchain, about a workflow-referenced script or build
+  configuration file that isn't covered. CI is independent of the herd's own infrastructure, then, and of the
+  repository only as far as the guard covers it;
 - **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying
   a file matching the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a
   `guarded.paths` file (a lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the
@@ -420,10 +431,10 @@ silently dropped — comes from two rules together, not from the scan alone:
   possible. Per proposal, checked in this order (first match wins):
   1. *needs-human* — `review-notes.md` on the branch carries an unresolved `needs-human` marker (see Escalation).
      Next action: none; shown in the herd's status pane until a human resolves it.
-  2. *drafting* — no `ready: true` in the change's `.openspec.yaml` on its branch. Not queued; shown in the status
-     pane as in flight, so planners and people can see it.
-  3. *waiting-on-dependency* — ready, but a change in its `depends_on` isn't archived on the default branch yet.
-     Next action: none until it is.
+  2. *drafting* — change not archived, no `ready: true` in the change's `.openspec.yaml` on its branch. Not queued;
+     shown in the status pane as in flight, so planners and people can see it.
+  3. *waiting-on-dependency* — change not archived, ready, but a change in its `depends_on` isn't archived on the
+     default branch yet. Next action: none until it is.
   4. *implementing* — ready, dependencies merged, change not archived, ≥1 task not `[x]`. This includes tasks appended
      after a final-approval failure, even when a draft PR already exists.
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
@@ -959,15 +970,16 @@ what's missing on its next pass, and herdr brings back the planner panes' sessio
 the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence number, to a queue
 in `/var/lib/herd/shared/`, and shows each with `herdr notification show "<title>" --body "<details>"`. The bridge's one
 piece of state is a cursor in the operator's own state directory (`~/.local/state/herd/alerts.cursor`), the sequence
-number of the last alert it showed, updated after each one. After a restart it shows the alerts queued since the cursor,
-so nothing raised while it was down is missed, as long as it was down for less than the queue's 7-day retention; a
-cursor older than the oldest alert left resumes from that oldest alert. Delivery is at-least-once: a crash between
-showing an alert and saving the cursor shows that one alert again. Without a cursor (first run, or lost) it shows only
-the last hour's alerts rather than replaying the whole queue; the status pane still lists everything waiting. The
-orchestrator drops queued alerts older than 7 days, far beyond the replay window. With herdr's
-`[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached, as long
-as herdr's server is running in the operator's session. The `herd` user has no desktop session to notify, so it sends
-only push alerts (see Monitoring).
+number of the last alert it showed, updated after each one by writing a temporary file, syncing it and renaming it over
+the old one, so a crash leaves either the old number or the new one, never an unreadable file. After a restart it shows
+the alerts queued since the cursor, so nothing raised while it was down is missed, as long as it was down for less than
+the queue's 7-day retention; a cursor older than the oldest alert left resumes from that oldest alert. Delivery is
+at-least-once: a crash between showing an alert and saving the cursor shows that one alert again. Without a cursor
+(first run, or lost) it shows only the last hour's alerts rather than replaying the whole queue; the status pane still
+lists everything waiting. The orchestrator drops queued alerts older than 7 days, far beyond the replay window. With
+herdr's `[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached,
+as long as herdr's server is running in the operator's session. The `herd` user has no desktop session to notify, so it
+sends only push alerts (see Monitoring).
 
 **The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit pushed,
 review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`, rotated daily and kept for 90
