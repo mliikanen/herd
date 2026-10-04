@@ -729,12 +729,16 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   rule as every other failure, with the person's note as its evidence (`herd-resolve` asks them, when a check fails, to
   rerun it once and, for an end-to-end test this change didn't touch, to try it on a build of the change's merge-base,
   which `herd-resolve` checks out for them, never the default branch's current tip, which may already carry an unrelated
-  fix, and to try it there once more if it fails; it records all of it in the note). A check that passes on the rerun,
-  or on the second merge-base try, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> x1`) and it counts
-  toward `caps.flaky_retries` like any other, so the next action is the person's check again until the count reaches the
-  cap. A failure on both merge-base tries, or one the spec doesn't settle, escalates to `needs-human` as it would
-  anywhere else, and otherwise the triage unit turns the failure into appended task(s) under "(added during final
-  approval)", and the proposal goes back to *implementing*. Either way its verdict commit records
+  fix, and to try it there once more if it fails; it records all of it in the note). A check that passes on the rerun is
+  intermittent, and for an end-to-end test the change didn't touch, `herd-resolve` then has the person (or, with
+  emulator capacity, the triage unit) run it on the merge-base build `caps.flaky_retries` + 1 times, as step 1 of the
+  rule requires: stable there means this change made it intermittent, a regression that goes on to the spec step and
+  becomes a fix task like any other. A check that fails there at least once, or that passes on the second merge-base try
+  after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> x1`) and it counts toward
+  `caps.flaky_retries` like any other, so the next action is the person's check again until the count reaches the cap. A
+  failure on both merge-base tries, or one the spec doesn't settle, escalates to `needs-human` as it would anywhere
+  else, and otherwise the triage unit turns the failure into appended task(s) under "(added during final approval)", and
+  the proposal goes back to *implementing*. Either way its verdict commit records
   `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the stop (a waiver,
   say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once those tasks are
   accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail` already
