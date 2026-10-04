@@ -783,12 +783,13 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   local-coder's work"), before any of its changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
-- **Each worker commit records its model, backend and unit kind** in trailers (`Herd-Model: ollama/<coder model>`,
-  `Herd-Backend: local-coder`, `Herd-Unit: implement`), captured when the worker starts, and commit validation
-  checks them against the slot. Backend names can be repointed in host config at any time, so the rules above and
-  any metrics read `Herd-Model`, the model that actually ran, never the name. How often each model's work is
-  accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks
-  the herd has already accepted on the candidate and compare. There's no separate metrics store.
+- **Each worker commit records its model, backend and unit kind** in trailers
+  (`Herd-Model: ollama/<coder model>@<digest>`, the digest where the backend has one, `Herd-Backend: local-coder`,
+  `Herd-Unit: implement`), captured when the worker starts, and commit validation checks them against the slot. Backend
+  names can be repointed in host config at any time, so the rules above and any metrics read `Herd-Model`, the model
+  that actually ran, never the name. How often each model's work is accepted comes straight from git history, which is
+  how to judge a local model against a cloud one: replay tasks the herd has already accepted on the candidate and
+  compare. There's no separate metrics store.
 - **No worker holds an API key.** A unit's container gets its backend's model name and the address of the
   herd's model gateway, plus a token for that unit only. The gateway adds the backend's real key on the way out
   (see Network and secrets), and accepts the unit's token only for that unit's backend.
@@ -954,8 +955,10 @@ models:                                # host config; only read when a local bac
   and stopped only once none is configured and no running unit still uses a local model, so removing the last local
   backend lets running units drain first. Unlike a worker, the server is herd infrastructure: a restarting orchestrator
   adopts a running server by its label instead of killing it as an orphan. Its settings come from `models` above (as the
-  server's environment: keep-alive, loaded-model limit, parallelism, context length), and changing them restarts it on
-  the next scan, once no unit is using it.
+  server's environment: keep-alive, loaded-model limit, parallelism, context length), and changing them can't wait for
+  the server to happen to be idle, which a steady backlog could postpone forever. Instead the orchestrator stops
+  assigning new units to local slots, lets the running ones drain, restarts the server with the new settings, and then
+  resumes local dispatch.
 - **GPU access.** The server is the only container given the GPU, however the vendor exposes it to rootless Podman. An
   Intel or AMD card is `--device /dev/dri`, and since the device usually belongs to the `render` group, which a rootless
   container doesn't keep by default, also `--group-add keep-groups` (which needs the `crun` runtime) with the `herd`
@@ -966,7 +969,11 @@ models:                                # host config; only read when a local bac
   a request (see The herd's own account): the orchestrator runs a one-off pull container that shares only the server's
   models volume, on its own internal network behind the network proxy, registered there like a unit with
   `models.registry_egress` as its whole allow-list. The registry's digests are checked on download, so a corrupted or
-  swapped blob doesn't land. The server reads new models from the volume without a restart. `herd models list` and
+  swapped blob doesn't land. The server reads new models from the volume without a restart. Tags are mutable, though, so
+  pulling a newer version of a tag that a running unit uses would change its weights at the next model load. A pull of a
+  tag already on the server is therefore staged like a settings change: new local units for that tag wait, the units
+  using it drain, the pull replaces it, and dispatch resumes. The `Herd-Model` trailer records the model's digest as
+  well as its name (see Models), so acceptance rates never mix two versions of one tag. `herd models list` and
   `herd models rm <model>` are requests too; removing a model is refused while a configured backend names it, or a
   running unit's backend does (a unit keeps the model it started with even after host config moves on). Every model on
   the host was pulled explicitly by the operator, and nothing a worker does can add one.
