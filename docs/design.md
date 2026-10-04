@@ -122,9 +122,11 @@ could widen its own egress or weaken its own gate. Commit validation also reject
 - Uses OpenSpec, with changes in `openspec/changes/`.
 - Hosted on GitHub, with branch protection on the default branch requiring PRs, required CI status checks, and
   up-to-date branches (see Keeping up with the default branch). The CI checks should run the same gate as the manifest,
-  as an independent second net. The required checks' workflows run on **every** push to a PR, with no path filters: the
-  herd's own bookkeeping commits move the tip, and a required check that doesn't run there would never report
-  (`herd doctor` checks this).
+  as an independent second net. The required checks' workflows run on **every** push to a PR, with no path filters, and
+  their required jobs don't skip themselves either (no job-level `if:` on changed paths or commit content, no
+  path-filter step that ends the job early): the herd's own bookkeeping commits move the tip, and a required check that
+  doesn't run there, or reports a skip as a pass, would never test it for real. `herd doctor` checks the triggers and
+  flags such conditions and path-filter actions (`dorny/paths-filter`, say) in required jobs.
 - The gate runs headless in a Linux container. Anything that can't is one of three things: the herd's own end-to-end
   runs on an emulator in a worker (an `e2e` block, and `final_approval.kind: container` for the whole-change run; see
   End-to-end tests), the project's human final-approval step (a device, a Mac-only GUI), or a `missing_capabilities`
@@ -359,7 +361,8 @@ string, and the kind is one of:
 - `input`: outside content (the subject names the file);
 - `capability`: something the pipeline lacks;
 - `escalate`: an end-to-end failure the implementer's own triage can't settle (the subject is the test id, and the
-  reason says whether it also fails on the merge-base or the spec doesn't decide it, with the evidence).
+  reason says whether it also fails on the merge-base or the spec doesn't decide it, with the evidence); unlike the
+  others, its commit carries the task's work as it stands (see Test or implementation?).
 
 When the task can't go further without it, the commit is **request-only**: no code, just the task's checkbox
 flipped to `[r]`, so the reviewer picks it up through the ordinary task review and the task model stays `[ ]` /
@@ -605,21 +608,23 @@ silently dropped — comes from two rules together, not from the scan alone:
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
   next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
-  outcome in `review-notes.md` as `ci-triage "<check>" <sha> <check run id>: fix | flaky | preexisting`, with the
-  check's name as a JSON string since names may contain spaces, keyed by the exact check run, since a re-run keeps the
-  check's name and commit; the scan never dispatches triage for the same failed run twice, and a re-run that fails again
-  is a new run, triaged and counted afresh. `fix` adds a fix task under "(added for CI)", sending the change back to
-  *implementing*; `flaky` adds no task, and the commit that records it is itself a push, which runs the check again on
-  the new tip (required workflows run on every push; see Requirements on a project); `preexisting` adds no task and
-  escalates to `needs-human` ("fails on the default branch too"). Those tasks count toward `caps.gate_fixes`; past it,
-  the orchestrator escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default
-  branch, that no update-branch merge has followed yet, comes before everything else in every state before the archive
-  (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to
-  merge): the next action is update-branch, so the retry runs against a branch that contains the default branch's fix.
-  This is the path for a CI failure after an update-branch merge too (see Keeping up with the default branch). A
-  required check that still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely
-  expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the
-  archive or after it, since a stuck CI is for a person to look at.
+  outcome in `review-notes.md` as `ci-triage "<check>" <sha> <check run id>: fix | flaky | preexisting | unsettled`,
+  with the check's name as a JSON string since names may contain spaces, keyed by the exact check run, since a re-run
+  keeps the check's name and commit; the scan never dispatches triage for the same failed run twice, and a re-run that
+  fails again is a new run, triaged and counted afresh. `fix` adds a fix task under "(added for CI)", sending the change
+  back to *implementing*; `flaky` adds no task, and the commit that records it is itself a push, which runs the check
+  again on the new tip (required workflows run on every push; see Requirements on a project); `preexisting` adds no task
+  and escalates to `needs-human` ("fails on the default branch too"); `unsettled` adds no task and escalates to
+  `needs-human` ("spec doesn't settle it"). Both escalations are keyed to the record's check run like the rest, so the
+  same failed run never escalates twice. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator
+  escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no
+  update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
+  by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next
+  action is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path
+  for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
+  still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
+  wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
+  since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -699,9 +704,13 @@ checks the branch out, follows them, and records the result in `review-notes.md`
 - **pass** → the proposal moves to *in-review* (GitHub's review of the PR), and from there to *archiving* once no
   review thread is open;
 - **fail** → the human writes the failure as the note. While that `fail` is the effective record and hasn't been
-  triaged, *awaiting-approval*'s next action is a `triage` unit: the reviewer turns it into appended task(s) under
-  "(added during final approval)" and records `final-approval-triaged <sha of the fail record>`, and the proposal goes
-  back to *implementing*. Once those tasks are accepted and the holistic review is current again, the change returns to
+  triaged, *awaiting-approval*'s next action is a `triage` unit: the triage unit applies the same Test or implementation
+  rule as every other failure, with the person's note as its evidence (`herd-resolve` asks them, when a check fails, to
+  rerun it once and, for an end-to-end test this change didn't touch, to try it on the default branch, and records both
+  in the note): a flake or a pre-existing failure the person reported, or a failure the spec doesn't settle, escalates
+  to `needs-human` as it would anywhere else, and otherwise it turns the failure into appended task(s) under "(added
+  during final approval)" and records `final-approval-triaged <sha of the fail record>`, and the proposal goes back to
+  *implementing*. Once those tasks are accepted and the holistic review is current again, the change returns to
   *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR stays open
   throughout and simply gets more commits.
 
@@ -818,14 +827,16 @@ The layers:
    instead, so a waiver stays visible), since the green run is on the commit that carries the section (which a commit
    can't name by its own SHA, so it's implicit); an additional `- <test id> red <baseline sha>` line for each
    change-local test; and an additional `- <test id> flaky` line for each test that flaked along the way. Validation
-   checks that every test in the effective selection has its green line, every waived one its waived line, every
-   change-local test its red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and
-   the task isn't done. The exception is a **test-maintenance task**, one whose diff changes nothing outside `e2e.tests`
-   apart from the task's own checkbox in `tasks.md`, which every implementer commit flips (fixing a flaky test,
-   refactoring a helper): it doesn't change the app, so there's no behavior for a red run to prove, and its change-local
-   tests instead must pass on the baseline too, recorded as `- <test id> green <baseline sha>` in place of the red line.
-   Validation accepts that line only when the task's diff stays inside `e2e.tests`, and the task review checks that
-   `tasks.md` describes the task as test maintenance and that the change doesn't weaken what the test checks.
+   checks that every test in the effective selection has its green line (or, with a matching `escalate` request, its
+   `escalated` line; see below), every waived one its waived line, every change-local test its red line, and that the
+   SHA is the task's baseline. A test that's green on both is vacuous, and the task isn't done. The exception is a
+   **test-maintenance task**, one whose own changes stay inside `e2e.tests` (fixing a flaky test, refactoring a helper),
+   counting only what its implementation commits change from the baseline, so neither the checkbox every implementer
+   commit flips in `tasks.md` nor a reviewer's verdict in `review-notes.md` after a rejection counts against it: it
+   doesn't change the app, so there's no behavior for a red run to prove, and its change-local tests instead must pass
+   on the baseline too, recorded as `- <test id> green <baseline sha>` in place of the red line. Validation accepts that
+   line only when the task's own changes stay inside `e2e.tests`, and the task review checks that `tasks.md` describes
+   the task as test maintenance and that the change doesn't weaken what the test checks.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
@@ -841,7 +852,8 @@ The layers:
    the job's artifacts handed to the triage unit (see below).
 
 **Test or implementation?** When a test fails, whoever triages it (the implementer in its own loop, the reviewer, or a
-`triage` unit after the final e2e or CI) follows the same order, so the answer comes from evidence rather than taste:
+`triage` unit after the final e2e, a person's final-approval failure, or CI) follows the same order, so the answer comes
+from evidence rather than taste:
 
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
@@ -876,9 +888,13 @@ The layers:
    proposer's call.
 
 The implementer can't write `review-notes.md`, so when its own triage ends in either stop (in step 2 or 3), it doesn't
-escalate itself: it makes a request-only commit with an `escalate` request for the test (see Who commits, who pushes),
-and its task review checks the evidence, answering `needs-human` when it holds, or `refused` with what it found, which
-sends the task back. A request-only commit isn't a failed attempt, so this doesn't spend `caps.failed_attempts`.
+escalate itself: it commits the task's work as it stands, since the failure may depend on it, with the checkbox flipped
+to `[r]` as for a request and an `escalate` request for the test (see Who commits, who pushes). Its `E2E:` section lists
+that test as `- <test id> escalated` in place of its green line, which validation accepts only with a matching
+`escalate` request; everything else in the gate still has to pass. The task review reruns the test on that commit (and
+on the merge-base, for a pre-existing claim) and answers `needs-human` when the evidence holds, or `refused` with what
+it found; either way the task goes back to `[ ]`, and the next attempt starts on top of that commit, as after any
+rejection. An escalation isn't a failed attempt, so this doesn't spend `caps.failed_attempts`.
 
 Updating a test to make it pass is always explicit: a project's end-to-end test files are named by `e2e.tests` (for
 Driving Log, `maestro/**`), which makes them built-in guarded paths, so any commit that changes one declares it under
