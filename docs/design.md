@@ -991,8 +991,10 @@ worker's only way out is the proxy, which serves two purposes:
   on tokens. Server-executed tools (a provider's web search, web fetch or code execution) would reach outside the egress
   allow-list and add fees the reservation doesn't price, so they're rejected, as are batch, file and other separately
   billed APIs, unless the herd constrains and meters them itself. So workers never hold an API key, the gate and the
-  agent-written code it runs have none to leak, and a unit can only call the model its slot assigns, at the price its
-  reservation assumed. Local backends go through the gateway too, which keeps that rule uniform.
+  agent-written code it runs have none to leak, and a unit can only call the model its slot assigns, under its backend's
+  accounting rule: a cloud call within the reservation that priced it, a rented call only with the orchestrator's
+  authorization while its machine's hours are accrued, a local call with no charge at all (see Monitoring and Rented GPU
+  backends). Local backends go through the gateway too, which keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
   the destinations on the unit's list, each a host and port (`host[:port]`, 443 when no port is given, and always TLS; a
   `CONNECT` tunnel carries arbitrary TCP, so a hostname alone would open every port on it): the manifest's `egress`,
