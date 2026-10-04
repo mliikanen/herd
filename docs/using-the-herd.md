@@ -18,7 +18,7 @@ commit until it is merged.** The default branch gets a change only as one merge,
    reviews the whole change, and updates the draft PR.
 4. **You run final approval**, if the project has one, and record the result.
 5. **The herd** marks the PR ready for review and follows up on what reviewers say, until nothing is open.
-6. **The herd** archives the change as the last commit. **You merge it.**
+6. **The herd** archives the change as the last change to the proposal's own files. **You merge it.**
 
 Your time goes to steps 1, 2, 4 and 6, and to any `needs-human` stop along the way.
 
@@ -63,18 +63,24 @@ Set `ready: false` on the branch. The herd stops after the step it's on. Make yo
 If you push while the herd is working, its own next push is rejected and that step is redone from your commit.
 Nothing you push is lost.
 
-## Watching the herd
+## Working in herdr
 
-Run `herd`. It starts the herd if it isn't running and opens its herdr session, or attaches to it. Closing the
-terminal leaves everything running.
+Run `herd`. It opens herdr, or attaches to it, and warns you if the herd itself has stopped running. The herd runs
+as its own system user, and keeps running when you close the terminal or reboot. `herd <project>` takes you
+straight to a project.
 
-- **The status pane** lists every change in flight with its state, current task and review round. What's waiting
-  on you (`needs-human`, or final approval with its instructions) comes first, and changes still being drafted are
-  listed too.
-- **One pane per running step**, showing that worker's log. They're read-only; the workers aren't interactive.
-- **A notification** when a change starts waiting on you.
+- **The `herd` workspace** has the status pane: every change in flight with its state, current task, review round
+  and spend. What's waiting on you (`needs-human`, or final approval with its instructions) comes first, and
+  changes still being drafted are listed too.
+- **Each project has a workspace**, opened in your checkout of it:
+  - **Your planner pane**: your agent (Claude Code by default), where you propose, mark ready and resolve stops.
+    The herd never touches it; herdr resumes it after a restart.
+  - **One pane per running step**, showing that worker's log. They're read-only; the workers aren't interactive.
+  - **An attention pane for each change waiting on you**, highlighted by herdr, saying what's wrong and what to run
+    in your planner pane.
 
-`herd status` shows the same list in any terminal.
+`herd status` shows the same list in any terminal. When you're not attached, alerts about what's waiting on you
+reach you by desktop notification or push, as the operator set up.
 
 ## When the herd asks for you
 
@@ -82,11 +88,16 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
 
 - a task was rejected in review too many times;
 - the change kept growing tasks past the cap, so the proposal itself needs revisiting;
-- the gate kept failing after the allowed fix attempts;
+- a step kept failing (the worker crashed, timed out or couldn't get the gate green) past the allowed attempts;
+- a required CI check kept failing before the archive, after the herd merged the default branch in or otherwise;
+- a required CI check never reported a result within the configured timeout (before or after the archive);
 - merging the default branch into the change conflicts;
 - the holistic review raised something that doesn't map to a task;
 - PR review didn't come clean within the allowed rounds, or a reviewer asked for a change of scope;
-- a task needs something the pipeline doesn't have (a device, a credential, a missing capability);
+- a task needs something the pipeline doesn't have (a device, a credential, a missing capability, or a change to
+  the project's CI workflows or the local actions they use, which the herd isn't allowed to make);
+- something went wrong after the change was archived (a failed check, a review finding, or a new commit that
+  needs review), when fixing it would mean un-archiving;
 - a task needs a file from outside the project.
 
 Fix it on the branch (edit `tasks.md`, resolve the conflict, revise the proposal) and mark the stop resolved.
@@ -113,18 +124,25 @@ commit you tested:
 ## Review
 
 After final approval, the herd marks the PR ready for review. Automated reviewers (Copilot, for example) review it
-again after every push, and the herd waits for their review of the latest commit. Each finding is either fixed, as
-a new task that goes through implementation and review like any other, or answered with a reason for not
-changing anything. The herd posts the reply and resolves the thread.
+again after every push. Checks have to pass on the latest commit, but the herd waits for their review of the latest
+commit that changes the proposal: neither its own notes nor a clean merge of the default branch that leaves the
+proposal's files alone restarts the wait. Each finding is either fixed, as a new task that goes through implementation
+and review like any other, or answered with a reason for not changing anything. The herd posts the reply and resolves
+the thread.
 
 You can review too: your comments are handled the same way. A request to change the change's *scope*, rather than
 its implementation, comes back to you as a `needs-human` stop, because scope is the proposer's call.
 
 ## Merging
 
-Once review is done, the herd archives the change (syncing its spec deltas into the main specs) as the last commit.
-When that commit's checks pass, the change is ready to merge, and **you merge it**. If the default branch has moved
-on, the herd merges it into the change branch first. A conflict there stops at `needs-human`.
+Once review is done, the herd archives the change (syncing its spec deltas into the main specs) as the last change to
+the proposal's own files. Normally only the herd's own notes, or a clean merge of the default branch that leaves the
+proposal's files alone, follow it; anything else after the archive (a merge that touches the proposal's files, a
+failed check, a review finding, or any other commit that changes content; a notes-only commit, yours included, doesn't
+count) stops the change at `needs-human`, because fixing it would mean un-archiving. When the checks pass and the
+archive has been reviewed (or the automated reviewer didn't answer within the configured timeout), the change is ready
+to merge, and **you merge it**. If the default branch has moved on, the herd merges it into the change branch first. A
+conflict there stops at `needs-human`.
 
 ## After merge
 
