@@ -375,12 +375,15 @@ Everything else on a change branch is a worker's commit, a person's, or an updat
 
 **Failed attempts.** A unit that ends without an accepted commit (the worker crashed or timed out, couldn't get the gate
 green, or its commit failed validation) leaves nothing in the branch, so on its own it would be retried forever. The
-orchestrator therefore commits a line to `review-notes.md`:
-`attempt-failed: <unit kind> <subject> <reason>, from <sha>`, pinned to the tip the unit started from. The subject is
-the task for `implement` and `task` units, and the change itself for `holistic`, `triage` and `archive` units. The count
-of those lines for one unit kind and subject, since that kind's last accepted commit for that subject, is derived from
-git like everything else, and when it reaches `caps.failed_attempts` the change escalates to `needs-human` before
-another attempt starts (with the default of 3, three failed attempts, not four).
+orchestrator therefore commits a line to `review-notes.md`, pinned to the tip the unit started from, with its fields as
+one JSON object so that no subject or reason text can make it ambiguous:
+`attempt-failed: {"kind": "implement", "subject": "3.2", "reason": "gate", "from": "<sha>"}`. The subject is the task
+for `implement` and `task` units, and the change itself for `holistic`, `triage` and `archive` units. The count of those
+lines for one unit kind and subject is derived from git like everything else, counting since the later of two points:
+that kind's last accepted commit for that subject, and the resolution of a failed-attempts `needs-human` marker for it,
+so a person who resolves the escalation gives the unit a fresh set of attempts instead of an immediate re-escalation.
+When the count reaches `caps.failed_attempts` the change escalates to `needs-human` before another attempt starts (with
+the default of 3, three failed attempts, not four).
 
 A unit whose push lost the race to a person's push is `superseded`, not failed: it says nothing about the worker or the
 change, so it's retried from the new tip, isn't committed and doesn't count. Failures of the herd's own infrastructure
@@ -947,13 +950,17 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
   (mode `2750`, owner the operator, group `herd`), so every file created in it inherits the group whatever the
   operator's own groups are; files are `0640`, and the CLI writes each change to a temporary file in the same directory
   and renames it into place. `herd doctor` checks the ownership and modes.
-- **`/var/lib/herd/shared/`**: written by the orchestrator, readable by `herd-ops`. It holds the event log, each
-  running unit's log, and a heartbeat file the `herd` CLI checks.
-- **`/var/lib/herd/requests/`**: writable by `herd-ops`. The `herd` CLI drops a request here (rescan now, run `doctor`
-  for a project, import provided inputs, pull a model, remove a project's volumes) and reads the result from `shared/`.
-  A request is staged complete, files included, under a temporary name the orchestrator ignores (`.tmp-<id>/`), synced,
-  and only then renamed into place, so the orchestrator never sees a half-copied file and can't hash and commit a
-  truncated one. Requests ask the orchestrator to act; they're never state, so losing one loses only that request.
+- **`/var/lib/herd/shared/`**: written by the orchestrator, readable by `herd-ops`: owned by `herd`, group `herd-ops`,
+  setgid `2750` with `0640` files, so `herd` stays the only writer and the operator can only read. It holds the event
+  log, each running unit's log, and a heartbeat file the `herd` CLI checks.
+- **`/var/lib/herd/requests/`**: writable by `herd-ops`: owned by `herd`, group `herd-ops`, setgid `2770`, so files the
+  CLI creates inherit the group; the CLI creates them `0640`, `herd` (a member of `herd-ops`) reads them, and deletes
+  each once handled, which its ownership of the directory allows. The orchestrator container keeps that supplementary
+  group with `GroupAdd=keep-groups`. The `herd` CLI drops a request here (rescan now, run `doctor` for a project, import
+  provided inputs, pull a model, remove a project's volumes) and reads the result from `shared/`. A request is staged
+  complete, files included, under a temporary name the orchestrator ignores (`.tmp-<id>/`), synced, and only then
+  renamed into place, so the orchestrator never sees a half-copied file and can't hash and commit a truncated one.
+  Requests ask the orchestrator to act; they're never state, so losing one loses only that request.
 
 Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator,
 the model keys the proxy.
@@ -1286,10 +1293,11 @@ Steps marked **(manual)** need a human.
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
    `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
    and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
-   (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/`, puts `herd` on `PATH`,
-   installs the Quadlet units (orchestrator, network proxy, each with its `[Install]` section), enables lingering and
-   the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's integration for the planner
-   agent, and adds the operator's login unit for `herdr server`.
+   (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/` (`shared/` setgid `2750`
+   and `requests/` setgid `2770`, both owned by `herd` with group `herd-ops`, and `herd` itself a member of `herd-ops`),
+   puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its `[Install]` section),
+   enables lingering and the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's
+   integration for the planner agent, and adds the operator's login unit for `herdr server`.
 7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by
    the network proxy only; a worker's own `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for
    the herd, installed on the registered repositories, with repository permissions *Contents* and *Pull requests* (read
