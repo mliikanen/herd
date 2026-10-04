@@ -743,7 +743,7 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   rule requires: stable there means this change made it intermittent, a regression that goes on to the spec step and
   becomes a fix task like any other. A check that fails there at least once, or that passes on the second merge-base try
   after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, N counting every
-  flaky outcome seen, the merge-base runs' included) and it counts toward `caps.flaky_retries` like any other, so the
+  flaky outcome seen, including on the merge-base runs) and it counts toward `caps.flaky_retries` like any other, so the
   next action is the person's check again until the count reaches the cap. A failure on both merge-base tries, or one
   the spec doesn't settle, escalates to `needs-human` as it would anywhere else, and otherwise the triage unit turns the
   failure into appended task(s) under "(added during final approval)", and the proposal goes back to *implementing*.
@@ -954,14 +954,17 @@ from evidence rather than taste:
    default branch in a separate change and resolves the stop once it's merged, (resolving that stop makes update-branch
    the next action before any retry, whatever the change's state: see Failing checks before the archive), or waives the
    test for this change with `herd-resolve`, which records `e2e-waive <test id> <default sha> <files digest>: <reason>`,
-   naming the merge-base commit the test was found failing on and a digest of the test's `files`; the herd's own e2e
-   runs for the change then skip it. The waiver covers exactly that failure and lapses on its own when either changes:
-   once the test's files on the branch no longer match the digest (a later task touched the test, so it's change-local
-   again and owes its red/green proof), or once the change merges a newer default branch (the baseline moved, so the
-   comparison runs again). A lapsed waiver means the test runs, and if it still fails on the default branch, a fresh
-   escalation. A waiver doesn't touch CI: the required check still fails until the default branch is fixed, which keeps
-   the merge blocked on the real problem, but its failures in the waived test are triaged as `waived` rather than
-   escalated again (see Failing checks before the archive), so the rest of the change can still progress while it waits.
+   naming the merge-base commit the test was found failing on and a digest of the test's `files` (`sha256:` and the
+   lowercase hex SHA-256 over the files sorted by path bytewise, each framed as its path as a JSON string, a newline,
+   its length in bytes in decimal, a newline and its exact bytes, so `herd-resolve` and the scan compute the same
+   value); the herd's own e2e runs for the change then skip it. The waiver covers exactly that failure and lapses on its
+   own when either changes: once the test's files on the branch no longer match the digest (a later task touched the
+   test, so it's change-local again and owes its red/green proof), or once the change merges a newer default branch (the
+   baseline moved, so the comparison runs again). A lapsed waiver means the test runs, and if it still fails on the
+   default branch, a fresh escalation. A waiver doesn't touch CI: the required check still fails until the default
+   branch is fixed, which keeps the merge blocked on the real problem, but its failures in the waived test are triaged
+   as `waived` rather than escalated again (see Failing checks before the archive), so the rest of the change can still
+   progress while it waits.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
