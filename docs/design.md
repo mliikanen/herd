@@ -14,8 +14,8 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 
 - **Proposer**: a human with an interactive cloud SOTA agent. Unchanged, plus one step: marking the proposal ready
   (see The hand-off).
-- **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot,
-  local (Ollama or similar) or a cloud API, and one host can mix them (see Models).
+- **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot, local
+  (Ollama or similar), a rented GPU, or a cloud API, and one host can mix them (see Models).
 - **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
   slot like the implementer; a task review never runs on the model that wrote the commit (see Models). It reviews each
   task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
@@ -874,8 +874,8 @@ those projects' units. Slots that share a GPU share it in turn: the model server
 - `herd doctor` checks that every backend answers, and warns when `holistic` or `triage` runs on a local backend,
   and when a project's slots offer only one implementer model (so the stronger-attempt rule can't apply).
 
-Switching a slot between local and cloud, or adding a slot, is a config change: the scan re-reads host config, and a
-running unit finishes on the backend it started with.
+Switching a slot between local, rented and cloud backends, or adding a slot, is a config change: the scan re-reads host
+config, and a running unit finishes on the backend it started with.
 
 ## Containers
 
@@ -1399,14 +1399,14 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   is charged to the period it was made in, and settled there even if the call finishes after the month turns, so a
   boundary can't move spend between months. Besides the counter, the orchestrator keeps a usage ledger, totals per
   project and change, so the status snapshot's spend per proposal survives a restart. Counter and ledger are the
-  budget's control state, kept in the herd's own files and allowed as recovery input; with the alert queue (below),
-  they're the only state the orchestrator reads back besides git. They decide only whether calls to paid backends go
-  out, never a change's state. A reservation refused because it would cross the budget pauses paid dispatch the same
-  way, so units aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason,
-  which counts neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If
-  the counter is lost, paid dispatch pauses until the operator sets this month's spend with
-  `herd budget set --spent <amount>` (read from the provider's billing), a request the orchestrator records in the event
-  log before dispatch resumes.
+  budget's control state, kept in the herd's own files and allowed as recovery input; with the alert queue (below) and
+  the retained snapshots of removed rented backends (see Rented GPU backends), they're the only state the orchestrator
+  reads back besides git. They decide only whether calls to paid backends go out, never a change's state. A reservation
+  refused because it would cross the budget pauses paid dispatch the same way, so units aren't dispatched only to have
+  their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed attempt nor
+  as an infrastructure failure, and is retried once dispatch resumes. If the counter is lost, paid dispatch pauses until
+  the operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's billing), a
+  request the orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after`, an idle rented machine (see Rented GPU backends), a rented machine still up after the budget
