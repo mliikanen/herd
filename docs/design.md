@@ -17,9 +17,8 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 - **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot,
   local (Ollama or similar) or a cloud API, and one host can mix them (see Models).
 - **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
-  slot like the implementer and never on the backend that wrote what it reviews (see Models). It reviews each task's
-  commit and, once
-  every task is accepted, the whole change holistically. Also triages the PR's review feedback into tasks (see
+  slot like the implementer; a task review never runs on the backend that wrote the commit (see Models). It reviews
+  each task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback into tasks (see
   Following up on PR review), and runs the archive step once final approval passes and review is done, since syncing
   spec deltas can need judgment.
 - **Orchestrator**: plain code (no LLM, no LLM API key), owns the queue and git/GitHub plumbing — assigns work,
@@ -257,7 +256,7 @@ status file on exit. The orchestrator then validates the commit before pushing i
   implementer commit must not touch `review-notes.md` or flip a checkbox to `[x]`; no worker commit may touch
   `.herd/`);
 - the status file agrees with the commit;
-- **the tamper guard**: the commit doesn't weaken the safety net silently. Deleting or emptying a file matching
+- **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying a file matching
   the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a `guarded.paths` file (a
   lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the commit message. The
   task review must then accept or reject each declared item, and validation of the verdict commit checks that it
@@ -271,14 +270,22 @@ status file on exit. The orchestrator then validates the commit before pushing i
   Guarded:
   - G1 delete shared/src/commonTest/kotlin/vehicle/HidingTest.kt: task 2.3 removes vehicle hiding
   - G2 change config/detekt/baseline.xml: the renamed class keeps its two existing findings
+  - G3 skip shared/src/commonTest/kotlin/fuel/OcrTest.kt x2: both cases need the camera fake from task 4.1
   ```
 
-  `- <id> <action> <path>: <reason>`, where the id (`G1`, `G2`, …) is unique within the commit and the action is
-  `delete`, `empty`, `skip` or `change`, one per guard rule. The orchestrator computes the guarded items from the
-  diff itself and requires a one-to-one match on action and path. The task review answers each in
+  `- <id> <action> <path>[ x<n>]: <reason>`, where the id (`G1`, `G2`, …) is unique within the commit and the
+  action is `delete`, `empty`, `skip` or `change`, one per guard rule. There's one declaration per action and
+  path; a `skip` declaration covers every marker added to that file and gives their number (`x2`). The orchestrator
+  computes the guarded items from the diff itself and requires a one-to-one match on action and path, and on the
+  count for `skip`. The task review answers each in
   `review-notes.md` as `guarded <commit sha> <id>: accept|reject — <reason>`, and validation of the verdict commit
   requires exactly one answer per declared id. A rejected item sends the task back to `[ ]` like any revise
   verdict.
+
+  The guard covers implementer commits because those are the ones a task review follows. Reviewer commits are
+  held to a narrow scope instead, so they can't touch guarded files at all: a verdict or triage commit only
+  `tasks.md` and `review-notes.md`, an archive commit only what `openspec archive` changes under `openspec/`.
+  `herd doctor` flags a `guarded` pattern that reaches into `openspec/`, where it would collide with the archive.
 
 A commit that fails validation is discarded like any crashed attempt. Worker containers never hold GitHub
 credentials; the orchestrator's GitHub token is the only push-capable credential in the system.
@@ -541,7 +548,9 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
 - **Any capable slot can take any unit.** Every unit starts from a fresh clone, so a task implemented on one slot can
   be revised or reviewed on another.
-- **A task review never runs on the backend that wrote the commit.** The same model shares its own blind spots.
+- **A task review never runs on the backend that wrote the commit.** The same model shares its own blind spots. A
+  holistic review spans commits that may come from several backends, so excluding all of them could leave no
+  reviewer; it prefers a backend that wrote none of the change, when a capable slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover
   `implement` and every reviewer kind, and for each implementer backend among them, some slot must offer a `task`
   review on a different backend. A project that fails is shown *inactive* with the reason ("no slot can review
