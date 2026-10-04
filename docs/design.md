@@ -173,7 +173,8 @@ These are the generic rules `herd-ready` checks. A project's workflow doc adds i
   one review. Split items that aren't; merge items that can't pass the gate on their own.
 - **Sections are in dependency order.** Tasks run strictly in sequence (see Concurrency model).
 - **Nothing needs a `missing_capabilities` entry.** Without an `e2e` block, no task *runs* the final-approval checks:
-  tasks may write or update those tests, and running them is the human's final approval. With one, **a task that changes
+  tasks may write or update those tests, and running them is the human's final approval where the project has one
+  (`final_approval.kind: human`), and CI's alone where it has none (`kind: none`). With one, **a task that changes
   behavior a test can see includes or updates that test**, whether or not the host runs end-to-end tests yet. Whether
   the herd actually runs them (the per-task loop, the red/green proof, the final e2e) depends on the host's emulator
   capacity, which is off until the operator enables it (see End-to-end tests: the red/green loop); until then CI runs
@@ -704,8 +705,8 @@ kind it started with (recorded in its `e2e-mode` line), so the manifest's curren
 check (`human_after`). It doesn't decide whether end-to-end tests run during implementation: with an `e2e` block and
 emulator capacity, the per-task loop runs for every kind, `human` included (see End-to-end tests: the red/green loop);
 without them, tasks that *write* those tests are implemented and reviewed like any other task, and *running* them is
-left to the whole-change approval and CI. What follows describes the `human` phase; the `container` phase is recorded
-the same way, by an `e2e` unit.
+left to the whole-change approval, if the project has one, and to CI. What follows describes the `human` phase; the
+`container` phase is recorded the same way, by an `e2e` unit.
 
 When a proposal reaches *awaiting-approval*, the orchestrator makes sure its **draft** PR exists (normally opened by
 `herd-propose` at proposal time) and puts in its body the `final_approval.instructions` from the same manifest its
