@@ -1108,12 +1108,15 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   the tunnel (the machine's tunnel address only), and the proxy's private key as a secret (`private_key_secret`, in
   `~herd/secrets/`); the `endpoint` is then an `http://` URL at the machine's tunnel address: inside the tunnel there's
   no TLS, since WireGuard already encrypts the traffic and authenticates the peer by its key, so no certificate or
-  hostname is involved. The operator sets up the other side on the machine. `doctor` checks that the endpoint answers
-  through the tunnel, and that the inference port is closed at the peer's public address, which it knows from `peer`.
-  Its host is on the proxy's egress for that backend only. The gateway applies the same rules as to any backend: it pins
-  the attested model ID, allow-lists the inference route and token-only features, and bounds the requested output by the
-  backend's `context`, which a rented backend must declare (the OpenAI-compatible model list doesn't report it);
-  `doctor` checks the value with a request near that length.
+  hostname is involved. The operator sets up the other side on the machine. The proxy runs WireGuard in userspace, with
+  the tunnel served by an in-process network stack rather than a kernel interface, so it needs no TUN device and no
+  `NET_ADMIN`: the proxy keeps exactly the privileges it has without a rented backend, and the orchestrator stays the
+  only privileged component. `doctor` checks that the endpoint answers through the tunnel, and that the inference port
+  is closed at the peer's public address, which it knows from `peer`. Its host is on the proxy's egress for that backend
+  only. The gateway applies the same rules as to any backend: it pins the attested model ID, allow-lists the inference
+  route and token-only features, and bounds the requested output by the backend's `context`, which a rented backend must
+  declare (the OpenAI-compatible model list doesn't report it); `doctor` checks the value with a request near that
+  length.
 - **Lifecycle.** At first the operator starts and stops the machine; the herd dispatches units to a rented slot only
   while its endpoint answers health checks, and a unit whose machine disappears mid-call (spot and marketplace machines
   can be reclaimed) ends as an `infra` failure and is retried. So a machine left running for nothing doesn't burn money
@@ -1124,10 +1127,12 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   drop or repoint a rented backend at any scan, but its machine doesn't stop with it: the orchestrator keeps the old
   definition (tunnel, key reference, health checks, hourly accrual, alerts) as a retained snapshot, persisted in the
   herd's own files as an operational store and read back on start like the budget counter, so a restart doesn't lose
-  track of the machine, until the units that started on it have finished **and** its endpoint is confirmed down. Until
-  then the snapshot takes no new units, its running units finish on it (as Models promises), and while its machine is
-  still up it keeps accruing cost and raises a "removed backend still up" alert, an episode like the idle one, so a
-  machine dropped from config can't keep billing out of sight.
+  track of the machine, until the units that started on it have finished **and** the operator confirms the machine is
+  stopped, with `herd backends retire <name>` (a request; see The herd's own account). An unreachable endpoint isn't
+  proof: an expired key, a broken tunnel, a crashed model server or a network blip look the same while the provider
+  keeps billing, so endpoint health only decides dispatch. Until then the snapshot takes no new units, its running units
+  finish on it (as Models promises), and until it's retired it keeps accruing cost and raises a "removed backend not
+  retired" alert, an episode like the idle one, so a machine dropped from config can't keep billing out of sight.
 - **Cost.** A rented backend's `price` is `per_hour`, not per token, in `budget.currency`. The budget counts its hours
   from the health checks: while the herd sees the endpoint up, the counter accrues the hourly rate, so the monthly
   budget covers rented hours alongside cloud tokens. That's an approximation of the provider's bill: health checks miss
@@ -1145,9 +1150,11 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   it's a hard stop on dispatch and an alert on spend, until the herd can stop the machine itself (see Open questions).
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
-  Models). Cost per accepted task is measured in an exclusive window, with the machine serving only the replay, so idle
-  time and other units' calls don't distort it. The bigger models it can serve are the reason to try it; the replay is
-  what shows whether they pay off.
+  Models). Cost per accepted task is measured in an exclusive window, with the machine serving only the replay: the cost
+  is everything accrued over that window, startup and the gaps between calls included (which the ledger would otherwise
+  book to the idle bucket), divided by the tasks the replay got accepted, so other units' calls don't distort it and
+  idle time isn't hidden. The bigger models it can serve are the reason to try it; the replay is what shows whether they
+  pay off.
 
 ## The herd's own account
 
@@ -1332,6 +1339,7 @@ the unit panes' timeline. Like the log, the orchestrator never reads it back.
 - `herd budget set --spent <amount>`: sets this month's spend, after the counter was lost or to reconcile it with
   the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
+- `herd backends retire <name>`: confirms a removed rented backend's machine is stopped (see Rented GPU backends).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
 
@@ -1410,17 +1418,17 @@ The values above are placeholders, tuned after the smoke test like the caps (see
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after`, an idle rented machine (see Rented GPU backends), a rented machine still up after the budget
-  limit, and a removed rented backend whose machine is still up all raise an alert. The queue doubles as the
-  orchestrator's own record of alerts, an operational control like the budget counter: unlike the event log, the
-  orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id derived from
-  facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of
-  its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget,
-  infrastructure failures, an idle rented machine, a rented machine still up after the budget limit, a removed rented
-  backend still up) is an **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone
-  appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the
-  same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the
-  day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels is at-least-once:
-  push delivery is recorded per id after the service accepts it, so a crash in between sends that one again, never none.
+  limit, and a removed rented backend not yet retired all raise an alert. The queue doubles as the orchestrator's own
+  record of alerts, an operational control like the budget counter: unlike the event log, the orchestrator reads it
+  back, and it decides nothing about any change's state. Each alert has a stable id derived from facts, and the queue
+  adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of its `needs-human`
+  marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget, infrastructure
+  failures, an idle rented machine, a rented machine still up after the budget limit, a removed rented backend not yet
+  retired) is an **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone appends a
+  `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the same day
+  alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the day.
+  Losing the queue costs at most one repeated alert per open condition. Delivery on both channels is at-least-once: push
+  delivery is recorded per id after the service accepts it, so a crash in between sends that one again, never none.
   Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
