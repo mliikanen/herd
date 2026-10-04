@@ -615,27 +615,28 @@ silently dropped — comes from two rules together, not from the scan alone:
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
   next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
   outcomes in `review-notes.md`, one line per failed test (a full-suite run can fail several, for different reasons):
-  `ci-triage "<check>" <sha> <check run id> "<test id>": fix | flaky | preexisting | unsettled`, with the check's and
-  the test's names as JSON strings since they may contain spaces (a failure that isn't a test's, a build step say, takes
-  the test id `"-"`). All of a run's lines are written in one verdict commit, keyed by the exact check run, since a
-  re-run keeps the check's name and commit: the scan never dispatches triage for a run that already has lines, and a
-  re-run that fails again is a new run, triaged and counted afresh. Each `fix` adds a fix task under "(added for CI)";
-  `preexisting` escalates to `needs-human` ("fails on the default branch too") and `unsettled` to `needs-human` ("spec
-  doesn't settle it"), and an escalation comes before the fix tasks, which wait for the stop's resolution; with only
-  `fix` and `flaky` lines the change goes back to *implementing*; and when every line is `flaky`, no task is added, and
-  the commit that records them is itself a push, which runs the check again on the new tip (required workflows run on
-  every push; see Requirements on a project). Flakes count per test, as everywhere. A triage unit that can't rerun the
-  test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts alone, and
-  records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person decides
-  rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates. A
-  "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no update-branch
-  merge has followed yet, comes before everything else in every state before the archive (a stop resolved by an
-  effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next action
-  is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path for a CI
-  failure after an update-branch merge too (see Keeping up with the default branch). A required check that still has no
-  result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't wait forever:
-  the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it, since a stuck
-  CI is for a person to look at.
+  `ci-triage "<check>" <sha> <run key> "<test id>": fix | flaky | preexisting | unsettled`, with the check's and the
+  test's names as JSON strings since they may contain spaces (a failure that isn't a test's, a build step say, takes the
+  test id `"-"`). The run key names the exact failed run, since a re-run keeps the check's name and commit:
+  `check:<check run id>` for a check run, or `status:<status id>` for a legacy commit status, whose every update is a
+  new status with its own id. All of a run's lines are written in one verdict commit, keyed by it: the scan never
+  dispatches triage for a run that already has lines, and a re-run that fails again is a new run, triaged and counted
+  afresh. Each `fix` adds a fix task under "(added for CI)"; `preexisting` escalates to `needs-human` ("fails on the
+  default branch too") and `unsettled` to `needs-human` ("spec doesn't settle it"), and an escalation comes before the
+  fix tasks, which wait for the stop's resolution; with only `fix` and `flaky` lines the change goes back to
+  *implementing*; and when every line is `flaky`, no task is added, and the commit that records them is itself a push,
+  which runs the check again on the new tip (required workflows run on every push; see Requirements on a project).
+  Flakes count per test, as everywhere. A triage unit that can't rerun the test (the change's `e2e-mode` is `off`, so
+  there's no emulator for it) classifies from the job's artifacts alone, and records `unsettled` with the reason ("can't
+  reproduce: no emulator") when they don't settle it, so a person decides rather than the herd guessing. Those tasks
+  count toward `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" or "flaky
+  test" stop resolved as fixed on the default branch, that no update-branch merge has followed yet, comes before
+  everything else in every state before the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived
+  test is skipped, and there may be nothing newer to merge): the next action is update-branch, so the retry runs against
+  a branch that contains the default branch's fix. This is the path for a CI failure after an update-branch merge too
+  (see Keeping up with the default branch). A required check that still has no result `pr_review.checks_timeout` after
+  the push it's for (queued, running or merely expected) doesn't wait forever: the orchestrator commits a mechanical
+  `needs-human` marker and alerts, before the archive or after it, since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -884,9 +885,9 @@ from evidence rather than taste:
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
    `E2E:` section (`- <test id> flaky xN`), a task review or `triage` unit adds `e2e-flaky <test id> <sha> xN` to its
    verdict commit, N counting every flaky outcome in the unit, not just whether there was one, and CI triage records
-   `ci-triage "<check>" <sha> <check run id> "<test id>": flaky`. Flaky outcomes are counted from those records per test
-   per change, summing the Ns (CI's keyed by check and test id together, so a non-test failure, `"-"`, in one check
-   never shares a count with another check's), and when the count reaches `caps.flaky_retries` the change escalates to
+   `ci-triage "<check>" <sha> <run key> "<test id>": flaky`. Flaky outcomes are counted from those records per test per
+   change, summing the Ns (CI's keyed by check and test id together, so a non-test failure, `"-"`, in one check never
+   shares a count with another check's), and when the count reaches `caps.flaky_retries` the change escalates to
    `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever. Units
    enforce the cap as they go, since reruns happen inside one unit: the change's recorded count plus the unit's own
    flakes so far must stay below the cap before another rerun, and when it doesn't, the unit stops retrying (an
@@ -932,7 +933,9 @@ rejection. An escalation isn't a failed attempt, so this doesn't spend `caps.fai
 
 Updating a test to make it pass is always explicit: a project's end-to-end test files are named by `e2e.tests` (for
 Driving Log, `maestro/**`), which makes them built-in guarded paths, so any commit that changes one declares it under
-`Guarded:` with the spec delta that justifies it, and the task review has to accept it (see Who commits, who pushes).
+`Guarded:` with what justifies it: the spec delta that changed the behavior it asserts, or, for a test-maintenance task,
+that task and the evidence it leaves behavior alone (the green run on the baseline), and the task review has to accept
+it (see Who commits, who pushes).
 
 **CI artifacts for triage.** A triage unit for a failed CI check gets the job's logs and uploaded artifacts (the
 end-to-end reports and screenshots, for instance): the orchestrator fetches them through the GitHub App (which therefore
@@ -1566,11 +1569,12 @@ e2e:
 The values above are placeholders, tuned after the smoke test like the caps (see Open questions).
 
 - **Unit timeouts.** A unit is killed when it runs past its kind's `wall` time, or goes `quiet`: no log output, no model
-  call and no end-to-end command running for that long (a `prepare` or `run` may legitimately stay silent for many
-  minutes, so while one runs the unit isn't quiet; the `wall` time still bounds it). The network proxy sees every model
-  call by unit token, so it reports each unit's last call to the orchestrator. A killed unit is a failed attempt (reason
-  `timeout`, see Failed attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its
-  backend stopped answering is an `infra` failure instead, and doesn't count.
+  call and no `prepare` or `run` running for that long (those two may legitimately stay silent for many minutes, so
+  while one runs the unit isn't quiet; the `wall` time still bounds it; a silent `boot` or `select` gets no such
+  allowance). The network proxy sees every model call by unit token, so it reports each unit's last call to the
+  orchestrator. A killed unit is a failed attempt (reason `timeout`, see Failed attempts), so a task that keeps hanging
+  escalates instead of looping. A unit killed because its backend stopped answering is an `infra` failure instead, and
+  doesn't count.
 - **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
   the control socket, to reserve the call's maximum cost: an upper bound on its input tokens plus the requested output
   limit, priced from the backend's `price` in host config (per million input and output tokens). The request body
