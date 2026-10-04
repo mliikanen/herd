@@ -181,11 +181,13 @@ These are the generic rules `herd-ready` checks. A project's workflow doc adds i
 The herd can start observing a new project at any time, without restarting anything.
 
 - **Registering.** `herd init` registers the project it onboards. `herd add <repo-url>` registers a project that already
-  has `.herd/` (for example, on a second host). Both write `/etc/herd/config.yaml` and poke the orchestrator (see The
-  herd's own account). The `herd` account can only read that file on the host (see The herd's own account), so
-  registering stays a host-side action that no worker agent or orchestrator bug can widen, even through the Podman
-  socket. The operator's planner agent runs under their account and could run `herd add` too, but it's the person's own
-  supervised session: a config change through it is theirs to approve, like any other command it runs.
+  has `.herd/` (for example, on a second host). Egress is TLS only, so a repository URL is normalized to HTTPS when it's
+  registered (`git@github.com:owner/repo.git` becomes `https://github.com/owner/repo.git`), and any other scheme is
+  rejected. Both write `/etc/herd/config.yaml` and poke the orchestrator (see The herd's own account). The `herd`
+  account can only read that file on the host (see The herd's own account), so registering stays a host-side action that
+  no worker agent or orchestrator bug can widen, even through the Podman socket. The operator's planner agent runs under
+  their account and could run `herd add` too, but it's the person's own supervised session: a config change through it
+  is theirs to approve, like any other command it runs.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
   a `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
   builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
@@ -461,35 +463,39 @@ silently dropped — comes from two rules together, not from the scan alone:
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
   6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
-     (see below) isn't a pass, change not archived. Next action, the first that applies: a required check failed on the
-     current tip, so CI triage (see Failing checks before the archive); the effective record is a `fail` not yet
-     triaged, so a `triage` unit (see Final approval); otherwise ensure a PR exists (a **draft**, unless it was already
-     marked ready before a `rerun`; it isn't turned back into one), and the human runs the project's final approval.
-     Skipped entirely when `final_approval.kind: none`.
+     (see below) isn't a pass, change not archived. Next action, the first that applies: a required check is past
+     `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before the archive); a
+     required check failed on the current tip, so CI triage (see Failing checks before the archive); the effective
+     record is a `fail` not yet triaged, so a `triage` unit (see Final approval); otherwise ensure a PR exists (a
+     **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into one), and the human runs
+     the project's final approval. Skipped entirely when `final_approval.kind: none`.
   7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
      archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
      finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip (see
      below) yet while its review window (see below) hasn't timed out, or an awaited reviewer's first review of the
      content tip that no `triage` unit has classified yet. The orchestrator runs no model and can't tell a clean review
      from one with findings only in its free-form summary, so every such review is classified (`clean`, or findings
-     triaged), before the archive as after it. Next action, the first that applies: a required check failed on the
-     current tip, so CI triage (see Failing checks before the archive); otherwise mark the PR ready for review if it's
-     still a draft, then follow up as Following up on PR review describes. A triaged finding becomes a task under
-     "(added during review)", which sends the change back to *implementing*. Review comes before archiving, because a
-     fix after the archive would mean editing the synced main specs by hand.
+     triaged), before the archive as after it. Next action, the first that applies: a required check is past
+     `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before the archive); a
+     required check failed on the current tip, so CI triage (see Failing checks before the archive); otherwise mark the
+     PR ready for review if it's still a draft, then follow up as Following up on PR review describes. A triaged finding
+     becomes a task under "(added during review)", which sends the change back to *implementing*. Review comes before
+     archiving, because a fix after the archive would mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
      open thread or untriaged finding, and every awaited reviewer's first review of the content tip either classified
      clean or with all its findings triaged and resolved, or timed out), change not yet archived on the branch. Next
-     action, the first that applies: a required check failed on the current tip, so a `triage` unit turns it into a fix
-     task (see Failing checks before the archive); the branch is behind the default branch, so update-branch (a merge
-     that touches the change's files sends it back through holistic review, which is still possible before the archive);
-     while a required check is still running, none; wait (a failure then goes through Failing checks before the archive,
-     never past it). Once the branch is up to date and every required check on its tip has passed, the reviewer runs the
-     archive and commits. A crash mid-archive never gets pushed, so it's discarded with the clone and redone, same as
-     any other unit of work.
+     action, the first that applies: a required check is past `pr_review.checks_timeout` with no result, so the
+     orchestrator escalates (see Failing checks before the archive); a required check failed on the current tip, so a
+     `triage` unit turns it into a fix task (see Failing checks before the archive); the branch is behind the default
+     branch, so update-branch (a merge that touches the change's files sends it back through holistic review, which is
+     still possible before the archive); while a required check is still running, none; wait (a failure then goes
+     through Failing checks before the archive, never past it). Once the branch is up to date and every required check
+     on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive never gets pushed, so it's
+     discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action is the first of these that applies, in this order:
-     1. a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
+     1. a check failed or is past `pr_review.checks_timeout` with no result, a review finding is open, or a
+        non-bookkeeping commit arrived after the archive: the
         orchestrator commits a mechanical `needs-human` marker (state 1 then matches). None of these can become a
         task, because fixing anything after the archive would mean un-archiving;
      2. the branch is behind the default branch: update-branch (see Keeping up with the default branch), even while
@@ -1304,7 +1310,7 @@ Each waits for the point where it can be answered with evidence rather than gues
   - Which forward proxy serves the egress allow-list (authenticated `CONNECT` with destination checks); the model
     gateway is the herd's own component.
 - **At Build plan step 5** (the herdr bridge): the exact command for attaching a client. herdr's docs (read
-  2026-10-04) give the rest: `pane.report_agent`, `pane.report_metadata`, `notification.show`.
+  2026-10-04) give the rest: `pane.report_agent`, `pane.report_metadata`, `herdr notification show`.
 - **After the smoke test** (Onboarding a project, step 7):
   - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each). Projects can override
     them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see The project

@@ -90,6 +90,7 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
 - the change kept growing tasks past the cap, so the proposal itself needs revisiting;
 - a step kept failing (the worker crashed, timed out or couldn't get the gate green) past the allowed attempts;
 - a required CI check kept failing before the archive, after the herd merged the default branch in or otherwise;
+- a required CI check never reported a result within the configured timeout (before or after the archive);
 - merging the default branch into the change conflicts;
 - the holistic review raised something that doesn't map to a task;
 - PR review didn't come clean within the allowed rounds, or a reviewer asked for a change of scope;
