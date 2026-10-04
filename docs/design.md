@@ -810,10 +810,11 @@ backends:
                     context: 131072,       # see Rented GPU backends
                     weights: <label> }     # optional: same label = same model for review exclusion
 machines:                              # rented GPU machines: what's billed, once per machine
-  h100-a: { instance: <provider's instance id>,
+  h100-a: { instance: <provider>:<account>:<instance id>,
             endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
             price: { per_hour: <rate> }, idle_alert: 30m }
-  # with access: wireguard instead, endpoint: http://10.66.0.1:8000/v1 (the tunnel address) and the machine adds:
+  # with access: wireguard instead, endpoint: http://10.66.0.1:8000/v1 (the tunnel address), no `secret` (tunnel
+  # membership is the authentication), and the machine adds:
   #   wireguard: { peer: <public host>:51820, peer_public_key: <key>, address: 10.66.0.2/32,
   #                allowed_ips: 10.66.0.1/32, private_key_secret: RENTED_WG_KEY }
 slots:                                 # each slot runs one unit at a time
@@ -1102,13 +1103,14 @@ holds (a coder model that needs 80 GB or more), it's billed per hour rather than
 speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-compatible API.
 
 The bill belongs to a **machine**, not to a model, so host config describes them separately. A `machines` entry is one
-rented machine: its `instance` (the provider's ID for the rented instance, copied in by the operator, which is what
-identifies the machine), its endpoint, how it's protected, its secret, its hourly `price` and its `idle_alert`. A
-backend of `kind: openai` that names a `machine` is a rented backend (the `machine` field is what marks it; there's no
-separate flag), and gives its model, revision and context; several backends may share a machine (two models served by
-one server), and the machine is still billed once. Validation rejects two machines with the same `instance` or the same
-endpoint, since that would bill one machine twice, and a machine's endpoint must reach that machine alone (the
-operator's assertion, like the model revision below).
+rented machine: its `instance`, which is what identifies the machine (the provider's ID for the rented instance,
+qualified so it's unique across providers: `<provider>:<account>:<instance id>`, with a region or project added where
+the provider's IDs are only unique within one; the operator copies it in), its endpoint, how it's protected, its secret,
+its hourly `price` and its `idle_alert`. A backend of `kind: openai` that names a `machine` is a rented backend (the
+`machine` field is what marks it; there's no separate flag), and gives its model, revision and context; several backends
+may share a machine (two models served by one server), and the machine is still billed once. Validation rejects two
+machines with the same `instance` or the same endpoint, since that would bill one machine twice, and a machine's
+endpoint must reach that machine alone (the operator's assertion, like the model revision below).
 
 - **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
   model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
@@ -1125,22 +1127,23 @@ operator's assertion, like the model revision below).
 
 - **Network.** The model gateway is the only client, and the endpoint is never an open port. A machine declares how it's
   protected with `access`: `https-key`, HTTPS with a key (`secret`, kept in `~herd/secrets/machines/` and read by the
-  proxy alone, like a provider key), for which `herd doctor` checks that a request without the key is refused; or
-  `wireguard`, reachable only through a WireGuard tunnel the proxy holds, where tunnel membership is the authentication.
-  The machine's `wireguard` block gives everything the proxy needs to bring the tunnel up itself: the machine's public
-  address and port (`peer`), its public key, the proxy's own tunnel `address`, the `allowed_ips` it routes into the
-  tunnel (the machine's tunnel address only), and the proxy's private key as a secret (`private_key_secret`, in
-  `~herd/secrets/machines/`); the `endpoint` is then an `http://` URL at the machine's tunnel address, with no TLS
-  inside the tunnel, since WireGuard already encrypts the traffic and authenticates the peer by its key. The operator
-  sets up the other side on the machine. The proxy runs WireGuard in userspace, with the tunnel served by an in-process
-  network stack rather than a kernel interface, so it needs no TUN device and no `NET_ADMIN`, and the orchestrator stays
-  the only privileged component. `doctor` checks that the endpoint answers through the tunnel, and that the inference
-  port is closed at the peer's public address. The endpoint's host is on the proxy's egress for that machine's backends
-  only. The gateway applies the same rules as to any backend: it pins the attested model ID, allow-lists the inference
-  route and token-only features, and checks each request against the backend's `context`, which a rented backend must
-  declare (the OpenAI-compatible model list doesn't report it): the prompt's upper bound (counted as for a reservation,
-  see Monitoring) plus the requested output must fit, and a request that can't is refused rather than sent to fail on
-  the server. `doctor` checks the value with a request near that length.
+  proxy alone, like a provider key), for which `herd doctor` checks that a request without the key, and one with a wrong
+  key, are both refused; or `wireguard`, reachable only through a WireGuard tunnel the proxy holds, where tunnel
+  membership is the authentication (so `secret` belongs to `https-key` alone, and validation rejects it on a `wireguard`
+  machine). The machine's `wireguard` block gives everything the proxy needs to bring the tunnel up itself: the
+  machine's public address and port (`peer`), its public key, the proxy's own tunnel `address`, the `allowed_ips` it
+  routes into the tunnel (the machine's tunnel address only), and the proxy's private key as a secret
+  (`private_key_secret`, in `~herd/secrets/machines/`); the `endpoint` is then an `http://` URL at the machine's tunnel
+  address, with no TLS inside the tunnel, since WireGuard already encrypts the traffic and authenticates the peer by its
+  key. The operator sets up the other side on the machine. The proxy runs WireGuard in userspace, with the tunnel served
+  by an in-process network stack rather than a kernel interface, so it needs no TUN device and no `NET_ADMIN`, and the
+  orchestrator stays the only privileged component. `doctor` checks that the endpoint answers through the tunnel, and
+  that the inference port is closed at the peer's public address. The endpoint's host is on the proxy's egress for that
+  machine's backends only. The gateway applies the same rules as to any backend: it pins the attested model ID,
+  allow-lists the inference route and token-only features, and checks each request against the backend's `context`,
+  which a rented backend must declare (the OpenAI-compatible model list doesn't report it): the prompt's upper bound
+  (counted as for a reservation, see Monitoring) plus the requested output must fit, and a request that can't is refused
+  rather than sent to fail on the server. `doctor` checks the value with a request near that length.
 - **Lifecycle.** At first the operator starts and stops the machine. The herd dispatches a unit to a rented backend only
   while that backend is ready: its machine's endpoint answers health checks **and** the machine's model list still
   contains the backend's own `<model>@<revision>` (one machine may serve several models, and one can disappear while the
@@ -1200,20 +1203,21 @@ operator's assertion, like the model revision below).
   provider's bill: health checks miss time (while the orchestrator is down, say), so the operator reconciles against the
   bill with `herd budget set --spent <amount> --as-of <time> --source <source>`, giving what one bill charged up to its
   cutoff. A source is what one bill covers: a cloud provider account (the backends sharing one `secret`) or a rented
-  machine (by name, covering every definition with its `instance`), and every ledger entry records its source, since
-  bills from different providers arrive with different cutoffs. The orchestrator doesn't overwrite the counter with it,
-  which could lose or double-count work in flight: in one atomic step, it replaces only what the herd itself had accrued
-  for that source up to that cutoff (from the ledger's timestamped entries), leaving every other source's spend alone,
-  with the billed amount, and keeps every accrual and reservation after the cutoff, along with every reservation still
-  unresolved, whatever its timestamp: a call in flight at the cutoff may or may not be on the bill, so its reservation
-  stays in the counter until it settles and is replaced by the reported usage as usual. That can count such a call twice
-  (once in the bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the
-  next reconciliation absorbs it. The old total, the new one, the cutoff and the reason go to the event log. Restoring a
-  lost counter is the one aggregate case: the same command without `--source`, with the cutoff at now, giving the
-  month's total across every bill, while paid dispatch is paused anyway. Hours are attributed for the usage ledger by
-  time, not tokens: while units are calling the machine, through any of its backends, its time is split evenly among
-  them, and their share goes to their change; time with no call in flight goes to the machine's own idle bucket, never
-  to a change.
+  machine, keyed by its qualified `instance`, never by its name, since names can be renamed and repointed (the command
+  accepts a current name or a definition id too, resolved to the `instance` when it's run), and every ledger entry
+  records its source, since bills from different providers arrive with different cutoffs. The orchestrator doesn't
+  overwrite the counter with it, which could lose or double-count work in flight: in one atomic step, it replaces only
+  what the herd itself had accrued for that source up to that cutoff (from the ledger's timestamped entries), leaving
+  every other source's spend alone, with the billed amount, and keeps every accrual and reservation after the cutoff,
+  along with every reservation still unresolved, whatever its timestamp: a call in flight at the cutoff may or may not
+  be on the bill, so its reservation stays in the counter until it settles and is replaced by the reported usage as
+  usual. That can count such a call twice (once in the bill, once settled), never zero times, the same direction the
+  counter errs in everywhere else, and the next reconciliation absorbs it. The old total, the new one, the cutoff and
+  the reason go to the event log. Restoring a lost counter is the one aggregate case: the same command without
+  `--source`, with the cutoff at now, giving the month's total across every bill, while paid dispatch is paused anyway.
+  Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, through any of its
+  backends, its time is split evenly among them, and their share goes to their change; time with no call in flight goes
+  to the machine's own idle bucket, never to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
