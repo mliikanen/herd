@@ -20,6 +20,35 @@ commit until it is merged.** The default branch gets a change only as one merge,
 5. **The herd** marks the PR ready for review and follows up on what reviewers say, until nothing is open.
 6. **The herd** archives the change as the last change to the proposal's own files. **You merge it.**
 
+```mermaid
+flowchart TD
+    subgraph you["You"]
+        P["Propose on change/&lt;name&gt; with a draft PR<br/>/herd-propose"]
+        R["Mark ready<br/>/herd-ready"]
+        FA["Run final approval, record pass or fail<br/>/herd-resolve"]
+        NH["Fix the stop, mark it resolved<br/>/herd-resolve"]
+        M["Merge the PR"]
+    end
+    subgraph herd["The herd"]
+        I["Implement tasks one by one,<br/>each task reviewed"]
+        H["Holistic review of the whole change"]
+        RV["PR review: findings become tasks<br/>or answered with a reason"]
+        A["Archive the change<br/>(spec deltas into main specs)"]
+        AP["Wait for checks and the review<br/>of the archive"]
+    end
+    P --> R --> I --> H
+    H -- "final approval needed" --> FA
+    H -- "no final approval" --> RV
+    FA -- "pass" --> RV
+    FA -- "fail: becomes tasks" --> I
+    RV -- "fix tasks" --> I
+    RV -- "review done" --> A --> AP --> M
+    I -. "something it can't do on its own" .-> NH
+    RV -. "scope change or too many rounds" .-> NH
+    AP -. "failed check, finding<br/>or content commit" .-> NH
+    NH -. "herd re-derives where the change is<br/>and picks it back up there" .-> RD["Wherever the branch<br/>now says"]
+```
+
 Your time goes to steps 1, 2, 4 and 6, and to any `needs-human` stop along the way.
 
 ## Proposing
