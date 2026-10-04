@@ -367,13 +367,14 @@ by a model, and touching only the file each names. The complete list:
 
 Everything else on a change branch is a worker's commit, a person's, or an update-branch merge.
 
-**Failed attempts.** A unit that ends without an accepted commit (the worker crashed or timed out, couldn't get
-the gate green, or its commit failed validation) leaves nothing in the branch, so on its own it would be retried
-forever. The orchestrator therefore commits a line to `review-notes.md`:
-`attempt-failed: <unit kind> <subject> <reason>, from <sha>`, pinned to the tip the unit started from. The subject
-is the task for `implement` and `task` units, and the change itself for `holistic`, `triage` and `archive` units.
-The count of those lines for one unit kind and subject, since that kind's last accepted commit for that subject,
-is derived from git like everything else, and past `caps.failed_attempts` the change escalates to `needs-human`.
+**Failed attempts.** A unit that ends without an accepted commit (the worker crashed or timed out, couldn't get the gate
+green, or its commit failed validation) leaves nothing in the branch, so on its own it would be retried forever. The
+orchestrator therefore commits a line to `review-notes.md`:
+`attempt-failed: <unit kind> <subject> <reason>, from <sha>`, pinned to the tip the unit started from. The subject is
+the task for `implement` and `task` units, and the change itself for `holistic`, `triage` and `archive` units. The count
+of those lines for one unit kind and subject, since that kind's last accepted commit for that subject, is derived from
+git like everything else, and when it reaches `caps.failed_attempts` the change escalates to `needs-human` before
+another attempt starts (with the default of 3, three failed attempts, not four).
 
 A unit whose push lost the race to a person's push is `superseded`, not failed: it says nothing about the worker or the
 change, so it's retried from the new tip, isn't committed and doesn't count. Failures of the herd's own infrastructure
@@ -585,7 +586,8 @@ A proposal stops and waits for a human when any of these happens:
 - PR review runs past `caps.pr_review_rounds` rounds without coming clean, or raises a finding the reviewer can't
   map to a task (see Following up on PR review);
 - merging the default branch into the change branch conflicts (see Keeping up with the default branch);
-- a unit keeps failing (crash, timeout, red gate, rejected commit) past `caps.failed_attempts` (see Failed attempts);
+- a unit's failed attempts (crash, timeout, red gate, rejected commit) reach `caps.failed_attempts` (see Failed
+  attempts);
 - a required CI check keeps failing before the archive (after an update-branch merge or otherwise) past
   `caps.gate_fixes` fix tasks (see Failing checks before the archive);
 - the holistic review rejects with feedback that can't be mapped to a specific task;
@@ -885,13 +887,15 @@ worker's only way out is the proxy, which serves two purposes:
   one, or one arriving on a network other than its unit's; that's what tells it whose list applies. A hostname alone
   doesn't keep a tunnel out of the herd's own networks, since an allowed name could resolve, or be rebound, to an
   internal address. So the proxy resolves each destination itself, connects to exactly the address it validated (never
-  resolving the name again for the connection), repeats the check on every retry or reconnect, and rejects loopback,
-  link-local and every herd network (unit networks, the model server's), whatever the name; another private range (a
-  company registry, say) is reachable only if host config allows it, which is the operator's decision, never the project
-  manifest's. The proxy doesn't break TLS. A tool that ignores the proxy settings can't connect at all, so a mistake
-  fails closed; `herd doctor` proves the real gate works this way. Gradle, for one, needs its proxy and credentials in
-  `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java disables Basic auth for HTTPS
-  tunnels by default.
+  resolving the name again for the connection), repeats the check on every retry or reconnect, and then checks what goes
+  through the tunnel: on an HTTPS port it reads the TLS ClientHello and requires its SNI to match the `CONNECT` host,
+  rejecting a missing SNI, Encrypted Client Hello and anything that isn't TLS, so a worker can't connect to an allowed
+  name and then ask the same CDN address for another site. It rejects loopback, link-local and every herd network (unit
+  networks, the model server's), whatever the name; another private range (a company registry, say) is reachable only if
+  host config allows it, which is the operator's decision, never the project manifest's. The proxy doesn't break TLS. A
+  tool that ignores the proxy settings can't connect at all, so a mistake fails closed; `herd doctor` proves the real
+  gate works this way. Gradle, for one, needs its proxy and credentials in `JAVA_TOOL_OPTIONS`, plus
+  `-Djdk.http.auth.tunneling.disabledSchemes=` because Java disables Basic auth for HTTPS tunnels by default.
 
 The orchestrator registers each unit's token with the proxy (project, role, backend, egress list) when it starts the
 unit, and revokes it when the unit ends. Tokens don't depend on that revocation: each expires on its own after its unit
@@ -1131,18 +1135,20 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   the orchestrator stops dispatching units to cloud backends and refuses new reservations, running units' in-flight
   calls finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the
   operator's call to raise the budget or wait for the month to turn. The counter is keyed by billing period, the
-  calendar month in `budget.timezone` (`2026-10`, say), so a new month starts from zero on its own and lifts a budget
-  pause without anyone acting, and a restart near the boundary reads the right period's total. A reservation is charged
-  to the period it was made in, and settled there even if the call finishes after the month turns, so a boundary can't
-  move spend between months. Besides the counter, the orchestrator keeps a usage ledger, totals per project and change,
-  so the status snapshot's spend per proposal survives a restart. Counter and ledger are the budget's control state,
-  kept in the herd's own files and allowed as recovery input; with the alert queue (below), they're the only state the
-  orchestrator reads back besides git. They decide only whether cloud calls go out, never a change's state. A
-  reservation refused because it would cross the budget pauses cloud dispatch the same way, so units aren't dispatched
-  only to have their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed
-  attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is lost, cloud dispatch
-  pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's
-  billing), a request the orchestrator records in the event log before dispatch resumes.
+  calendar month in `budget.timezone` (`2026-10`, say), and the orchestrator also records the last period it
+  initialized: a missing current-month value counts as a rollover, starting from zero and lifting a budget pause on its
+  own, only when that recorded period is the month before (the install script initializes the first one); any other
+  missing value is a lost counter (below), and a restart near the boundary reads the right period's total. A reservation
+  is charged to the period it was made in, and settled there even if the call finishes after the month turns, so a
+  boundary can't move spend between months. Besides the counter, the orchestrator keeps a usage ledger, totals per
+  project and change, so the status snapshot's spend per proposal survives a restart. Counter and ledger are the
+  budget's control state, kept in the herd's own files and allowed as recovery input; with the alert queue (below),
+  they're the only state the orchestrator reads back besides git. They decide only whether cloud calls go out, never a
+  change's state. A reservation refused because it would cross the budget pauses cloud dispatch the same way, so units
+  aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason, which counts
+  neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is
+  lost, cloud dispatch pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read
+  from the provider's billing), a request the orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after` all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational
