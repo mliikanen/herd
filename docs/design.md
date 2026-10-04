@@ -1125,11 +1125,12 @@ and a machine's endpoint must reach that machine alone (the operator's assertion
 conflict with a retained definition isn't a config error but an operational block: a replacement instance that reuses
 its predecessor's endpoint isn't activated (no units, but it is health-checked, and while the shared endpoint answers
 both definitions accrue, since the herd can't tell which instance is answering and both may be billing; the status pane
-says why, and if it answers, a "replacement blocked, possibly billing" alert episode opens, cleared when the block lifts
-or the endpoint goes quiet, with the daily reminder like any episode) until the retained snapshot holding that endpoint
-is confirmed stopped and retired, since until then both would answer at the same URL. For the same reason an endpoint
-stays bound to its instance until that definition is retired: the operator gives a replacement instance a new endpoint,
-or keeps the old URL leading to the old machine until it's confirmed stopped and retired. The herd can't see where a URL
+says why, and a "replacement blocked, possibly billing" alert episode opens as soon as the block does, whether or not
+the endpoint answers (a silent machine may still be billing), cleared only when the block lifts or the replacement is
+confirmed stopped, with the daily reminder like any episode) until the retained snapshot holding that endpoint is
+confirmed stopped and retired, since until then both would answer at the same URL. For the same reason an endpoint stays
+bound to its instance until that definition is retired: the operator gives a replacement instance a new endpoint, or
+keeps the old URL leading to the old machine until it's confirmed stopped and retired. The herd can't see where a URL
 leads, so this is the operator's assertion too, like an endpoint reaching one machine alone; repointing a URL under a
 retained snapshot would charge the new machine's traffic to the old one.
 
@@ -1201,9 +1202,10 @@ retained snapshot would charge the new machine's traffic to the old one.
   not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call in flight for its `idle_alert` (default 30 minutes), counted from the end of the
-  last call, so a long generation never looks idle. It's an alert episode like an ongoing condition in Monitoring,
-  opened when the threshold passes and cleared when the next call starts or by the operator confirming it stopped, so a
-  machine idle all day alerts once plus the daily reminder.
+  last call, or, for a machine that hasn't served one since it became healthy, from the start of that healthy interval,
+  so a long generation never looks idle and a machine never used can't escape the alert. It's an alert episode like an
+  ongoing condition in Monitoring, opened when the threshold passes and cleared when the next call starts or by the
+  operator confirming it stopped, so a machine idle all day alerts once plus the daily reminder.
 - **Removing or repointing a machine.** Host config can change a machine entry at any scan. A machine's identity is its
   `instance`, so a change to anything else (`endpoint`, `access` and its `wireguard` block, `price`, `idle_alert`, a
   rotated `secret`) is an update in place: the same machine, reached the new way or billed at the new rate from that
@@ -1582,20 +1584,20 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   `alerts.infra_after`, an idle rented machine, an unready rented backend on a healthy machine (see Rented GPU
   backends), a rented machine not confirmed stopped after the budget limit or a lost counter paused paid dispatch, a
   retained rented machine not confirmed stopped, an unhealthy rented machine not confirmed stopped, a rented machine
-  confirmed stopped but still answering, and a blocked replacement machine that answers all raise an alert. The queue
-  doubles as the orchestrator's own record of alerts, an operational control like the budget counter: unlike the event
-  log, the orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id
-  derived from facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by
-  the commit of its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk,
-  the budget, infrastructure failures, an idle rented machine, an unready rented backend, a rented machine not confirmed
-  stopped after the budget limit or a lost counter paused paid dispatch, a retained rented machine not confirmed
-  stopped, an unhealthy rented machine not confirmed stopped, a rented machine confirmed stopped but still answering, a
-  blocked replacement that answers) is an **episode**: the scan that first sees it appends an opening entry, the scan
-  that sees it gone appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second
-  outage on the same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the
-  episode and the day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels
-  is at-least-once: push delivery is recorded per id after the service accepts it, so a crash in between sends that one
-  again, never none. Alerts go out on two channels from two accounts:
+  confirmed stopped but still answering, and a blocked replacement machine all raise an alert. The queue doubles as the
+  orchestrator's own record of alerts, an operational control like the budget counter: unlike the event log, the
+  orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id derived from
+  facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of
+  its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget,
+  infrastructure failures, an idle rented machine, an unready rented backend, a rented machine not confirmed stopped
+  after the budget limit or a lost counter paused paid dispatch, a retained rented machine not confirmed stopped, an
+  unhealthy rented machine not confirmed stopped, a rented machine confirmed stopped but still answering, a blocked
+  replacement) is an **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone
+  appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the
+  same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the
+  day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels is at-least-once:
+  push delivery is recorded per id after the service accepts it, so a crash in between sends that one again, never none.
+  Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
