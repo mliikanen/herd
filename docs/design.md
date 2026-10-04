@@ -707,14 +707,15 @@ silently dropped — comes from two rules together, not from the scan alone:
   is in a waived test needs no triage at all, so nothing is committed for it and a waiver can't loop: the orchestrator
   reads the run's failed ids itself from its `results.jsonl` (the CI end-to-end job uploads one in `run`'s format,
   together with the list of ids it was asked to run, in an artifact listed in `e2e.ci_artifacts`) and treats the run as
-  waived, without a unit or a record, only when it can verify that's the whole story: the check run's steps, read
-  through the Checks API, show the end-to-end step as the only one that failed, `results.jsonl` covers exactly the
-  requested ids, and every failed id has an effective `e2e-waive`. Whenever any of that can't be verified, the run goes
-  to triage as usual. The required check stays red, so the change carries on through its other work but can't become
-  *ready-to-merge* (the status pane shows "waiting for a default-branch fix"); the next update-branch merge that brings
-  the fix in clears it. A triage unit that can't rerun the test (the change's `e2e-mode` is `off`, so there's no
-  emulator for it) classifies from the job's artifacts alone, and records `unsettled` with the reason ("can't reproduce:
-  no emulator") when they don't settle it, so a person decides rather than the herd guessing. Those tasks count toward
+  waived, without a unit or a record, only when it can verify that's the whole story: the steps of the workflow job
+  behind the check run, read through the Actions API (which the App can read, and which, unlike the Checks API, lists a
+  job's steps), show the end-to-end step as the only one that failed, `results.jsonl` covers exactly the requested ids,
+  and every failed id has an effective `e2e-waive`. Whenever any of that can't be verified, the run goes to triage as
+  usual. The required check stays red, so the change carries on through its other work but can't become *ready-to-merge*
+  (the status pane shows "waiting for a default-branch fix"); the next update-branch merge that brings the fix in clears
+  it. A triage unit that can't rerun the test (the change's `e2e-mode` is `off`, so there's no emulator for it)
+  classifies from the job's artifacts alone, and records `unsettled` with the reason ("can't reproduce: no emulator")
+  when they don't settle it, so a person decides rather than the herd guessing. Those tasks count toward
   `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" or "flaky test" stop
   resolved as fixed on the default branch, that no update-branch merge has followed yet, comes before everything else in
   every state before the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and
