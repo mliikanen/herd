@@ -865,14 +865,16 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
   and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
-  different model. A project with `locality: host` may use only slots whose every backend is local, for every role and
-  unit kind; a config that maps one of its slots to a cloud or rented backend, including by repointing a backend later,
-  fails this check, so its code can't leave the host through a config change. The policy covers what the herd sends: its
-  workers' model traffic. The planner pane is the person's own session, outside the herd's control, so for a
-  `locality: host` project the herd doesn't start a cloud planner there by default: the pane opens a plain shell, with a
-  note saying why, and the person can start whatever local agent they like in it. A project that fails is shown
-  *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes start, rather than
-  stalling one after its first task.
+  different model. A project with `locality: host` may use only slots whose every backend is local, and local means the
+  herd's own model server: an `ollama` backend's `endpoint` must be that server's address on the internal network, which
+  validation enforces on every reload for every backend, so repointing one at a remote server is rejected rather than
+  quietly exporting code, for every role and unit kind; a config that maps one of its slots to a cloud or rented
+  backend, including by repointing a backend later, fails this check, so its code can't leave the host through a config
+  change. The policy covers what the herd sends: its workers' model traffic. The planner pane is the person's own
+  session, outside the herd's control, so for a `locality: host` project the herd doesn't start a cloud planner there by
+  default: the pane opens a plain shell, with a note saying why, and the person can start whatever local agent they like
+  in it. A project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any
+  of its changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -1282,13 +1284,14 @@ one.
   with the cutoff at now, and paid dispatch, paused anyway, resumes once every source that may have spend this period
   has one: every source the config names (every cloud billing account and every rented machine, current or retained),
   plus every source in the period's source list, a small record kept with the persisted machine definitions, apart from
-  the counter, of every source that has accrued anything this billing period, so an account removed or a machine retired
-  earlier in the month is still asked for. Hours are attributed for the usage ledger by time, not tokens: while units
-  are calling the machine, through any of its backends, its time is split evenly among them, and their share goes to
-  their change; time with no call in flight goes to the machine's own idle bucket, never to a change. Hours are what the
-  budget counts, but the ledger also keeps each rented call's token usage (the OpenAI-compatible response's `usage`),
-  per unit and change like a cloud call's: the gateway reports it after the call, with no reservation to replace, so
-  tokens per task stay comparable across backends.
+  the counter, of every source that could have spent anything this billing period: each cloud billing account that made
+  a call, and every rented-machine definition persisted during the period, whether or not the herd ever saw it healthy,
+  so an account removed or a machine retired earlier in the month is still asked for. Hours are attributed for the usage
+  ledger by time, not tokens: while units are calling the machine, through any of its backends, its time is split evenly
+  among them, and their share goes to their change; time with no call in flight goes to the machine's own idle bucket,
+  never to a change. Hours are what the budget counts, but the ledger also keeps each rented call's token usage (the
+  OpenAI-compatible response's `usage`), per unit and change like a cloud call's: the gateway reports it after the call,
+  with no reservation to replace, so tokens per task stay comparable across backends.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: the orchestrator ends each one
   once any call it has in flight finishes, with a `budget` reason (not `infra`, and not a failed attempt), and since
