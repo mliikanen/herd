@@ -82,9 +82,10 @@ final_approval:
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
   human_after: false                          # container only: also require a person's pass afterwards
 e2e:                                          # optional: end-to-end tests the herd runs itself
-  prepare: ./e2e/prepare.sh                   # builds the app and boots the unit's emulator; exits when it's ready
-  select: ./e2e/select.sh                     # given a base and a head commit, prints the relevant test ids
-  run: ./e2e/run.sh                           # runs the given test ids; nonzero exit on any failure
+  prepare: ./e2e/prepare.sh                   # builds the app, boots the emulator; exit 0 when ready
+  select: ./e2e/select.sh                     # select <base sha>: relevant test ids, one per line on stdout
+  run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
+                                              # (the scripts always run from the default branch: see the section)
 missing_capabilities:                         # a task that needs one of these escalates instead of being attempted
   - macOS / Xcode
 caps: { review_rounds: 3, added_tasks: 3, failed_attempts: 3, gate_fixes: 3, pr_review_rounds: 5 }
@@ -385,12 +386,14 @@ green, or its commit failed validation) leaves nothing in the branch, so on its 
 orchestrator therefore commits a line to `review-notes.md`, pinned to the tip the unit started from, with its fields as
 one JSON object so that no subject or reason text can make it ambiguous:
 `attempt-failed: {"kind": "implement", "subject": "3.2", "reason": "gate", "from": "<sha>"}`. The subject is the task
-for `implement` and `task` units, and the change itself for `holistic`, `triage` and `archive` units. The count of those
-lines for one unit kind and subject is derived from git like everything else, counting since the later of two points:
-that kind's last accepted commit for that subject, and the resolution of a failed-attempts `needs-human` marker for it,
-so a person who resolves the escalation gives the unit a fresh set of attempts instead of an immediate re-escalation.
-When the count reaches `caps.failed_attempts` the change escalates to `needs-human` before another attempt starts (with
-the default of 3, three failed attempts, not four).
+for `implement` and `task` units, and the change itself for `holistic`, `triage`, `archive` and `e2e` units. For an
+`e2e` unit, its "accepted commit" is the verdict line it records (a final-approval pass, or a failure handed to triage),
+which resets the count; a timed-out or crashed `e2e` unit is retried on a fresh emulator like any other failed attempt.
+The count of those lines for one unit kind and subject is derived from git like everything else, counting since the
+later of two points: that kind's last accepted commit for that subject, and the resolution of a failed-attempts
+`needs-human` marker for it, so a person who resolves the escalation gives the unit a fresh set of attempts instead of
+an immediate re-escalation. When the count reaches `caps.failed_attempts` the change escalates to `needs-human` before
+another attempt starts (with the default of 3, three failed attempts, not four).
 
 A unit whose push lost the race to a person's push is `superseded`, not failed: it says nothing about the worker or the
 change, so it's retried from the new tip, isn't committed and doesn't count. Failures of the herd's own infrastructure
@@ -662,11 +665,28 @@ end-to-end tests can run on an emulator in a worker (Driving Log's Maestro flows
 around the agents with them, in layers that get broader and more independent as the change matures. A project opts in
 with an `e2e` block in the manifest: three commands of its own, which the herd treats as opaque, like the gate.
 
-- **`prepare`** builds the app and boots an emulator inside the unit's container, ready for tests. **`select`**, given a
-  base and a head commit, prints the ids of the tests relevant to that diff (for Driving Log, the Maestro areas whose
-  flows or screens it touches); it's a deterministic script in the project, so selection is reviewable and repeatable,
-  and the agent can't quietly skip a test. **`run`** runs the given ids and exits nonzero on any failure, leaving
-  results (reports, screenshots, view hierarchies, device logs) in a known directory.
+The commands' contract, so the orchestrator can handle ids and results deterministically:
+
+- Every command runs in the repository root of the unit's clone, against the unit's own emulator, with
+  `$HERD_E2E_ARTIFACTS` naming an empty directory it may write to.
+- **`prepare`** takes no arguments. It builds the app from the working tree, boots the emulator and installs the app,
+  and exits 0 once tests can run; any other exit fails the unit.
+- **`select <base sha>`** compares the base commit with the **working tree**, committed or not, so the implementer can
+  run it before its commit exists, and a reviewer runs it on a checkout of the commit under review. It prints the
+  relevant test ids on stdout, one per line; an id is non-empty, printable, and contains no whitespace. A deterministic
+  script, so selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails
+  the unit.
+- **`run`** reads test ids from stdin, one per line, so no id needs shell escaping. It writes
+  `$HERD_E2E_ARTIFACTS/results.jsonl`, one line per id (`{"id": ..., "status": "pass" | "fail", "detail": ...}`), and
+  per-test evidence (reports, screenshots, view hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. It exits 0
+  if every test passed, 1 if any failed, anything else on an error that isn't a test result.
+
+**The commands come from the default branch, never the change branch.** They are what decides whether the loop can go
+red at all, so an implementer that rewrote `select` to print nothing, or `run` to report success, would switch the
+safety net off. So the herd runs the scripts as they are on the default branch (copied into the unit from there, like
+`.herd/`), against the change's working tree; the paths the manifest names under `e2e` are built-in guarded paths, so a
+change that edits them declares it; and an edit takes effect only once it's merged. What the scripts depend on in the
+repository (the test files, the build configuration) is guarded as well (see Who commits, who pushes).
 
 The layers:
 
@@ -677,8 +697,9 @@ The layers:
 2. **Red/green proof.** A test the task adds or changes has to show that it actually tests the change: it must fail on
    the build of the commit the task started from, and pass on the task's own commit. The implementer runs both and
    records them in an `E2E:` section of its commit message, in the fixed format of `Guarded:`
-   (`- <test id> red <start sha> green <head sha>` for added or changed tests, `- <test id> green` for unchanged ones).
-   A test that's green on both is vacuous, and the task isn't done.
+   (`- <test id> red <start sha>` for an added or changed test, `- <test id> green` for an unchanged one); the green run
+   is on the commit that carries the section, which a commit can't name by its own SHA, so it's implicit. A test that's
+   green on both is vacuous, and the task isn't done.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
    task's commit, and the added or changed ones on the starting commit too, and a result that doesn't match the `E2E:`
    section is a revise verdict.
@@ -840,7 +861,7 @@ projects:
 
 A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer has
 five that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release notes),
-`triage` (PR review findings and final-approval failures into tasks) `archive` (mostly running `openspec archive`) and
+`triage` (PR review findings and final-approval failures into tasks), `archive` (mostly running `openspec archive`) and
 `e2e` (the final end-to-end run and its triage, see End-to-end tests: the red/green loop). A slot that doesn't list a
 role or kind never runs it, and a slot with `projects` runs only those projects' units. Slots that share a GPU share it
 in turn: the model server queues their requests.
