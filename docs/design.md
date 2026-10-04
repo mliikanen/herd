@@ -429,12 +429,13 @@ and the alert queue (see Monitoring). It reads them back on start.
 unit's `Restart=always` and lingering, see Containers): on start, the orchestrator, for every registered project, (1)
 lists every change branch without a merged PR, (2) reads each one's `.openspec.yaml` and `tasks.md`/`review-notes.md` to
 compute its exact next action from scratch — no assumption carried over from before the crash, (3) reconciles against
-running worker containers (kill any orphaned worker rather than adopt it — its state is suspect) and `gh pr list` (don't
-open a second PR for a branch that already has one), (4) reads back the operational stores (budget counter, usage
-ledger, alert queue) and starts a new proxy epoch (see Network and secrets), (5) re-enqueues and resumes. The cost of a
-crash is bounded to whatever unpushed work was sitting in a worker's ephemeral clone — redone from the last pushed
-commit (and, per the rule above, that redo never reuses the discarded partial work) — which is cheap specifically
-because workers are stateless and task granularity is small (one `tasks.md` item at a time).
+running containers (kill any orphaned worker or model pull rather than adopt it — its state is suspect — and wait for a
+pull to exit before local dispatch resumes; the model server alone is adopted) and `gh pr list` (don't open a second PR
+for a branch that already has one), (4) reads back the operational stores (budget counter, usage ledger, alert queue)
+and starts a new proxy epoch (see Network and secrets), (5) re-enqueues and resumes. The cost of a crash is bounded to
+whatever unpushed work was sitting in a worker's ephemeral clone — redone from the last pushed commit (and, per the rule
+above, that redo never reuses the discarded partial work) — which is cheap specifically because workers are stateless
+and task granularity is small (one `tasks.md` item at a time).
 
 **The guarantee that a started-but-unfinished task can never be missed on restart** — not just redone, but never
 silently dropped — comes from two rules together, not from the scan alone:
@@ -972,11 +973,15 @@ models:                                # host config; only read when a local bac
   swapped blob doesn't land. The server reads new models from the volume without a restart. Tags are mutable, though, so
   pulling a newer version of a tag that a running unit uses would change its weights at the next model load. A pull of a
   tag already on the server is therefore staged like a settings change: new local units for that tag wait, the units
-  using it drain, the pull replaces it, and dispatch resumes. The `Herd-Model` trailer records the model's digest as
-  well as its name (see Models), so acceptance rates never mix two versions of one tag. `herd models list` and
-  `herd models rm <model>` are requests too; removing a model is refused while a configured backend names it, or a
-  running unit's backend does (a unit keeps the model it started with even after host config moves on). Every model on
-  the host was pulled explicitly by the operator, and nothing a worker does can add one.
+  using it drain, the pull replaces it, and dispatch resumes. A crash mid-pull can't break that: revoking a pull's proxy
+  token wouldn't stop it writing to the models volume, so a starting orchestrator stops any orphaned pull container
+  (they're labeled) and waits for it to exit before it reads model digests or resumes local dispatch. The pull's request
+  file is deleted only once the request is handled, so it's still there, and the pull reruns from the start, staged as
+  usual. The `Herd-Model` trailer records the model's digest as well as its name (see Models), so acceptance rates never
+  mix two versions of one tag. `herd models list` and `herd models rm <model>` are requests too; removing a model is
+  refused while a configured backend names it, or a running unit's backend does (a unit keeps the model it started with
+  even after host config moves on). Every model on the host was pulled explicitly by the operator, and nothing a worker
+  does can add one.
 - **Sharing the GPU.** `max_loaded` and `keep_alive` decide how the card is shared. With one model resident, two local
   models (an implementer and a reviewer, say) swap in and out, and each switch costs a load from disk. So among queued
   units for local slots, the scheduler prefers one whose model is already loaded, which the server reports; it's a
