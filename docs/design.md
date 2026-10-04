@@ -955,11 +955,14 @@ models:                                # host config; only read when a local bac
   drive systemd from its container. On each scan it makes sure the server is running when a local backend is configured,
   and stopped only once none is configured and no running unit still uses a local model, so removing the last local
   backend lets running units drain first. Unlike a worker, the server is herd infrastructure: a restarting orchestrator
-  adopts a running server by its label instead of killing it as an orphan. Its settings come from `models` above (as the
-  server's environment: keep-alive, loaded-model limit, parallelism, context length), and changing them can't wait for
-  the server to happen to be idle, which a steady backlog could postpone forever. Instead the orchestrator stops
-  assigning new units to local slots, lets the running ones drain, restarts the server with the new settings, and then
-  resumes local dispatch.
+  adopts a running server by its label instead of killing it as an orphan. Its settings come from `models` above, as the
+  server's environment (keep-alive, loaded-model limit, parallelism, context length). Changing them can't wait for the
+  server to happen to be idle, which a steady backlog could postpone forever: the orchestrator stops assigning new units
+  to local slots, lets the running ones drain, restarts the server with the new settings, and then resumes local
+  dispatch. The environment only sets defaults, which a request can override (`keep_alive`, `options.num_ctx`), so the
+  model gateway also sets those fields on every local request from the settings the server is running with, overwriting
+  whatever the harness sent: a unit can't keep a model resident or ask for more context than `doctor` validated. While
+  units drain before a restart, that's still the old settings; after it, the new ones.
 - **GPU access.** The server is the only container given the GPU, however the vendor exposes it to rootless Podman. An
   Intel or AMD card is `--device /dev/dri`, and since the device usually belongs to the `render` group, which a rootless
   container doesn't keep by default, also `--group-add keep-groups` (which needs the `crun` runtime) with the `herd`
