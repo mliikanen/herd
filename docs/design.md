@@ -429,6 +429,10 @@ silently dropped — comes from two rules together, not from the scan alone:
 - The state space is **exhaustive and structurally derived**, both per-task and per-proposal, so recovery is a
   total function of current facts, never a remembered checkpoint. Per task: `[ ]` / `[r]` / `[x]`, nothing else
   possible. Per proposal, checked in this order (first match wins):
+  0. *closed* — the change's PR is closed without being merged. Next action: none, whatever else the files say; the
+     change is dormant until the PR is reopened (its branch is kept, see Cleaning up after merge), and closing is
+     what starts its log retention (see Monitoring). A reopened PR re-enters the list below from whatever its files
+     then describe.
   1. *needs-human* — `review-notes.md` on the branch carries an unresolved `needs-human` marker (see Escalation).
      Next action: none; shown in the herd's status pane until a human resolves it.
   2. *drafting* — change not archived, no `ready: true` in the change's `.openspec.yaml` on its branch. Not queued;
@@ -824,11 +828,13 @@ network instead.
   extras "just in case". Adding a tool is a reviewed change to the toolchain Dockerfile (project) or the role
   layer (herd), not something an agent can do itself — and since `.herd/` is read from the default branch and
   off-limits to worker commits, an agent can't do it through its own branch either.
-- **No filesystem access outside the project.** The only mounts are the unit's own clone, the project's declared
-  cache volumes, and (when provided) the read-only inputs volume. No host bind mounts (not the host checkout, not
-  `$HOME`, not the Podman socket), no access to other units' clones, other projects' volumes or the bare mirrors.
-  The container's root filesystem is read-only apart from those mounts and a scratch `tmpfs`. No secret reaches
-  a worker: its only credential is its unit's gateway token, which dies with the unit.
+- **No filesystem access outside the project.** The only mounts are the unit's own clone, the project's declared cache
+  volumes, and (when provided) the read-only inputs volume. No host bind mounts (not the host checkout, not `$HOME`, not
+  the Podman socket), no access to other units' clones, other projects' volumes or the bare mirrors. The container's
+  root filesystem is read-only apart from those mounts and a scratch `tmpfs`. No provider key or other long-lived secret
+  reaches a worker. Its only credential is its unit's token, which is still a secret: a short-lived bearer credential
+  for model and proxy access, valid only until its unit's revocation or expiry. The orchestrator redacts it from the
+  unit's log, and commit validation rejects a commit that contains it.
 - **Caches** are per project *and* per role, so one project's worker can never read or poison another's. A project
   that declares none gets the strict per-clone behavior (slower, nothing shared).
 - Network egress is the unit's model backend plus the manifest's `egress` list — not open internet (see Network
@@ -880,16 +886,16 @@ namespace, where host rules can't tell containers apart.
 
 ## The herd's own account
 
-The herd runs as a dedicated `herd` system user, not the operator's account, so that the orchestrator's Podman
-socket, the App's private key and the proxy's API keys reach nothing else on the host. The operator never uses the
-`herd` user's Podman. They share three things through the filesystem, using a `herd-ops` group the operator
-belongs to:
+The herd runs as a dedicated `herd` system user, not the operator's account, so that the orchestrator's Podman socket,
+the App's private key and the proxy's API keys reach nothing else on the host. The operator never uses the `herd` user's
+Podman. They share three things through the filesystem. Two use a `herd-ops` group the operator belongs to; host config
+deliberately doesn't, so that the `herd` account can read it but never write it:
 - **`/etc/herd/`**: host config, written by the operator (through the `herd` CLI) and mounted read-only into the
   orchestrator. The read-only mount alone wouldn't protect it, since the orchestrator holds the `herd` user's Podman
   socket and could start another container with the directory mounted read-write. What protects it is host ownership:
-  the directory and its files belong to the operator, with the `herd` group allowed to read and nothing more, and a
-  rootless container can never exceed its user's permissions on the host. So no mount gives the `herd` account write
-  access. `herd doctor` checks the ownership and modes.
+  the directory and its files belong to the operator, with group `herd` (the service user's own group, not `herd-ops`)
+  allowed to read and nothing more, and a rootless container can never exceed its user's permissions on the host. So no
+  mount gives the `herd` account write access. `herd doctor` checks the ownership and modes.
 - **`/var/lib/herd/shared/`**: written by the orchestrator, readable by `herd-ops`. It holds the event log, each
   running unit's log, and a heartbeat file the `herd` CLI checks.
 - **`/var/lib/herd/requests/`**: writable by `herd-ops`. The `herd` CLI drops a request here (rescan now, run `doctor`
@@ -986,18 +992,19 @@ what's missing on its next pass, and herdr brings back the planner panes' sessio
 
 **Desktop alerts come from the bridge.** The bridge runs in the operator's herdr, under the operator's account, so it's
 the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence number, to a queue
-in `/var/lib/herd/shared/`, and shows each with `herdr notification show "<title>" --body "<details>"`. The bridge's one
-piece of state is a cursor in the operator's own state directory (`~/.local/state/herd/alerts.cursor`), the sequence
-number of the last alert it showed, updated after each one by writing a temporary file, syncing it and renaming it over
-the old one, so a crash leaves either the old number or the new one, never an unreadable file. After a restart it shows
-the alerts queued since the cursor, so nothing raised while it was down is missed, as long as it was down for less than
-the queue's 7-day retention; a cursor older than the oldest alert left resumes from that oldest alert. Delivery is
-at-least-once: a crash between showing an alert and saving the cursor shows that one alert again. Without a cursor
-(first run, or lost) it shows only the last hour's alerts rather than replaying the whole queue; the status pane still
-lists everything waiting. The orchestrator drops queued alerts older than 7 days, far beyond the replay window. With
-herdr's `[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached,
-as long as herdr's server is running in the operator's session. The `herd` user has no desktop session to notify, so it
-sends only push alerts (see Monitoring).
+(timestamp-based, so numbers keep rising even if the queue is lost and rebuilt; a cursor ahead of the newest alert
+counts as lost) in `/var/lib/herd/shared/`, and shows each with `herdr notification show "<title>" --body "<details>"`.
+The bridge's one piece of state is a cursor in the operator's own state directory (`~/.local/state/herd/alerts.cursor`),
+the sequence number of the last alert it showed, updated after each one by writing a temporary file, syncing it and
+renaming it over the old one, so a crash leaves either the old number or the new one, never an unreadable file. After a
+restart it shows the alerts queued since the cursor, so nothing raised while it was down is missed, as long as it was
+down for less than the queue's 7-day retention; a cursor older than the oldest alert left resumes from that oldest
+alert. Delivery is at-least-once: a crash between showing an alert and saving the cursor shows that one alert again.
+Without a cursor (first run, or lost) it shows only the last hour's alerts rather than replaying the whole queue; the
+status pane still lists everything waiting. The orchestrator drops queued alerts older than 7 days, far beyond the
+replay window. With herdr's `[ui.toast] delivery = "system"`, that goes through the OS notification service even when no
+client is attached, as long as herdr's server is running in the operator's session. The `herd` user has no desktop
+session to notify, so it sends only push alerts (see Monitoring).
 
 **The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit pushed,
 review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`, rotated daily and kept for 90
@@ -1005,10 +1012,11 @@ days (`logs.event_log_keep` in host config). **Both the event log and the herdr 
 orchestrator never reads them back**, so git stays the only source of truth. Losing the log, the bridge or the herdr
 session loses only what's on screen.
 
-**The status snapshot.** History expires, but the current picture mustn't: a proposal open for longer than the event
-log keeps would otherwise drop out of view after a bridge restart. So at the end of every scan the orchestrator also
-writes `status.json` to `/var/lib/herd/shared/`: every registered project and every open proposal with its derived
-state, current task, review round, waiting reason and spend. It's rewritten whole from the scan, never appended, so it
+**The status snapshot.** History expires, but the current picture mustn't: a proposal open for longer than the event log
+keeps would otherwise drop out of view after a bridge restart. So at the end of every scan the orchestrator also writes
+`status.json` to `/var/lib/herd/shared/`: every registered project and every open proposal with its derived state,
+current task, review round, waiting reason and spend. It's rewritten whole from the scan, never appended, and replaced
+atomically (written to a temporary file, synced, renamed over the old one), so a reader never sees half of it, and so it
 can't go stale or grow. The status pane, `herd status`, and the bridge's attention panes read the snapshot; the event
 log is only for history and the unit panes' timeline. Like the log, the orchestrator never reads it back.
 
@@ -1203,10 +1211,11 @@ Steps marked **(manual)** need a human.
    watchdog for the orchestrator), log retention and the disk check.
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
    `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
-   and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/` and
-   `/var/lib/herd/`, puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its
-   `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is installed,
-   installs herdr's integration for the planner agent, and adds the operator's login unit for `herdr server`.
+   and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
+   (owned by the operator, group `herd`, read-only for the group) and `/var/lib/herd/`, puts `herd` on `PATH`, installs
+   the Quadlet units (orchestrator, network proxy, each with its `[Install]` section), enables lingering and the Podman
+   API socket for `herd`, checks that `herdr` is installed, installs herdr's integration for the planner agent, and adds
+   the operator's login unit for `herdr server`.
 7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read
    by the network proxy only); a GitHub App for the herd, installed on the registered repositories, with
    repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit statuses* and
