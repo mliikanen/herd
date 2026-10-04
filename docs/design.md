@@ -81,7 +81,7 @@ final_approval:
   instructions: |                             # shown in the herd's status pane and in the draft PR body
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
   human_after: false                          # container only: also require a person's pass afterwards
-e2e:                                          # optional: end-to-end tests the herd runs itself
+e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
   prepare: ./e2e/prepare.sh                   # builds the app, boots the emulator; exit 0 when ready
   select: ./e2e/select.sh                     # select <base sha>: relevant test ids, one per line on stdout
   run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
@@ -544,10 +544,15 @@ silently dropped — comes from two rules together, not from the scan alone:
   fixes on its own: the holistic review that follows them records `final-approval: rerun` when the fixes touch what
   final approval covers.
 
-  **The effective final-approval record** is the latest of the change's final-approval records in git order: a
-  `pass`, a `fail`, or a `rerun`. History is additive, so an old pass stays in `review-notes.md`, but only a pass
-  that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until
-  a person records a new pass.
+  **The effective final-approval record** is kept per **phase**: each final-approval record names its phase, `container`
+  (written by an `e2e` unit) or `human` (written through `herd-resolve`), and a phase's effective record is its latest
+  record in git order: a `pass`, a `fail`, or a `rerun` (a `rerun` applies to every phase the change requires). A
+  project requires the `human` phase with `kind: human`, the `container` phase with `kind: container`, and both,
+  container first, with `kind: container` and `human_after: true`; *awaiting-approval* holds until every required
+  phase's effective record is a pass, and states 7 and 8's "the effective final-approval record a pass" means every
+  required phase. History is additive, so an old pass stays in `review-notes.md`, but only a pass that's newer than any
+  `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until each required phase has a
+  new pass.
 
   **The content tip** is the branch's latest non-bookkeeping commit, except that the archive commit always counts as
   content here: it's bookkeeping for keeping the holistic-accept current, but its generated spec changes still need an
@@ -664,6 +669,8 @@ The gate proves a task compiles and its unit tests pass; it can't prove the feat
 end-to-end tests can run on an emulator in a worker (Driving Log's Maestro flows, say), the herd closes a red/green loop
 around the agents with them, in layers that get broader and more independent as the change matures. A project opts in
 with an `e2e` block in the manifest: three commands of its own, which the herd treats as opaque, like the gate.
+`final_approval.kind: container` requires the block; manifest validation rejects `container` without it, and the project
+is inactive with that reason until it's fixed.
 
 The commands' contract, so the orchestrator can handle ids and results deterministically:
 
@@ -705,9 +712,10 @@ The layers:
    section is a revise verdict.
 4. **Final e2e: `final_approval.kind: container`.** In *awaiting-approval*, an `e2e` unit (a reviewer unit kind) runs
    every test `select` picks for the whole change (from where it branched off the default branch to its content tip) on
-   one fresh emulator. A pass is recorded like a person's final-approval pass, as a bookkeeping line in
-   `review-notes.md`; a failure goes through the test-or-implementation rule below. `final_approval.human_after: true`
-   adds a person's pass after the unit's, for checks only a real device can do.
+   one fresh emulator. A pass is recorded as a `container`-phase final-approval pass, a bookkeeping line in
+   `review-notes.md` (see The effective final-approval record); a failure goes through the test-or-implementation rule
+   below. `final_approval.human_after: true` adds a person's pass after the unit's, for checks only a real device can
+   do.
 5. **CI: the full suite.** The project's CI runs every end-to-end test as a required check, independent of the herd's
    selection and of its emulator setup. A failure goes through Failing checks before the archive like any other, with
    the job's artifacts handed to the triage unit (see below).
@@ -716,8 +724,13 @@ The layers:
 `triage` unit after the final e2e or CI) follows the same order, so the answer comes from evidence rather than taste:
 
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing.
-2. **Run it on the default branch's build.** If it fails there too, the test was already broken: it's reported as a
-   separate finding, not fixed inside this change. If it passes there, this change caused the failure.
+2. **Run it on the default branch's build.** If it passes there, this change caused the failure: go on to 3. If it
+   fails there too, the test was already broken, and fixing it isn't this change's job. So that can't loop, the triager
+   escalates to `needs-human` ("fails on the default branch too"), and the person either fixes the default branch in a
+   separate change and resolves the stop once it's merged, or waives the test for this change with `herd-resolve`, which
+   records `e2e-waive <test id>: <reason>`; the herd's own e2e runs for the change then skip it. A waiver doesn't touch
+   CI: the required check still fails until the default branch is fixed, which keeps the merge blocked on the real
+   problem.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
