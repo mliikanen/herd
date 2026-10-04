@@ -357,7 +357,9 @@ string, and the kind is one of:
 - `prereq`: a task that has to come before this one;
 - `followup`: a task for later, which doesn't block this one;
 - `input`: outside content (the subject names the file);
-- `capability`: something the pipeline lacks.
+- `capability`: something the pipeline lacks;
+- `escalate`: an end-to-end failure the implementer's own triage can't settle (the subject is the test id, and the
+  reason says whether it also fails on the merge-base or the spec doesn't decide it, with the evidence).
 
 When the task can't go further without it, the commit is **request-only**: no code, just the task's checkbox
 flipped to `[r]`, so the reviewer picks it up through the ordinary task review and the task model stays `[ ]` /
@@ -369,8 +371,9 @@ exactly one answer per request id. What happens to the requesting task follows f
   prerequisite runs first.
 - **`added` for a `followup`**: the task is appended under "(added during apply)". The requesting task is judged
   on its own work as usual: accepted if a normal commit carried the request, back to `[ ]` if it was request-only.
-- **`needs-human`** (an `input` or `capability`): the reviewer records the marker, the requesting task goes back
-  to `[ ]`, and the change stops until a person resolves it.
+- **`needs-human`** (an `input` or `capability`, or an `escalate` whose evidence the reviewer confirmed by rerunning the
+  test): the reviewer records the marker, with an `escalate`'s reason ("fails on the default branch too" or "spec
+  doesn't settle it"), the requesting task goes back to `[ ]`, and the change stops until a person resolves it.
 - **`refused`**: the requesting task goes back to `[ ]`, with the reason in `review-notes.md` for the next
   attempt.
 
@@ -571,10 +574,10 @@ silently dropped — comes from two rules together, not from the scan alone:
   stays in `review-notes.md`, but only a pass that's newer than any `rerun` or `fail` counts; after a `rerun`, the
   change goes back to *awaiting-approval* until each required phase has a new pass. The records are single lines in
   `review-notes.md` with a fixed syntax, so the scan never interprets prose:
-  `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also names its harness pin
-  before the colon (`final-approval container pass <tested sha> harness <pin sha>: <detail>`) and is current only while
-  the pin is unchanged (phase `container`, written by an `e2e` unit, or `human`, written through `herd-resolve`; the
-  detail is free text after the colon), `final-approval rerun: <reason>`,
+  `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also names the merge-base it
+  was tested against before the colon (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`) and
+  is current only while the change's merge-base is unchanged (phase `container`, written by an `e2e` unit, or `human`,
+  written through `herd-resolve`; the detail is free text after the colon), `final-approval rerun: <reason>`,
   `final-approval-triaged <sha of the commit that added the fail record>`, and
   `e2e-waive <test id> <default sha> <files digest>: <reason>`.
 
@@ -787,12 +790,12 @@ switch the safety net off. So:
   branch's merge-base (the scan derives it as the latest of the change's merge-bases whose manifest can serve the mode),
   so the change keeps the last environment that can run its red/green proofs and final e2e for the rest of its life, and
   the scan notes it on the status pane. And from the archive commit on, it's frozen, since an archived change can't go
-  back to *awaiting-approval*, and CI's full suite covers anything a later merge brings in. When the pin moves before
-  the archive, the change's `container`-phase pass is no longer current, even if the merge is otherwise bookkeeping:
-  that pass was earned under the old harness, so the final e2e runs again under the new pin (which is also when a waiver
-  that lapsed on the merge gets its test run). This is the one exception to clean merges keeping final-approval records;
-  the `human` phase isn't affected. The `container` record names its pin for this
-  (`final-approval container pass <tested sha> harness <pin sha>: <detail>`).
+  back to *awaiting-approval*, and CI's full suite covers anything a later merge brings in. When the merge-base moves
+  before the archive, whether or not the pin moves with it, the change's `container`-phase pass is no longer current,
+  even if the merge is otherwise bookkeeping: that pass was earned against the old baseline and possibly the old
+  harness, so the final e2e runs again (which is also when a waiver that lapsed on the merge gets its test run). This is
+  the one exception to clean merges keeping final-approval records; the `human` phase isn't affected. The `container`
+  record names its merge-base for this (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`).
 
 The layers:
 
@@ -840,21 +843,21 @@ The layers:
 
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
-   `E2E:` section (`- <test id> flaky`), a task review, `e2e` or `triage` unit adds `e2e-flaky <test id> <sha>` to its
-   verdict commit, and CI triage records `ci-triage "<check>" <sha> <check run id>: flaky`. Flaky outcomes are counted
-   from those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change
-   escalates to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle
-   forever; the person fixes the test or its environment in a separate change, or waives it like a pre-existing failure.
-2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, the same one
-   the harness is pinned to), but only if the same test definition exists unchanged there. Not the default branch's
-   current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like this
-   change's. A test this change adds or changes (under `e2e.tests`) is meant to fail on the old build, or may not exist
-   there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes on the merge-base,
-   this change caused the failure: go on to 3. If it fails there too, the test was already broken, and fixing it isn't
-   this change's job. So that can't loop, the triager escalates to `needs-human` ("fails on the default branch too"),
-   and the person either fixes the default branch in a separate change and resolves the stop once it's merged,
-   (resolving that stop makes update-branch the next action before any retry, whatever the change's state: see Failing
-   checks before the archive), or waives the test for this change with `herd-resolve`, which records
+   `E2E:` section (`- <test id> flaky`), a task review or `triage` unit adds `e2e-flaky <test id> <sha>` to its verdict
+   commit, and CI triage records `ci-triage "<check>" <sha> <check run id>: flaky`. Flaky outcomes are counted from
+   those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change escalates
+   to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever; the
+   person fixes the test or its environment in a separate change, or waives it like a pre-existing failure.
+2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
+   the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
+   branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
+   this change's. A test this change adds or changes (under `e2e.tests`) is meant to fail on the old build, or may not
+   exist there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes on the
+   merge-base, this change caused the failure: go on to 3. If it fails there too, the test was already broken, and
+   fixing it isn't this change's job. So that can't loop, the triager escalates to `needs-human` ("fails on the default
+   branch too"), and the person either fixes the default branch in a separate change and resolves the stop once it's
+   merged, (resolving that stop makes update-branch the next action before any retry, whatever the change's state: see
+   Failing checks before the archive), or waives the test for this change with `herd-resolve`, which records
    `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming the merge-base commit the test was found failing
    on and a digest of the test's `files`; the herd's own e2e runs for the change then skip it. The waiver covers exactly
    that failure and lapses on its own when either changes: once the test's files on the branch no longer match the
@@ -866,6 +869,11 @@ The layers:
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
    proposer's call.
+
+The implementer can't write `review-notes.md`, so when its own triage ends in either stop (in step 2 or 3), it doesn't
+escalate itself: it makes a request-only commit with an `escalate` request for the test (see Who commits, who pushes),
+and its task review checks the evidence, answering `needs-human` when it holds, or `refused` with what it found, which
+sends the task back. A request-only commit isn't a failed attempt, so this doesn't spend `caps.failed_attempts`.
 
 Updating a test to make it pass is always explicit: a project's end-to-end test files are named by `e2e.tests` (for
 Driving Log, `maestro/**`), which makes them built-in guarded paths, so any commit that changes one declares it under
@@ -965,17 +973,17 @@ implementation is escalated, not triaged: scope is the proposer's call.
 
 ## Keeping up with the default branch
 
-No rebasing (that would rewrite SHAs and break the reviewer's pins and the additive-history rule). Instead,
-branch protection requires PR branches to be **up to date** before merging, and the orchestrator uses GitHub's
-update-branch (`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`, a merge commit) when the PR is
-behind. That merge triggers the CI checks again, which is where two concurrent proposals that both touched a shared
-file (a dependency catalog, `CLAUDE.md`, a shared spec) actually collide — per-task testing alone won't catch that.
-A conflicting update-branch escalates to `needs-human`; a CI failure after the update gets a fix task (see Failing
-checks before the archive), and escalates past `caps.gate_fixes` of them. A clean update-branch merge that brings in no
-change to the change's own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or a
-`human`-phase final-approval pass stale (a `container`-phase pass is the exception before the archive, when the merge
-moves the harness pin: see End-to-end tests): CI re-runs the gate, and the human re-runs final approval at their
-discretion. One that does touch the change's files sends it back through holistic review against the merged tip.
+No rebasing (that would rewrite SHAs and break the reviewer's pins and the additive-history rule). Instead, branch
+protection requires PR branches to be **up to date** before merging, and the orchestrator uses GitHub's update-branch
+(`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`, a merge commit) when the PR is behind. That merge
+triggers the CI checks again, which is where two concurrent proposals that both touched a shared file (a dependency
+catalog, `CLAUDE.md`, a shared spec) actually collide — per-task testing alone won't catch that. A conflicting
+update-branch escalates to `needs-human`; a CI failure after the update gets a fix task (see Failing checks before the
+archive), and escalates past `caps.gate_fixes` of them. A clean update-branch merge that brings in no change to the
+change's own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or a `human`-phase
+final-approval pass stale (a `container`-phase pass is the exception before the archive, since the merge moves the
+change's merge-base: see The pin in End-to-end tests): CI re-runs the gate, and the human re-runs final approval at
+their discretion. One that does touch the change's files sends it back through holistic review against the merged tip.
 
 ## Cleaning up after merge
 
