@@ -1182,14 +1182,17 @@ retained snapshot would charge the new machine's traffic to the old one.
   confirmation in the persisted machine definitions against the exact current definition or snapshot id, and only then
   deletes the request file, so a crash in between at worst handles the same request twice, which changes nothing, and
   never loses the confirmation; it closes that machine's billing-related alerts, stops its accrual, and takes it out of
-  dispatch: a confirmed-stopped machine gets no new units, and the gateway refuses its calls. The confirmation clears
-  only explicitly, with `herd machines started <machine>` (a request, validated and persisted the same way), so nothing
-  depends on the orchestrator having watched the machine go down and come back. An endpoint that keeps answering past
+  dispatch: a confirmed-stopped machine gets no new units, the gateway refuses its calls, and units still running on it
+  end as `infra` failures, retried elsewhere and never charged as attempts. The confirmation clears only explicitly,
+  with `herd machines started <machine>` (a request, validated and persisted the same way), so nothing depends on the
+  orchestrator having watched the machine go down and come back. An endpoint that keeps answering past
   `alerts.infra_after` after its confirmation means the machine wasn't stopped after all: that raises a "confirmed
-  stopped but still answering" alert episode and resumes the machine's accrual, since it may well be billing, while
-  dispatch stays off until the operator either stops it or runs `herd machines started`. Since unhealthy may still mean
-  billing, an active machine whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy,
-  not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
+  stopped but still answering" alert episode and restores the machine's accrual back to the confirmation, since it may
+  well have been billing all along (health checks keep running through the confirmation, so the herd knows the endpoint
+  was up the whole time), while dispatch stays off until the operator either stops it or runs `herd machines started`.
+  Since unhealthy may still mean billing, an active machine whose health checks fail for longer than
+  `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns
+  or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
@@ -1443,8 +1446,9 @@ keeps would otherwise drop out of view after a bridge restart. So at the end of 
 `status.json` to `/var/lib/herd/shared/`: every registered project and every open proposal with its derived state,
 current task, review round, waiting reason and spend, plus every unit running right now (its id, kind, change and task,
 slot, model, log path and start time), and every rented-machine definition, current and retained (its name, definition
-id, qualified `instance`, health, and whether its stop is confirmed), which is what `herd machines stopped` resolves a
-name against, so the bridge can tell live unit logs from finished ones and close panes whose unit has ended. It carries
+id, qualified `instance`, health, whether its stop is confirmed, and whether it's active, with the reason when it isn't,
+such as an endpoint still held by a retained snapshot), which is what `herd machines stopped` resolves a name against,
+so the bridge can tell live unit logs from finished ones and close panes whose unit has ended. It carries
 `generated_at`, and every consumer shows how old it is: past twice `scan_interval`, the status pane, `herd status` and
 the bridge show it as **stale** (orchestrator not scanning) in place of presenting old state as current, alongside the
 heartbeat check. It's rewritten whole from the scan, never appended, and replaced atomically (written to a temporary
@@ -1556,21 +1560,21 @@ The values above are placeholders, tuned after the smoke test like the caps (see
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after`, an idle rented machine, an unready rented backend on a healthy machine (see Rented GPU
-  backends), a rented machine not confirmed stopped after the budget limit, a retained rented machine not confirmed
-  stopped, an unhealthy rented machine not confirmed stopped, and a rented machine confirmed stopped but still answering
-  all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like the
-  budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's state.
-  Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert about a
-  waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing condition (a
-  project inactive, low disk, the budget, infrastructure failures, an idle rented machine, an unready rented backend, a
-  rented machine not confirmed stopped after the budget limit, a retained rented machine not confirmed stopped, an
-  unhealthy rented machine not confirmed stopped, a rented machine confirmed stopped but still answering) is an
-  **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone appends a `cleared`
-  entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the same day alerts again.
-  The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the day. Losing the queue
-  costs at most one repeated alert per open condition. Delivery on both channels is at-least-once: push delivery is
-  recorded per id after the service accepts it, so a crash in between sends that one again, never none. Alerts go out on
-  two channels from two accounts:
+  backends), a rented machine not confirmed stopped after the budget limit or a lost counter paused paid dispatch, a
+  retained rented machine not confirmed stopped, an unhealthy rented machine not confirmed stopped, and a rented machine
+  confirmed stopped but still answering all raise an alert. The queue doubles as the orchestrator's own record of
+  alerts, an operational control like the budget counter: unlike the event log, the orchestrator reads it back, and it
+  decides nothing about any change's state. Each alert has a stable id derived from facts, and the queue adds only ids
+  it doesn't already hold. An alert about a waiting change is keyed by the commit of its `needs-human` marker or
+  final-approval state. An ongoing condition (a project inactive, low disk, the budget, infrastructure failures, an idle
+  rented machine, an unready rented backend, a rented machine not confirmed stopped after the budget limit or a lost
+  counter paused paid dispatch, a retained rented machine not confirmed stopped, an unhealthy rented machine not
+  confirmed stopped, a rented machine confirmed stopped but still answering) is an **episode**: the scan that first sees
+  it appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after a `cleared`
+  one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the episode, and a
+  daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated alert per open
+  condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the service accepts it,
+  so a crash in between sends that one again, never none. Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
