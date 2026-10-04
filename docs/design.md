@@ -433,18 +433,20 @@ silently dropped — comes from two rules together, not from the scan alone:
      when `final_approval.kind: none`.
   7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
      archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
-     finding not yet triaged (including ones in a review's summary, which have no thread), or an awaited reviewer
-     (`pr_review.wait_for`) hasn't reviewed the content tip (see below) yet and `pr_review.timeout` hasn't passed since
-     its push. Next action: mark the PR ready for review if it's still a draft, then follow up as Following up on PR
-     review describes. A triaged finding becomes a task under "(added during review)", which sends the change back to
-     *implementing*. Review comes before archiving, because a fix after the archive would mean editing the synced main
-     specs by hand.
+     finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip (see
+     below) yet while `pr_review.timeout` hasn't passed since its push, or an awaited reviewer's first review of the
+     content tip that no `triage` unit has classified yet. The orchestrator runs no model and can't tell a clean review
+     from one with findings only in its free-form summary, so every such review is classified (`clean`, or findings
+     triaged), before the archive as after it. Next action: mark the PR ready for review if it's still a draft, then
+     follow up as Following up on PR review describes. A triaged finding becomes a task under "(added during review)",
+     which sends the change back to *implementing*. Review comes before archiving, because a fix after the archive would
+     mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
-     open thread or untriaged finding, and every awaited reviewer has reviewed the content tip or timed out), no
-     required check failed on the current tip, change not yet archived on the branch. Next action: while a required
-     check is still running, none; wait (a failure then goes through Failing checks before the archive, never past it).
-     Once every required check has passed, the reviewer runs the archive and commits. A crash mid-archive never gets
-     pushed, so it's discarded with the clone and redone, same as any other unit of work.
+     open thread or untriaged finding, and every awaited reviewer's first review of the content tip classified clean, or
+     timed out), no required check failed on the current tip, change not yet archived on the branch. Next action: while
+     a required check is still running, none; wait (a failure then goes through Failing checks before the archive, never
+     past it). Once every required check has passed, the reviewer runs the archive and commits. A crash mid-archive
+     never gets pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action follows from why:
      - checks still running on the current tip, or an awaited reviewer hasn't reviewed the content tip and
