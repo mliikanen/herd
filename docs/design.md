@@ -804,6 +804,9 @@ backends:
                  price: { input: <per Mtok>, output: <per Mtok> } }
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
   local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
+  rented-coder:   { kind: openai, model: <open-weight coder>, revision: <commit>, hosting: rented,
+                    endpoint: https://<rented host>/v1, secret: RENTED_GPU_KEY,
+                    price: { per_hour: <rate> } }   # see Rented GPU backends
 slots:                                 # each slot runs one unit at a time
   - name: gpu
     implementer: local-coder
@@ -822,7 +825,7 @@ planner: { agent: claude }              # the interactive agent in each project'
 projects:
   some-project:
     checkout: ~/src/some-project        # the operator's checkout, for its herdr workspace (herd init fills it in)
-    slots: [gpu, gpu-private]           # optional: e.g. code that must not leave the host
+    slots: [gpu, gpu-private]           # optional: e.g. code that must not leave the host (no cloud, no rented)
 ```
 
 A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
@@ -1066,6 +1069,47 @@ models:                                # host config; only read when a local bac
   reports how long the load took; a test pull of a small model proves `models.registry_egress` is complete. The host
   half confirms the `herd` user is in `render` (or that CDI is set up).
 
+## Rented GPU backends
+
+
+Between the local model server and a cloud API sits a third option, especially for coding agents: an open-weight model
+on a GPU machine rented by the hour from a GPU cloud or marketplace. It can run models far larger than a desktop card
+holds (a coder model that needs 80 GB or more), it's billed per hour rather than per token, and the harnesses already
+speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-compatible API.
+
+- **Backend kind.** `kind: openai` is any OpenAI-compatible endpoint, and `hosting: rented` marks one on hired hardware.
+  The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face model), and `Herd-Model`
+  records both (`openai/<model>@<revision>`), so acceptance rates never mix two versions. `herd doctor` checks that the
+  server actually serves that model and revision.
+
+- **Trust.** The machine's provider can see prompts and code, as a cloud API's can, often without the data commitments a
+  model vendor gives. For the purposes of a project restricted to the host (see Models), a rented backend counts as
+  leaving it, so such a project never gets a rented slot; whether to use rented hardware at all is the operator's call,
+  per project.
+
+- **Network.** The model gateway is the only client, and the endpoint is never an open port: it's HTTPS with a key
+  (`secret`, kept in `~herd/secrets/` and read by the proxy alone, like a provider key), or reachable only through a
+  WireGuard tunnel the proxy holds. Its host is on the proxy's egress for that backend only, and `herd doctor` checks
+  that it refuses an unauthenticated request. The gateway applies the same rules as to any backend: it pins model and
+  revision, allow-lists the inference route and token-only features, and bounds the requested output by the backend's
+  context.
+
+- **Lifecycle.** At first the operator starts and stops the machine; the herd dispatches units to a rented slot only
+  while its endpoint answers health checks, and a unit whose machine disappears mid-call (spot and marketplace machines
+  can be reclaimed) ends as an `infra` failure and is retried. So a machine left running for nothing doesn't burn money
+  unnoticed, an idle machine (up, healthy, no call for `idle_alert`, default 30 minutes) raises an alert. Letting the
+  herd start and stop the machine itself through the provider's API, on demand, is an open question.
+
+- **Cost.** A rented backend's `price` is `per_hour`, not per token. The budget counts its hours from the health checks:
+  while the herd sees the endpoint up, the counter accrues the hourly rate, so the monthly budget covers rented hours
+  alongside cloud tokens. It's an approximation of the provider's bill, which the operator reconciles; the gateway still
+  meters tokens per unit for the usage ledger and acceptance rates, so cost per accepted task can be compared with a
+  cloud model's.
+
+- **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
+  accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
+  Models). The bigger models it can serve are the reason to try it; the replay is what shows whether they pay off.
+
 ## The herd's own account
 
 The herd runs as a dedicated `herd` system user, not the operator's account, so that the orchestrator's Podman socket,
@@ -1289,8 +1333,9 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   answering is an `infra` failure instead, and doesn't count.
 - **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
   the control socket, to reserve the call's maximum cost: an upper bound on its input tokens plus the requested output
-  limit, priced from the backend's `price` in host config (per million input and output tokens). The request body
-  carries no authoritative input count, so the bound comes from the provider's token-counting endpoint where it has one
+  limit, priced from the backend's `price` in host config (per million input and output tokens). A rented backend is
+  priced by the hour instead and counted from its health checks (see Rented GPU backends). The request body carries no
+  authoritative input count, so the bound comes from the provider's token-counting endpoint where it has one
   (Anthropic's does), and otherwise from the request's byte length, which bounds text tokens from above; a call whose
   input neither can bound (an image, for a provider without counting) is refused. `price.input` is the backend's highest
   input rate (cache writes, say), so no billing category can exceed the reservation. If a provider ever reports more
@@ -1393,13 +1438,14 @@ Steps marked **(manual)** need a human.
 
 1. ~~Create the herd repository~~: done (`herd`, starting with this file).
 2. ~~Local vs. cloud for the implementer~~: decided 2026-10-04. Backends are per worker slot and can be mixed (see
-   Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for
-   a pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel
-   Arc Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context.
-   It's bounded by the rule that a task's last review round goes to an implementer on a different model, which
-   holds here because the cloud slots stay. The B70 runs under
-   official Ollama's Vulkan backend (Intel archived IPEX-LLM in January 2026), passed to the Ollama container as
-   `/dev/dri`. The runtime is rootless Podman, already on the host.
+   Models). The smoke test (Onboarding a project, step 7) runs cloud only, so a model's weakness isn't mistaken for a
+   pipeline bug: Sonnet 5.5 implements, Opus 5.5 reviews. A local implementer slot joins right after, on an Intel Arc
+   Pro B70 (32 GB, 608 GB/s): enough for a 30B-class coder model at 4 to 8 bits with an agent's long context. It's
+   bounded by the rule that a task's last review round goes to an implementer on a different model, which holds here
+   because the cloud slots stay. The B70 runs under official Ollama's Vulkan backend (Intel archived IPEX-LLM in January
+   2026), passed to the Ollama container as `/dev/dri`. The runtime is rootless Podman, already on the host. A rented
+   GPU (see Rented GPU backends) is the third option for the implementer: bigger open-weight coder models than the B70
+   holds, billed by the hour, evaluated by the same replay before it gets a slot.
 
    **(manual) Reality check before any local backend or slot goes into host config.** The B70 figures above are
    assumptions from published specs and benchmarks; the host had an RTX 3080 when this was written. Each of these
@@ -1465,6 +1511,8 @@ Each waits for the point where it can be answered with evidence rather than gues
     manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same way.
   - Which local coder model earns the B70 slot, and whether the reviewer's `archive` (or `task`) units can run there
     too, once the reality check passes (Build plan step 2): decide by replaying accepted tasks (see Models).
+- **Once a rented backend is in use:** whether the herd should start and stop rented machines itself through the
+  provider's API (on demand, stopped after idle), which provider, and how closely health-check hours track the bill.
 - **When a project needs it:**
   - A second workflow besides OpenSpec.
   - Automating final approval for projects whose end-to-end tests can run in a container (e.g. an emulator with KVM
