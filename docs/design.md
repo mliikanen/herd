@@ -703,22 +703,24 @@ silently dropped — comes from two rules together, not from the scan alone:
   see Requirements on a project). Flakes count per test, as everywhere. `flaky xN` counts every flaky outcome the triage
   saw for that test (its reruns and merge-base runs included), like the other flake records. A run whose every failure
   is in a waived test needs no triage at all, so nothing is committed for it and a waiver can't loop: the orchestrator
-  reads the run's failed ids itself from its `results.jsonl` (the CI end-to-end job uploads one in `run`'s format, in an
-  artifact listed in `e2e.ci_artifacts`) and, when each has an effective `e2e-waive`, treats the run as waived without a
-  unit or a record. A run whose results it can't read, or with any other failure, goes to triage as usual. The required
-  check stays red, so the change carries on through its other work but can't become *ready-to-merge* (the status pane
-  shows "waiting for a default-branch fix"); the next update-branch merge that brings the fix in clears it. A triage
-  unit that can't rerun the test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the
-  job's artifacts alone, and records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle
-  it, so a person decides rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the
-  orchestrator escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default
-  branch, that no update-branch merge has followed yet, comes before everything else in every state before the archive
-  (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to
-  merge): the next action is update-branch, so the retry runs against a branch that contains the default branch's fix.
-  This is the path for a CI failure after an update-branch merge too (see Keeping up with the default branch). A
-  required check that still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely
-  expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the
-  archive or after it, since a stuck CI is for a person to look at.
+  reads the run's failed ids itself from its `results.jsonl` (the CI end-to-end job uploads one in `run`'s format,
+  together with the list of ids it was asked to run, in an artifact listed in `e2e.ci_artifacts`) and treats the run as
+  waived, without a unit or a record, only when it can verify that's the whole story: the check run's steps, read
+  through the Checks API, show the end-to-end step as the only one that failed, `results.jsonl` covers exactly the
+  requested ids, and every failed id has an effective `e2e-waive`. Whenever any of that can't be verified, the run goes
+  to triage as usual. The required check stays red, so the change carries on through its other work but can't become
+  *ready-to-merge* (the status pane shows "waiting for a default-branch fix"); the next update-branch merge that brings
+  the fix in clears it. A triage unit that can't rerun the test (the change's `e2e-mode` is `off`, so there's no
+  emulator for it) classifies from the job's artifacts alone, and records `unsettled` with the reason ("can't reproduce:
+  no emulator") when they don't settle it, so a person decides rather than the herd guessing. Those tasks count toward
+  `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" or "flaky test" stop
+  resolved as fixed on the default branch, that no update-branch merge has followed yet, comes before everything else in
+  every state before the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and
+  there may be nothing newer to merge): the next action is update-branch, so the retry runs against a branch that
+  contains the default branch's fix. This is the path for a CI failure after an update-branch merge too (see Keeping up
+  with the default branch). A required check that still has no result `pr_review.checks_timeout` after the push it's for
+  (queued, running or merely expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker
+  and alerts, before the archive or after it, since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -954,10 +956,11 @@ The layers:
    **baseline**: the parent of the task's first implementation commit, fixed for the life of the task. A revision after
    a rejected attempt starts on top of the rejected commit, but keeps the same baseline, so the task's earlier changes
    stay in its selection and its red run stays against the app without any of them. Selection for the task compares that
-   baseline with the working tree. The red run uses the baseline's tree with the task's versions of the `e2e.tests`
-   files laid over it, since the baseline has the old test or none: `prepare` builds the old app, and `run` runs the new
-   test against it. The implementer runs both and records the results in an `E2E:` section of its commit message, in the
-   fixed format of `Guarded:`: a `- <test id> green` line for **every** test in the effective selection (what `select`
+   baseline with the working tree. The red run builds the baseline's tree untouched, so `prepare` builds exactly the old
+   app even if a build input happens to match `e2e.tests`, and the task's versions of the `e2e.tests` files reach only
+   `run`, through the test snapshot (the baseline has the old test or none): `run` runs the new test against the old
+   app. The implementer runs both and records the results in an `E2E:` section of its commit message, in the fixed
+   format of `Guarded:`: a `- <test id> green` line for **every** test in the effective selection (what `select`
    returned, minus tests with an effective `e2e-waive`, which aren't run; each of those gets a `- <test id> waived` line
    instead, so a waiver stays visible), since the green run is on the commit that carries the section (which a commit
    can't name by its own SHA, so it's implicit); an additional `- <test id> red <baseline sha>` line for each
