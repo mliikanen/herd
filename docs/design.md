@@ -447,6 +447,9 @@ silently dropped — comes from two rules together, not from the scan alone:
      ready is here, and its next action follows from why:
      - checks still running, or an awaited reviewer hasn't reviewed the current tip and `pr_review.timeout` hasn't
        passed: none; wait;
+     - a review of the tip that no `triage` unit has classified yet: a `triage` unit, which records it as `clean`
+       or as a finding in `review-notes.md` (a bookkeeping commit). The orchestrator runs no model, so it can't tell
+       a clean review from one with findings in its free-form summary; only a classified-clean review counts;
      - a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
        orchestrator commits a mechanical `needs-human` marker (state 1 then matches). None of these can become a
        task, because fixing anything after the archive would mean un-archiving.
@@ -786,14 +789,21 @@ plain-HTTP hop between a worker and the proxy below is therefore private to that
 proxy, which serves two purposes:
 - **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`,
   or the harness's equivalent, points at the gateway, with a placeholder key). The gateway checks the unit's token,
-  swaps in the backend's real key and calls the provider over HTTPS. So workers never hold an API key, the gate
-  and the agent-written code it runs have none to leak, and a unit can only call the backend its slot assigns.
+  swaps in the backend's real key and calls the provider over HTTPS. It also sets the provider endpoint and the
+  model itself, from the token's registered backend, overwriting whatever the request named (one key can authorize
+  several models), and rejects requests to any other endpoint. So workers never hold an API key, the gate and the
+  agent-written code it runs have none to leak, and a unit can only call the model its slot assigns, at the price
+  its reservation assumed.
   Local backends go through the gateway too, which keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
   the hosts on the unit's list: the manifest's `egress`, which a role can narrow. The proxy serves every unit's network,
   so the tunnel authenticates with the same unit token (`Proxy-Authorization`, set through the standard proxy
   variables), and the proxy rejects a request without a valid one, or one arriving on a network other than its unit's;
-  that's what tells it whose list applies. The proxy doesn't break TLS. A tool that ignores the proxy settings can't
+  that's what tells it whose list applies. A hostname alone doesn't keep a tunnel out of the herd's own networks, since
+  an allowed name could resolve, or be rebound, to an internal address. So the proxy resolves each destination itself
+  and rejects loopback, link-local and every herd network (unit networks, the model server's), whatever the name;
+  another private range (a company registry, say) is reachable only if host config allows it, which is the operator's
+  decision, never the project manifest's. The proxy doesn't break TLS. A tool that ignores the proxy settings can't
   connect at all, so a mistake fails closed; `herd doctor` proves the real gate works this way. Gradle, for one, needs
   its proxy and credentials in `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java
   disables Basic auth for HTTPS tunnels by default.
@@ -982,18 +992,19 @@ The values above are placeholders, tuned after the smoke test like the caps (see
 - **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
   the control socket, to reserve the call's maximum cost: its input tokens plus the requested output limit, priced from
   the backend's `price` in host config (per million input and output tokens). The orchestrator adds the reservation to
-  the monthly counter, writes it durably, and only then acknowledges; the gateway forwards the call only after that
-  acknowledgement, and refuses it (an `infra` failure for the unit) when the handshake can't complete. After the call,
-  the gateway reports the actual usage the same way, and the orchestrator replaces the reservation with it and writes a
-  usage event to the event log. A crash between the two leaves the reservation counted, so the counter can overcount but
-  never undercount. The orchestrator stays the only writer of `/var/lib/herd/shared/` and of the counter, and the
-  key-holding proxy gets no writable shared mount. The status pane shows spend this month against `budget.monthly`. At
-  `warn_at` the operator gets an alert; at the budget, the orchestrator stops dispatching units to cloud backends and
-  refuses new reservations, running units' in-flight calls finish, and local slots carry on. The status pane shows it as
-  "paused: budget", not as `needs-human`: it's the operator's call to raise the budget or wait for the month to turn.
-  The budget is the one control that reads something besides git: the orchestrator's monthly counter, kept in the herd's
-  own files. It decides only whether cloud calls go out, never a change's state. If the counter is lost, cloud dispatch
-  pauses until the operator confirms.
+  the monthly counter, atomically, only if the result stays within `budget.monthly` (a reservation that would cross it
+  is refused, not just those made after the limit), writes it durably, and only then acknowledges; the gateway forwards
+  the call only after that acknowledgement, and refuses it (an `infra` failure for the unit) when the handshake can't
+  complete. After the call, the gateway reports the actual usage the same way, and the orchestrator replaces the
+  reservation with it and writes a usage event to the event log. A crash between the two leaves the reservation counted,
+  so the counter can overcount but never undercount. The orchestrator stays the only writer of `/var/lib/herd/shared/`
+  and of the counter, and the key-holding proxy gets no writable shared mount. The status pane shows spend this month
+  against `budget.monthly`. At `warn_at` the operator gets an alert; at the budget, the orchestrator stops dispatching
+  units to cloud backends and refuses new reservations, running units' in-flight calls finish, and local slots carry on.
+  The status pane shows it as "paused: budget", not as `needs-human`: it's the operator's call to raise the budget or
+  wait for the month to turn. The budget is the one control that reads something besides git: the orchestrator's monthly
+  counter, kept in the herd's own files. It decides only whether cloud calls go out, never a change's state. If the
+  counter is lost, cloud dispatch pauses until the operator confirms.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
   warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after`
   all raise an alert, on two channels from two accounts:
