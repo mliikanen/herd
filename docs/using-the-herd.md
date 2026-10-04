@@ -2,7 +2,7 @@
 
 For the people, and their planner agents, who work in a project the herd serves. It covers what you do and what to
 expect. How the herd works inside (states, recovery, containers) is in `design.md`. Each project's own workflow doc
-adds that project's rules: what a ready change may need, and how to run its final approval.
+adds that project's rules: what a ready change may need, and what its final checks are.
 
 The herd isn't built yet. This describes it as designed.
 
@@ -16,9 +16,10 @@ commit until it is merged.** The default branch gets a change only as one merge,
 2. **You mark it ready** (`/herd-ready`). From then on the herd owns it.
 3. **The herd** implements `tasks.md` item by item on the branch, has each task reviewed, runs the project's gate,
    reviews the whole change, and updates the draft PR.
-4. **Final approval**, if the project has one: the herd runs it on an emulator (`container`), or you run it and
-   record the result (`human`, or `container` with a human check after it).
-5. **The herd** marks the PR ready for review and follows up on what reviewers say, until nothing is open.
+4. **The herd's final e2e**, if the project has one (`container`): the change's relevant end-to-end tests on an
+   emulator, before the PR is ready.
+5. **The herd** marks the PR ready for review and follows up on what reviewers say, until nothing is open. If the
+   project wants a person's check (on a real device, say), that's you, as a reviewer of the PR.
 6. **The herd** archives the change as the last change to the proposal's own files. **You merge it.**
 
 ```mermaid
@@ -26,7 +27,7 @@ flowchart TD
     subgraph you["You"]
         P["Propose on change/&lt;name&gt; with a draft PR<br/>/herd-propose"]
         R["Mark ready<br/>/herd-ready"]
-        FA["Run final approval, record pass or fail<br/>/herd-resolve"]
+        HC["Your check, if the project has one:<br/>approve or request changes on the PR"]
         NH["Fix the stop, mark it resolved<br/>/herd-resolve"]
         M["Merge the PR"]
     end
@@ -39,28 +40,25 @@ flowchart TD
         AP["Wait for checks and the review<br/>of the archive"]
     end
     P --> R --> I --> H
-    H -- "final approval: you" --> FA
-    H -- "final approval: the herd" --> E
-    H -- "no final approval" --> RV
-    E -- "pass" --> RV
-    E -- "pass, and the project also wants your check" --> FA
+    H -- "findings: tasks" --> I
+    H -- "final e2e" --> E
+    H -- "no final e2e" --> RV
+    E -- "pass: PR ready" --> RV
     E -- "fail: triaged into tasks" --> I
     E -. "fail: a flake below the cap reruns it" .-> E
     E -. "fail: pre-existing, unsettled or flaky past the cap" .-> NH
-    FA -- "pass" --> RV
-    FA -- "fail: triaged into tasks" --> I
-    FA -. "fail: a flake below the cap, check again" .-> FA
-    FA -. "fail: pre-existing, unsettled or flaky past the cap" .-> NH
+    RV -- "requests your review" --> HC
+    HC -- "approval, or changes requested" --> RV
     RV -- "fix tasks" --> I
-    RV -- "review done" --> A --> AP --> M
+    RV -- "review done (your approval included)" --> A --> AP --> M
     I -. "something it can't do on its own" .-> NH
-    RV -. "scope change or too many rounds" .-> NH
+    RV -. "scope change, too many rounds,<br/>or a failure for you to settle" .-> NH
     AP -. "failed check, finding<br/>or content commit" .-> NH
     NH -. "herd re-derives where the change is<br/>and picks it back up there" .-> RD["Wherever the branch<br/>now says"]
 ```
 
-Your time goes to steps 1, 2 and 6, to step 4 when the project has you run final approval, and to any
-`needs-human` stop along the way.
+Your time goes to steps 1, 2 and 6, to step 5 when the project wants your check, and to any `needs-human` stop along the
+way.
 
 ## Proposing
 
@@ -83,14 +81,14 @@ checks these rules, and the project's workflow doc adds its own:
 - **Sections are in dependency order.** Tasks run strictly in sequence.
 - **Nothing needs a capability the project lists as missing** (the manifest's `missing_capabilities`). If the project
   has no end-to-end tests the herd knows about, no task *runs* them: tasks may write or update those tests, and running
-  them is up to your final approval if the project has one (`final_approval.kind: human`), or to CI alone if it has
-  none. If it has end-to-end tests the herd knows about (an `e2e` block; the project's workflow doc says), a task that
-  changes behavior a test can see **always** includes or updates that test. Whether the herd runs it while implementing,
-  shown failing before the task and passing after, depends on whether the herd's host runs end-to-end tests yet. That's
+  them is up to your check in PR review if the project has one (`pr_review.human_check`), or to CI alone if it doesn't.
+  If it has end-to-end tests the herd knows about (an `e2e` block; the project's workflow doc says), a task that changes
+  behavior a test can see **always** includes or updates that test. Whether the herd runs it while implementing, shown
+  failing before the task and passing after, depends on whether the herd's host runs end-to-end tests yet. That's
   decided once per change, when its first task starts, and holds for the change's life: a change started while the host
-  couldn't run them carries on with CI (and your final approval, if the project has one) even after the host can, only
-  changes started afterwards get the herd's loop, and a change whose final approval the herd runs (`container`) waits to
-  start until the host can.
+  couldn't run them carries on with CI (and your check, if the project has one) even after the host can, only changes
+  started afterwards get the herd's loop, and a change that owes the herd's final e2e (`container`) waits to start until
+  the host can.
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it.
 - **No task needs a secret.**
@@ -117,9 +115,9 @@ Run `herd`. It opens herdr, or attaches to it, and warns you if the herd itself 
 as its own system user, and keeps running when you close the terminal or reboot. `herd <project>` takes you
 straight to a project.
 
-- **The `herd` workspace** has the status pane: every change in flight with its state, current task, review round
-  and spend. What's waiting on you (`needs-human`, or final approval with its instructions) comes first, and
-  changes still being drafted are listed too.
+- **The `herd` workspace** has the status pane: every change in flight with its state, current task, review round and
+  spend. What's waiting on you (`needs-human`, or your check on a PR with its instructions) comes first, and changes
+  still being drafted are listed too.
 - **Each project has a workspace**, opened in your checkout of it:
   - **Your planner pane**: your agent (Claude Code by default), where you propose, mark ready and resolve stops.
     The herd never touches it; herdr resumes it after a restart.
@@ -162,46 +160,44 @@ back up on its next pass.
 `herd provide <project> <change> <file>...` instead. The herd mounts it read-only for that change's workers only.
 Never provide a credential this way: a task that needs a secret stays with you.
 
-## Final approval
+## Final checks
 
-Some projects have a check that runs only when the whole change is done, typically end-to-end tests that need an
-emulator, a device or a GUI. It takes one of two forms, which the project's workflow doc names:
+Some projects have checks that only make sense on the whole change, typically end-to-end tests that need an emulator, a
+device or a GUI. There are two kinds, and the project's workflow doc says which it uses:
 
-- **The herd runs it** (`container`): an emulator in a worker runs every end-to-end test relevant to the change, after
-  the herd has already run each task's relevant tests while implementing it, with every test a task adds or changes
-  shown failing before the task and passing after it (a task that only maintains tests, fixing a flaky one say, shows
-  them passing on both instead). You only step in if a failure can't be settled from the spec, a test stays flaky past
-  the allowed retries or fails on the default branch too, or if the project also asks for your own check afterwards for
-  something only a real device can do. CI runs the full suite on the PR either way.
-- **You run it** (`human`): when a change reaches it, the draft PR (and the status pane) shows the project's
-  instructions. Check out the branch, follow them, and record the result with `/herd-resolve`, which pins it to the
-  commit you tested:
-  - **pass**: the change moves on to review;
-  - **fail**: describe the failing check and what happened. The herd checks it the way it checks any failing test: if it
-    passed when you reran it, it's intermittent: for an end-to-end test the change didn't add or change, it's then run a
-    few times on the change's merge-base, by the herd if the change started with the herd running its end-to-end tests
-    and the failed check is one of those tests, or by you, when `/herd-resolve` asks, otherwise (a real-device check
-    stays with you, and the mode is fixed when the change starts, even if the host gains emulators later). Stable there
-    means this change made it intermittent, and it becomes a fix task like any regression; flaky there too means it's a
-    flake, and the herd just asks you to check again, until the test's flake count reaches the project's limit
-    (`caps.flaky_retries`), when it stops and asks you instead; if it fails on the change's merge-base too (the
-    default-branch commit the change is currently based on, which moves each time the herd merges the default branch
-    in), or the spec doesn't say which behavior is right, it stops and asks you; otherwise it turns the failure into new
-    tasks, and the draft PR just gets more commits. `/herd-resolve` asks for the rerun when you record a fail, and for
-    an end-to-end test the change didn't add or change, a try on that merge-base, which it checks out for you (not the
-    default branch's latest, which may already have an unrelated fix), repeated as many times as the project's
-    flaky-retry limit plus one when the check passed on your rerun, since one or two runs there can't tell a stable test
-    from a flaky one (and a second try when the first fails, since one failure there could itself be a flake). A test
-    the change added or changed isn't compared there: the old commit has a different version of it, or none.
+- **The herd's final e2e** (`container`), before the PR is ready: an emulator in a worker runs every end-to-end test
+  relevant to the change, after the herd has already run each task's relevant tests while implementing it, with every
+  test a task adds or changes shown failing before the task and passing after it (a task that only maintains tests,
+  fixing a flaky one say, shows them passing on both instead). You only step in if a failure can't be settled from the
+  spec, a test stays flaky past the allowed retries, or it fails on the default branch too. CI runs the full suite on
+  the PR either way.
+- **Your check** (`pr_review.human_check`), as a reviewer of the PR: for what only you or a real device can judge. When
+  the PR is marked ready, the herd puts the project's instructions in the PR body and the status pane and requests your
+  review. Check out the branch, follow them, and answer on GitHub:
+  - **Approve**, once the herd has asked (an approval given before the PR was ready doesn't count): your check is done.
+    It holds until the change's content changes again (the herd's own notes and clean merges of the default branch don't
+    count); then the herd asks you again.
+  - **Request changes**, describing what failed: the herd handles it like any other review finding, and checks a failed
+    check the way it checks any failing test. For a failed check, run `/herd-resolve` and let it submit the review for
+    you, with what the herd needs attached: a rerun of the failing check, and, for an end-to-end test the change didn't
+    add or change that the herd can't run itself (its own emulator runs them when it can, after you submit), runs on the
+    change's merge-base (the default-branch commit the change is currently based on, which it checks out for you; not
+    the default branch's latest, which may already have an unrelated fix). If the check passed on your rerun and is
+    stable on the merge-base, the change made it intermittent, and it becomes a fix task; if it's flaky there too, the
+    herd asks you to check again, until the test's flake count reaches the project's limit (`caps.flaky_retries`), when
+    it stops and asks you instead. If it fails on the merge-base too, or the spec doesn't say which behavior is right,
+    it stops and asks you; you can fix the default branch, waive an end-to-end test for this change, or approve despite
+    a manual check by naming it as a known default-branch failure in your review. Otherwise the failure becomes new
+    tasks, and the PR gets more commits.
 
 ## Review
 
-After final approval, the herd marks the PR ready for review. Automated reviewers (Copilot, for example) review it
-again after every push. Checks have to pass on the latest commit, but the herd waits for their review of the latest
-commit that changes the proposal: neither its own notes nor a clean merge of the default branch that leaves the
-proposal's files alone restarts the wait. Each finding is either fixed, as a new task that goes through implementation
-and review like any other, or answered with a reason for not changing anything. The herd posts the reply and resolves
-the thread.
+After the herd's final e2e, if the project has one, the herd marks the PR ready for review. Automated reviewers
+(Copilot, for example) review it again after every push. Checks have to pass on the latest commit, but the herd waits
+for their review of the latest commit that changes the proposal: neither its own notes nor a clean merge of the default
+branch that leaves the proposal's files alone restarts the wait. Each finding is either fixed, as a new task that goes
+through implementation and review like any other, or answered with a reason for not changing anything. The herd posts
+the reply and resolves the thread.
 
 You can review too: your comments are handled the same way. A request to change the change's *scope*, rather than
 its implementation, comes back to you as a `needs-human` stop, because scope is the proposer's call.
