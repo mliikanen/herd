@@ -423,17 +423,19 @@ silently dropped — comes from two rules together, not from the scan alone:
      failure, even when a draft PR already exists.
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
-  6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, no pass recorded, change not
-     archived. Next action: ensure a **draft** PR exists; the human runs the project's final approval. Skipped
-     entirely when `final_approval.kind: none`.
-  7. *in-review* — holistic review accepted and (if required) a final-approval pass recorded, change not archived, and
-     review isn't done: the PR has unresolved review threads, a review requesting changes, a review finding not yet
-     triaged (including ones in a review's summary, which have no thread), or an awaited reviewer (`pr_review.wait_for`)
-     hasn't reviewed the current tip yet and `pr_review.timeout` hasn't passed since its push. Next action: mark the PR
-     ready for review if it's still a draft, then follow up as Following up on PR review describes. A triaged finding
-     becomes a task under "(added during review)", which sends the change back to *implementing*. Review comes before
-     archiving, because a fix after the archive would mean editing the synced main specs by hand.
-  8. *archiving* — holistic review accepted, (if required) a final-approval pass recorded in `review-notes.md`, review
+  6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
+     (see below) isn't a pass, change not archived. Next action: ensure a PR exists (a **draft**, unless it was
+     already marked ready before a `rerun`; it isn't turned back into one); the human runs the project's final
+     approval. Skipped entirely when `final_approval.kind: none`.
+  7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
+     archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
+     finding not yet triaged (including ones in a review's summary, which have no thread), or an awaited reviewer
+     (`pr_review.wait_for`) hasn't reviewed the current tip yet and `pr_review.timeout` hasn't passed since its push.
+     Next action: mark the PR ready for review if it's still a draft, then follow up as Following up on PR review
+     describes. A triaged finding becomes a task under "(added during review)", which sends the change back to
+     *implementing*. Review comes before archiving, because a fix after the archive would mean editing the synced main
+     specs by hand.
+  8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review
      done (no open thread or untriaged finding, and every awaited reviewer has reviewed the tip or timed out), change
      not yet
      archived on the branch. Next action: the reviewer runs the archive and
@@ -466,6 +468,11 @@ silently dropped — comes from two rules together, not from the scan alone:
   *archived-pending* with the merge treated as a review finding. A final-approval pass isn't made stale by later
   fixes on its own: the holistic review that follows them records `final-approval: rerun` when the fixes touch what
   final approval covers.
+
+  **The effective final-approval record** is the latest of the change's final-approval records in git order: a
+  `pass`, a `fail`, or a `rerun`. History is additive, so an old pass stays in `review-notes.md`, but only a pass
+  that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until
+  a person records a new pass.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -575,7 +582,8 @@ work like any other, derived from git and GitHub on each scan, never remembered.
    answered in one PR comment per review round. Workers hold no GitHub credentials, so replies are always posted by
    the orchestrator, from text in `review-notes.md`.
 5. **Repeat.** The push of the fixes triggers the next round. Only pushes with non-bookkeeping commits count as rounds,
-   so update-branch merges and the herd's own records don't use up `caps.pr_review_rounds`. A change past that many
+   so bookkeeping update-branch merges (see Current records) and the herd's own records don't use up
+   `caps.pr_review_rounds`; a merge that touches the change's own files counts. A change past that many
    rounds without coming clean, or a finding the reviewer can't map to a task, escalates to `needs-human`.
 
 Feedback from a person is handled the same way. A request to change the proposal's scope rather than its
@@ -883,8 +891,13 @@ It's stateless, like the orchestrator: after a herdr restart or a reboot it rebu
 pass, and herdr brings back the planner panes' sessions.
 
 **Desktop alerts come from the bridge.** The bridge runs in the operator's herdr, under the operator's account,
-so it's the one that can reach their desktop: it reads alerts the orchestrator queues in `/var/lib/herd/shared/`
-and shows each with `herdr notification show "<title>" --body "<details>"`. With herdr's
+so it's the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence
+number, to a queue in `/var/lib/herd/shared/`, and shows each with `herdr notification show "<title>" --body
+"<details>"`. The bridge's one piece of state is a cursor in the operator's own state directory
+(`~/.local/state/herd/alerts.cursor`), the sequence number of the last alert it showed, updated after each one.
+After a restart it shows the alerts queued since the cursor, so nothing raised while it was down is missed and
+nothing is shown twice. Without a cursor (first run, or lost) it shows only the last hour's alerts rather than
+replaying the whole queue; the status pane still lists everything waiting. With herdr's
 `[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached,
 as long as herdr's server is running in the operator's session. The `herd` user has no desktop session to
 notify, so it sends only push alerts (see Monitoring).
