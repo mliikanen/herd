@@ -852,8 +852,9 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   backend, revision): two backends naming the same model count as the same model for this rule and the ones below, and
   two revisions of one model, being different weights, count as different models. The same open weights served two ways
   (`ollama/…` on the B70, `openai/…` on a rented machine) have different names, though, so a backend can declare
-  `weights: <label>`: the label is recorded in a `Herd-Weights` trailer, and two commits that both carry one are
-  compared by it instead, so backends with the same label count as one model. `herd doctor` warns when backends of
+  `weights: <label>`: the label is recorded in a `Herd-Weights` trailer and only ever adds an equivalence: two commits
+  are the same model when their `Herd-Model` values match, whatever their labels say, **or** when both carry the same
+  label, so a label can unify the two servings but never split one model into two. `herd doctor` warns when backends of
   different kinds look like the same model (the same base name) without a shared label. A holistic review spans commits
   that may come from several models, so excluding all of them could leave no reviewer; it prefers a model that wrote
   none of the change, when a capable slot has one.
