@@ -423,7 +423,8 @@ bare mirror, derives each proposal's state, and dispatches work to free worker s
 fix that appeared since the last pass is picked up by the next one with no restart, because no proposal state is
 remembered between passes to go stale. Crash recovery (below) is just the first scan. The only things the orchestrator
 keeps across passes are operational stores that decide nothing about any proposal: the budget counter and usage ledger,
-and the alert queue (see Monitoring). It reads them back on start.
+the alert queue (see Monitoring), and retained snapshots of removed rented backends (see Rented GPU backends). It reads
+them back on start.
 
 **Crash recovery** (orchestrator container restart or a full host reboot look identical from here, given its systemd
 unit's `Restart=always` and lingering, see Containers): on start, the orchestrator, for every registered project, (1)
@@ -431,11 +432,11 @@ lists every change branch without a merged PR, (2) reads each one's `.openspec.y
 compute its exact next action from scratch — no assumption carried over from before the crash, (3) reconciles against
 running containers (kill any orphaned worker or model pull rather than adopt it — its state is suspect — and wait for a
 pull to exit before local dispatch resumes; the model server alone is adopted) and `gh pr list` (don't open a second PR
-for a branch that already has one), (4) reads back the operational stores (budget counter, usage ledger, alert queue)
-and starts a new proxy epoch (see Network and secrets), (5) re-enqueues and resumes. The cost of a crash is bounded to
-whatever unpushed work was sitting in a worker's ephemeral clone — redone from the last pushed commit (and, per the rule
-above, that redo never reuses the discarded partial work) — which is cheap specifically because workers are stateless
-and task granularity is small (one `tasks.md` item at a time).
+for a branch that already has one), (4) reads back the operational stores (budget counter, usage ledger, alert queue,
+retained rented-backend snapshots) and starts a new proxy epoch (see Network and secrets), (5) re-enqueues and resumes.
+The cost of a crash is bounded to whatever unpushed work was sitting in a worker's ephemeral clone — redone from the
+last pushed commit (and, per the rule above, that redo never reuses the discarded partial work) — which is cheap
+specifically because workers are stateless and task granularity is small (one `tasks.md` item at a time).
 
 **The proposal states at a glance.** A summary of the state list below, which is the authority: the diagram leaves out
 *closed* (a closed PR is dormant until it's reopened) and most of the ways a change can stop at *needs-human*.
@@ -829,7 +830,8 @@ planner: { agent: claude }              # the interactive agent in each project'
 projects:
   some-project:
     checkout: ~/src/some-project        # the operator's checkout, for its herdr workspace (herd init fills it in)
-    slots: [gpu, gpu-private]           # optional: e.g. code that must not leave the host (no cloud, no rented)
+    locality: host                      # optional: code must not leave the host (no cloud, no rented backends)
+    slots: [gpu, gpu-private]           # optional: the slots this project may use
 ```
 
 A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
@@ -847,10 +849,13 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   model for this rule and the ones below. A holistic review spans commits that may come from several models, so
   excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable
   slot has one.
-- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover
-  `implement` and every reviewer kind, and for each implementer backend among them, some slot must offer a `task`
-  review on a different model. A project that fails is shown *inactive* with the reason ("no slot can review
-  local-coder's work"), before any of its changes start, rather than stalling one after its first task.
+- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
+  and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
+  different model. A project with `locality: host` may use only slots whose every backend is local, for every role and
+  unit kind; a config that maps one of its slots to a cloud or rented backend, including by repointing a backend later,
+  fails this check, so its code can't leave the host through a config change. A project that fails is shown *inactive*
+  with the reason ("no slot can review local-coder's work"), before any of its changes start, rather than stalling one
+  after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -1091,10 +1096,9 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   cryptographic proof of what weights are loaded; it's what keeps acceptance rates from silently mixing two versions.
   `Herd-Model` records the same ID (`openai/<model>@<revision>`).
 - **Trust.** The machine's provider can see prompts and code, as a cloud API's can, often without the data commitments a
-  model vendor gives. For the purposes of a project restricted to the host (see Models), a rented backend counts as
-  leaving it, so such a project never gets a rented slot; whether to use rented hardware at all is the operator's call,
+  model vendor gives. A rented backend counts as leaving the host, so a project with `locality: host` (see Models) never
+  gets a rented slot, which config validation enforces; whether to use rented hardware at all is the operator's call,
   per project.
-
 - **Network.** The model gateway is the only client, and the endpoint is never an open port. A rented backend declares
   how it's protected with `access`: `https-key`, HTTPS with a key (`secret`, kept in `~herd/secrets/` and read by the
   proxy alone, like a provider key), for which `herd doctor` checks that a request without the key is refused; or
@@ -1118,11 +1122,12 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   by the next call or by the machine going down, so a machine idle all day alerts once plus the daily reminder. Letting
   the herd start and stop the machine itself through the provider's API, on demand, is an open question. Host config can
   drop or repoint a rented backend at any scan, but its machine doesn't stop with it: the orchestrator keeps the old
-  definition (tunnel, key, health checks, hourly accrual, alerts) as a retained snapshot until the units that started on
-  it have finished **and** its endpoint is confirmed down. Until then the snapshot takes no new units, its running units
-  finish on it (as Models promises), and while its machine is still up it keeps accruing cost and raises a "removed
-  backend still up" alert, an episode like the idle one, so a machine dropped from config can't keep billing out of
-  sight.
+  definition (tunnel, key reference, health checks, hourly accrual, alerts) as a retained snapshot, persisted in the
+  herd's own files as an operational store and read back on start like the budget counter, so a restart doesn't lose
+  track of the machine, until the units that started on it have finished **and** its endpoint is confirmed down. Until
+  then the snapshot takes no new units, its running units finish on it (as Models promises), and while its machine is
+  still up it keeps accruing cost and raises a "removed backend still up" alert, an episode like the idle one, so a
+  machine dropped from config can't keep billing out of sight.
 - **Cost.** A rented backend's `price` is `per_hour`, not per token, in `budget.currency`. The budget counts its hours
   from the health checks: while the herd sees the endpoint up, the counter accrues the hourly rate, so the monthly
   budget covers rented hours alongside cloud tokens. That's an approximation of the provider's bill: health checks miss
