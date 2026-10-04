@@ -807,7 +807,8 @@ backends:
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
   local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
   rented-coder:   { kind: openai, machine: h100-a, model: <open-weight coder>, revision: <commit>,
-                    context: 131072 }      # see Rented GPU backends
+                    context: 131072,       # see Rented GPU backends
+                    weights: <label> }     # optional: same label = same model for review exclusion
 machines:                              # rented GPU machines: what's billed, once per machine
   h100-a: { endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
             price: { per_hour: <rate> }, idle_alert: 30m }
@@ -849,9 +850,13 @@ those projects' units. Slots that share a GPU share it in turn: the model server
 - **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots. Backend
   names are only labels, so models are compared by their normalized `Herd-Model` value (kind, model and, for a rented
   backend, revision): two backends naming the same model count as the same model for this rule and the ones below, and
-  two revisions of one model, being different weights, count as different models. A holistic review spans commits that
-  may come from several models, so excluding all of them could leave no reviewer; it prefers a model that wrote none of
-  the change, when a capable slot has one.
+  two revisions of one model, being different weights, count as different models. The same open weights served two ways
+  (`ollama/…` on the B70, `openai/…` on a rented machine) have different names, though, so a backend can declare
+  `weights: <label>`: the label is recorded in a `Herd-Weights` trailer, and two commits that both carry one are
+  compared by it instead, so backends with the same label count as one model. `herd doctor` warns when backends of
+  different kinds look like the same model (the same base name) without a shared label. A holistic review spans commits
+  that may come from several models, so excluding all of them could leave no reviewer; it prefers a model that wrote
+  none of the change, when a capable slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
   and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
   different model. A project with `locality: host` may use only slots whose every backend is local, for every role and
@@ -866,11 +871,11 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
   (`Herd-Model: ollama/<coder model>@<digest>`, the digest where the backend has one, `Herd-Backend: local-coder`,
-  `Herd-Unit: implement`), captured when the worker starts, and commit validation checks them against the slot. Backend
-  names can be repointed in host config at any time, so the rules above and any metrics read `Herd-Model`, the model
-  that actually ran, never the name. How often each model's work is accepted comes straight from git history, which is
-  how to judge a local model against a cloud one: replay tasks the herd has already accepted on the candidate and
-  compare. There's no separate metrics store.
+  `Herd-Unit: implement`, and `Herd-Weights` when the backend declares one), captured when the worker starts, and commit
+  validation checks them against the slot. Backend names can be repointed in host config at any time, so the rules above
+  and any metrics read `Herd-Model`, the model that actually ran, never the name. How often each model's work is
+  accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks the
+  herd has already accepted on the candidate and compare. There's no separate metrics store.
 - **No worker holds an API key.** A unit's container gets its backend's model name and the address of the
   herd's model gateway, plus a token for that unit only. The gateway adds the backend's real key on the way out
   (see Network and secrets), and accepts the unit's token only for that unit's backend.
@@ -1115,23 +1120,23 @@ revision below).
   per project.
 
 - **Network.** The model gateway is the only client, and the endpoint is never an open port. A machine declares how it's
-  protected with `access`: `https-key`, HTTPS with a key (`secret`, kept in `~herd/secrets/` and read by the proxy
-  alone, like a provider key), for which `herd doctor` checks that a request without the key is refused; or `wireguard`,
-  reachable only through a WireGuard tunnel the proxy holds, where tunnel membership is the authentication. The
-  machine's `wireguard` block gives everything the proxy needs to bring the tunnel up itself: the machine's public
+  protected with `access`: `https-key`, HTTPS with a key (`secret`, kept in `~herd/secrets/machines/` and read by the
+  proxy alone, like a provider key), for which `herd doctor` checks that a request without the key is refused; or
+  `wireguard`, reachable only through a WireGuard tunnel the proxy holds, where tunnel membership is the authentication.
+  The machine's `wireguard` block gives everything the proxy needs to bring the tunnel up itself: the machine's public
   address and port (`peer`), its public key, the proxy's own tunnel `address`, the `allowed_ips` it routes into the
   tunnel (the machine's tunnel address only), and the proxy's private key as a secret (`private_key_secret`, in
-  `~herd/secrets/`); the `endpoint` is then an `http://` URL at the machine's tunnel address, with no TLS inside the
-  tunnel, since WireGuard already encrypts the traffic and authenticates the peer by its key. The operator sets up the
-  other side on the machine. The proxy runs WireGuard in userspace, with the tunnel served by an in-process network
-  stack rather than a kernel interface, so it needs no TUN device and no `NET_ADMIN`, and the orchestrator stays the
-  only privileged component. `doctor` checks that the endpoint answers through the tunnel, and that the inference port
-  is closed at the peer's public address. The endpoint's host is on the proxy's egress for that machine's backends only.
-  The gateway applies the same rules as to any backend: it pins the attested model ID, allow-lists the inference route
-  and token-only features, and checks each request against the backend's `context`, which a rented backend must declare
-  (the OpenAI-compatible model list doesn't report it): the prompt's upper bound (counted as for a reservation, see
-  Monitoring) plus the requested output must fit, and a request that can't is refused rather than sent to fail on the
-  server. `doctor` checks the value with a request near that length.
+  `~herd/secrets/machines/`); the `endpoint` is then an `http://` URL at the machine's tunnel address, with no TLS
+  inside the tunnel, since WireGuard already encrypts the traffic and authenticates the peer by its key. The operator
+  sets up the other side on the machine. The proxy runs WireGuard in userspace, with the tunnel served by an in-process
+  network stack rather than a kernel interface, so it needs no TUN device and no `NET_ADMIN`, and the orchestrator stays
+  the only privileged component. `doctor` checks that the endpoint answers through the tunnel, and that the inference
+  port is closed at the peer's public address. The endpoint's host is on the proxy's egress for that machine's backends
+  only. The gateway applies the same rules as to any backend: it pins the attested model ID, allow-lists the inference
+  route and token-only features, and checks each request against the backend's `context`, which a rented backend must
+  declare (the OpenAI-compatible model list doesn't report it): the prompt's upper bound (counted as for a reservation,
+  see Monitoring) plus the requested output must fit, and a request that can't is refused rather than sent to fail on
+  the server. `doctor` checks the value with a request near that length.
 - **Lifecycle.** At first the operator starts and stops the machine. The herd dispatches a unit to a rented backend only
   while that backend is ready: its machine's endpoint answers health checks **and** the machine's model list still
   contains the backend's own `<model>@<revision>` (one machine may serve several models, and one can disappear while the
@@ -1139,10 +1144,11 @@ revision below).
   as an `infra` failure and is retried. **Endpoint health decides dispatch, never whether billing stopped**: an expired
   key, a broken tunnel, a crashed model server or a network blip look exactly like a stopped machine while the provider
   keeps billing. Only the operator can say a machine is stopped, with `herd machines stopped <machine or snapshot id>`
-  (a request; see The herd's own account), which closes that machine's billing-related alerts until its endpoint answers
-  again. Since unhealthy may still mean billing, an active machine whose health checks fail for longer than
-  `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns
-  or the operator confirms it stopped.
+  (a request; see The herd's own account). The orchestrator records the confirmation in the persisted machine
+  definitions, against the exact current definition or snapshot id, before it consumes the request, so a restart doesn't
+  lose it; it closes that machine's billing-related alerts until its endpoint answers again. Since unhealthy may still
+  mean billing, an active machine whose health checks fail for longer than `alerts.infra_after` opens a "machine
+  unhealthy, not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
@@ -1167,10 +1173,13 @@ revision below).
   until it's retired. Since copies are keyed by content, definitions that share a credential share one copy, so a copy
   is deleted only once no persisted definition, current or retained, still references its hash. That store is a
   dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate from
-  `~herd/secrets/`, whose key files the proxy only mounts read-only one by one, so it never sees the orchestrator's App
-  key. The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps accruing cost
-  and raises a "retained machine not confirmed stopped" alert episode, shown with its id, until its units have finished
-  **and** the operator runs `herd machines stopped <snapshot id>`.
+  the operator's files it copies from. Those live in a directory of their own, `~herd/secrets/machines/` (`0700`, files
+  `0600`), holding machine keys only, which the proxy mounts whole and read-only, so a machine added or a secret renamed
+  at any scan is readable without recreating the proxy; the rest of `~herd/secrets/` (provider keys, the orchestrator's
+  App key) stays mounted one file at a time, and the App key never reaches the proxy. The snapshot takes no new units,
+  its running units finish on it (as Models promises), and it keeps accruing cost and raises a "retained machine not
+  confirmed stopped" alert episode, shown with its id, until its units have finished **and** the operator runs
+  `herd machines stopped <snapshot id>`.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
@@ -1238,12 +1247,13 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
 Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator, the
 model keys the proxy. They're kept in `~herd/secrets/`, owned by `herd` with mode `0700`, one file per key at `0600`, so
 no other host user (the operator included) and no group can read them whatever the umask was when they were created;
-each container mounts only its own key file, read-only. The one exception is the proxy's rented-machine credential
-store, which holds the copies used by every current and retained machine definition, a separate volume only the proxy
-mounts, read-write (see Rented GPU backends). The install script, which runs with root, creates the directory with those
-modes and checks every key file. Neither half of `herd doctor` can see inside it (the operator isn't `herd`, and the
-orchestrator mounts only its own key), so `doctor` checks the owner and modes through `sudo -u herd` when the operator
-has sudo, and otherwise reports the check as skipped rather than passed.
+each container mounts only its own key file, read-only. The exceptions serve rented machines, which come and go with
+host config: the proxy mounts `~herd/secrets/machines/`, which holds machine keys only, whole and read-only, and keeps
+its rented-machine credential store, the copies used by every current and retained machine definition, in a separate
+volume only it mounts, read-write (see Rented GPU backends). The install script, which runs with root, creates the
+directory with those modes and checks every key file. Neither half of `herd doctor` can see inside it (the operator
+isn't `herd`, and the orchestrator mounts only its own key), so `doctor` checks the owner and modes through
+`sudo -u herd` when the operator has sudo, and otherwise reports the check as skipped rather than passed.
 
 ## Outside content
 
@@ -1580,23 +1590,28 @@ Steps marked **(manual)** need a human.
    escalation markers, draft PR, update-branch, mark-ready, PR body template, watching PRs for review and posting the
    reviewer's replies, deleting merged change branches, and the local model server's lifecycle and model requests (see
    The local model server).
-5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring:
-   unit timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd
-   watchdog for the orchestrator), log retention and the disk check.
+5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring: unit
+   timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd watchdog for
+   the orchestrator), log retention and the disk check; rented GPU backends (see Rented GPU backends): the persisted
+   machine definitions, current and retained, and their confirmations, the proxy's credential store and userspace
+   WireGuard, per-backend readiness, hourly accrual and the time-split ledger, budget reconciliation with a cutoff, the
+   idle, unhealthy and retained-machine alerts, and `herd machines stopped`.
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
    `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
    and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
    (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/` (`shared/` setgid `2750`
    and `requests/` setgid `2770`, both owned by `herd` with group `herd-ops`, and `herd` itself a member of `herd-ops`),
-   creates `~herd/secrets/` (`0700`), puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy,
-   each with its `[Install]` section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is
-   installed, installs herdr's integration for the planner agent, and adds the operator's login unit for `herdr server`.
+   creates `~herd/secrets/` and `~herd/secrets/machines/` (`0700`) and the proxy's credential-store volume, puts `herd`
+   on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its `[Install]` section), enables
+   lingering and the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's integration for
+   the planner agent, and adds the operator's login unit for `herdr server`.
 7. **(manual)** Host secrets, in `~herd/secrets/` (`0700`, files `0600`, see The herd's own account):
    `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
    `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
    repositories, with repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit
    statuses* and *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`),
-   and not *Workflows*; and its private key, read by the orchestrator only.
+   and not *Workflows*; and its private key, read by the orchestrator only; and, for each rented machine, its key or
+   WireGuard private key in `~herd/secrets/machines/`.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
