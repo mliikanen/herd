@@ -1154,13 +1154,16 @@ revision below).
   id (the machine's name and the moment it was retained, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own
   files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
   times, so the snapshot id, not the name, is what identifies it. The snapshot's credentials can't depend on files the
-  operator may rotate or delete for the replacement machine, so when a snapshot is retained the proxy copies the secrets
-  it uses into its own store, keeps that copy unchanged, and deletes it only when the snapshot is retired. That store is
-  a dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate
-  from `~herd/secrets/`, whose key files the proxy only mounts read-only one by one, so it never sees the orchestrator's
-  App key. The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps accruing
-  cost and raises a "retained machine not confirmed stopped" alert episode, shown with its id, until its units have
-  finished **and** the operator runs `herd machines stopped <snapshot id>`.
+  operator may already have rotated or deleted as part of the very config change that retains it, so copying them at
+  that point would be too late. Instead the proxy copies a machine's credentials into its own store as soon as it first
+  loads the machine definition, keyed by the content's hash, and every definition in use (current or retained) runs on
+  its own copy: editing or deleting the operator's file later only affects definitions loaded after the change, and a
+  retained snapshot simply keeps the copy it already had, until it's retired and its copy deleted. That store is a
+  dedicated persistent volume mounted read-write into the proxy alone (directories `0700`, files `0600`), separate from
+  `~herd/secrets/`, whose key files the proxy only mounts read-only one by one, so it never sees the orchestrator's App
+  key. The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps accruing cost
+  and raises a "retained machine not confirmed stopped" alert episode, shown with its id, until its units have finished
+  **and** the operator runs `herd machines stopped <snapshot id>`.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
