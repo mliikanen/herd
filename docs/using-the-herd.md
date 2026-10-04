@@ -174,15 +174,16 @@ device or a GUI. There are two kinds, and the project's workflow doc says which 
 - **Your check** (`pr_review.human_check`), as a reviewer of the PR: for what only you or a real device can judge. When
   the PR is marked ready, the herd puts the project's instructions in the PR body and the status pane and requests your
   review. Check out the branch, follow them, and answer on GitHub:
-  - **Approve**: your check is done. It holds until the change's content changes again (the herd's own notes and clean
-    merges of the default branch don't count); then the herd asks you again.
+  - **Approve**, once the herd has asked (an approval given before the PR was ready doesn't count): your check is done.
+    It holds until the change's content changes again (the herd's own notes and clean merges of the default branch don't
+    count); then the herd asks you again.
   - **Request changes**, describing what failed: the herd handles it like any other review finding, and checks a failed
-    check the way it checks any failing test. `/herd-resolve` helps you gather what it needs: a rerun of the failing
-    check, and, for an end-to-end test the change didn't add or change, runs on the change's merge-base (the
-    default-branch commit the change is currently based on, which it checks out for you; not the default branch's
-    latest, which may already have an unrelated fix). It posts the results as a reply on your review. If the check
-    passed on your rerun and is stable on the merge-base, the change made it intermittent, and it becomes a fix task; if
-    it's flaky there too, the herd asks you to check again, until the test's flake count reaches the project's limit
+    check the way it checks any failing test. For a failed check, run `/herd-resolve` and let it submit the review for
+    you, with what the herd needs attached: a rerun of the failing check, and, for an end-to-end test the change didn't
+    add or change, runs on the change's merge-base (the default-branch commit the change is currently based on, which it
+    checks out for you; not the default branch's latest, which may already have an unrelated fix). If the check passed
+    on your rerun and is stable on the merge-base, the change made it intermittent, and it becomes a fix task; if it's
+    flaky there too, the herd asks you to check again, until the test's flake count reaches the project's limit
     (`caps.flaky_retries`), when it stops and asks you instead. If it fails on the merge-base too, or the spec doesn't
     say which behavior is right, it stops and asks you; you can fix the default branch, waive an end-to-end test for
     this change, or approve despite a manual check by naming it as a known default-branch failure in your review.

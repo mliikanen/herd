@@ -159,13 +159,14 @@ recovery, containers) lives only here. A project carries:
   - `herd-ready <change>`: checks a proposal against Writing proposals for the herd (below) and the manifest's
     `missing_capabilities`, then sets `ready: true` in the change's `.openspec.yaml` **on its branch**, commits and
     pushes.
-  - `herd-resolve <change>`: shows why a change is waiting on a human, helps fix it on the change branch, and
-    commits the resolution: a resolved `needs-human` marker, a `human`-phase final-approval pass or fail, or an
-    `e2e-waive` (see The effective final-approval record for their syntax).
-- **A short workflow doc for the project's people and planner agents.** It covers only what's specific to that
-  project: its extra rules for herd-ready tasks, how to run its final approval, and what not to touch once a change
-  is ready. For everything else it points to `using-the-herd.md` (the generic guide for people), never repeating
-  it. The project's `CLAUDE.md`/`AGENTS.md` points to it.
+  - `herd-resolve <change>`: shows why a change is waiting on a human, helps fix it on the change branch, and commits
+    the resolution: a resolved `needs-human` marker or an `e2e-waive` (see The effective final-approval record for its
+    syntax). For the person's check in PR review it gathers the evidence for a failed check and submits the review (see
+    Final approval).
+- **A short workflow doc for the project's people and planner agents.** It covers only what's specific to that project:
+  its extra rules for herd-ready tasks, what its final checks are, and what not to touch once a change is ready. For
+  everything else it points to `using-the-herd.md` (the generic guide for people), never repeating it. The project's
+  `CLAUDE.md`/`AGENTS.md` points to it.
 
 ## Writing proposals for the herd
 
@@ -802,9 +803,11 @@ and to CI.
 
 **The final e2e.** When a proposal reaches *awaiting-approval*, the orchestrator makes sure its **draft** PR exists
 (normally opened by `herd-propose` at proposal time) and dispatches an `e2e` unit, which records its verdict in
-`review-notes.md` as a `container` pass or fail, pinned to the SHA tested. Its result is also published on that commit
-as a commit status, `herd/final-e2e`, so the PR shows it next to CI (the App's one write permission outside *Contents*
-and *Pull requests*; see Build plan):
+`review-notes.md` as a `container` pass or fail, pinned to the SHA tested. Its result is also published as a commit
+status, `herd/final-e2e`: on the tested commit, and, since statuses belong to one SHA, copied by the orchestrator onto
+every later head it pushes while that record stays effective (and set to `pending` on any head once a rerun is owed), so
+the PR's current head always shows it next to CI (the App's one write permission outside *Contents* and *Pull requests*;
+see Build plan):
 - **pass** → the proposal moves to *in-review*, and the PR is marked ready;
 - **fail** → while that `fail` is the effective record and hasn't been triaged, *awaiting-approval*'s next action is a
   `triage` unit, which applies the Test or implementation rule (see End-to-end tests) with the run's evidence: a real
@@ -819,22 +822,27 @@ and *Pull requests*; see Build plan):
 them is enough) and how (`instructions`). Both are pinned with the change's `e2e-mode` line, from the manifest at its
 merge-base when it was first dispatched, so a change always shows the check it owes even if the manifest has since
 changed or dropped it. When the PR is marked ready, the orchestrator puts the instructions in the PR body and requests a
-review from the listed people. The check passes with an **Approve** review from one of them on the current content tip:
-bookkeeping commits after it (a clean update-branch merge, a verdict line) don't undo it, but a new content tip does,
-and the orchestrator requests the review again. Until then the change can't leave *in-review*, and the status pane shows
-it as waiting on that person (see Monitoring). There's no timeout: unlike an automated reviewer's, this review is
-required. It's judged before the archive only: the archive commit is a new content tip for automated reviewers, but the
-person's approval of the change's content still stands, and their merge is the last word anyway.
+review from the listed people. The check passes with an **Approve** review from one of them on the current content tip,
+submitted after the PR was marked ready and the review was requested for that tip (an approval given earlier, on a draft
+without the instructions or before the final e2e passed, doesn't count): bookkeeping commits after it (a clean
+update-branch merge, a verdict line) don't undo it, but a new content tip does, and the orchestrator requests the review
+again. Until then the change can't leave *in-review*, and the status pane shows it as waiting on that person (see
+Monitoring). There's no timeout: unlike an automated reviewer's, this review is required. It's judged before the archive
+only: the archive commit is a new content tip for automated reviewers, but the person's approval of the change's content
+still stands, and their merge is the last word anyway.
 
 A **Request changes** or comment review is triaged like any other review (see Following up on PR review): a finding
 becomes a task under "(added during review)". A failed check in it goes through the same Test or implementation rule as
-any failing test, with the person's review as its evidence, and `/herd-resolve` helps gather that evidence: it asks the
-person to rerun the failing check once and, for an end-to-end test the change didn't add or change, to run it on a build
-of the change's merge-base, which it checks out for them (never the default branch's current tip, which may already
-carry an unrelated fix): `caps.flaky_retries` + 1 times when the rerun passed, or a second time when the first try there
-failed. It posts the results as a reply on the review. When the change's `e2e-mode` is `on` and the failing check is a
-test the pinned harness can run, the `triage` unit runs those merge-base repetitions itself; a real-device check always
-stays with the person. The outcomes:
+any failing test, with the person's review as its evidence, and that evidence comes with the review: a person reporting
+a failed check runs `/herd-resolve`, which gathers it and submits the Request changes review with the evidence attached,
+so triage never starts before it exists (a failed check reported in a plain review is triaged with whatever it says, and
+the triage unit asks for the missing runs in a reply, which puts the change back to waiting on the person).
+`/herd-resolve` gathers it like this: it asks the person to rerun the failing check once and, for an end-to-end test the
+change didn't add or change, to run it on a build of the change's merge-base, which it checks out for them (never the
+default branch's current tip, which may already carry an unrelated fix): `caps.flaky_retries` + 1 times when the rerun
+passed, or a second time when the first try there failed. It includes the results in the review it submits. When the
+change's `e2e-mode` is `on` and the failing check is a test the pinned harness can run, the `triage` unit runs those
+merge-base repetitions itself; a real-device check always stays with the person. The outcomes:
 - passing on the rerun but stable on the merge-base: the change made it intermittent, a regression that becomes a fix
   task like any other;
 - passing and failing on the merge-base: a pre-existing flake, recorded as `e2e-flaky <id> <sha> xN` (the harness's test
@@ -1032,8 +1040,8 @@ The layers:
    the job's artifacts handed to the triage unit (see below).
 
 **Test or implementation?** When a test fails, whoever triages it (the implementer in its own loop, the reviewer, or a
-`triage` unit after the final e2e, a person's final-approval failure, or CI) follows the same order, so the answer comes
-from evidence rather than taste:
+`triage` unit after the final e2e, a failed check in the person's PR review, or CI) follows the same order, so the
+answer comes from evidence rather than taste:
 
 1. **Rerun it.** If it passes on a rerun, it's intermittent, but that alone doesn't say whose: for a test this change
    didn't add or change, the triager also runs it on the merge-base build (step 2's) `caps.flaky_retries` + 1 times. If
@@ -2065,16 +2073,17 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   orchestrator's own record of alerts, an operational control like the budget counter: unlike the event log, the
   orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id derived from
   facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of
-  its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget,
-  infrastructure failures, an idle rented machine, an unready rented backend, a rented machine not confirmed stopped
-  after the budget limit or a lost counter paused paid dispatch, a retained rented machine not confirmed stopped, an
-  unhealthy rented machine not confirmed stopped, a rented machine confirmed stopped but still answering, a blocked
-  replacement) is an **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone
-  appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the
-  same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the
-  day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels is at-least-once:
-  push delivery is recorded per id after the service accepts it, so a crash in between sends that one again, never none.
-  Alerts go out on two channels from two accounts:
+  its `needs-human` marker, or, for a person's check, by the content tip it's requested for, so a new content tip that
+  needs another approval alerts again. An ongoing condition (a project inactive, low disk, the budget, infrastructure
+  failures, an idle rented machine, an unready rented backend, a rented machine not confirmed stopped after the budget
+  limit or a lost counter paused paid dispatch, a retained rented machine not confirmed stopped, an unhealthy rented
+  machine not confirmed stopped, a rented machine confirmed stopped but still answering, a blocked replacement) is an
+  **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone appends a `cleared`
+  entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the same day alerts again.
+  The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the day. Losing the queue
+  costs at most one repeated alert per open condition. Delivery on both channels is at-least-once: push delivery is
+  recorded per id after the service accepts it, so a crash in between sends that one again, never none. Alerts go out on
+  two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
