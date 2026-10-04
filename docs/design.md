@@ -462,8 +462,8 @@ stateDiagram-v2
 
     implementing --> holistic_review_pending: every task [x]
     holistic_review_pending --> implementing: holistic review adds tasks
-    holistic_review_pending --> awaiting_approval: accepted, final approval is human
-    holistic_review_pending --> in_review: accepted, no final approval
+    holistic_review_pending --> awaiting_approval: accepted, final approval still needed
+    holistic_review_pending --> in_review: accepted, approval not needed or still effective
     awaiting_approval --> implementing: fail, triaged into tasks
     awaiting_approval --> in_review: pass
     in_review --> implementing: finding triaged into a task
