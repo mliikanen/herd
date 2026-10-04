@@ -912,19 +912,24 @@ switch the safety net off. So:
   test, and, for `run`, `$HERD_E2E_ARTIFACTS` and the copied `$HERD_E2E_APP`; `boot` and `run` also get the unit's
   emulator. Nothing else of the change is readable to them, so they can't source a helper or load configuration from a
   branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed paths itself and passes
-  them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts. `prepare`
-  is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its wrapper and
-  build scripts), which is the change's code, so it runs with the whole working tree, in the unit's container but
-  outside that sandbox and with no access to the unit's emulator, so it can't tamper with the device the trusted `run`
-  tests on; its build inputs are guarded paths (see Who commits, who pushes). So it can't touch what's trusted later, it
-  runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results directory in existence; when
-  it exits, the herd kills everything left in that cgroup (a background process it started included; the emulator isn't
-  among them, since `boot` started it in its own), and only then creates the artifacts directory for `run`, a new one
-  for every run, so no earlier run's evidence is lying around either, mounted into the sandbox alone, which runs as a
-  different user that the build's user can't write as. After `prepare`, the herd also compares the working tree's
-  `e2e.tests` files with the copy it took before: a build that changed them fails the unit, so a test can't be weakened
-  for one run without a commit that shows it. The change contributes the app being tested and its tests, nothing that
-  decides selection or reads results.
+  them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts. Test
+  definitions are the change's too, and a test tool may run code from them (a Maestro flow's scripts, say), so inside
+  `run` the tests themselves execute as yet another user, without access to `$HERD_E2E_ARTIFACTS`, writing their raw
+  output to a scratch directory; only after they exit does the pinned `run` translate that output into `results.jsonl`
+  and the evidence, so no test can write or replace the results. `prepare` is the exception by nature: building the app
+  means running the working tree's own build (`./gradlew`, its wrapper and build scripts), which is the change's code,
+  so it runs with the whole working tree, in the unit's container but outside that sandbox and with no access to the
+  unit's emulator, so it can't tamper with the device the trusted `run` tests on; its build configuration (the wrapper
+  and build scripts) is guarded (see Who commits, who pushes), while the app source it compiles isn't, and needn't be:
+  whatever that builds is only the app under test, which never reaches the results. So it can't touch what's trusted
+  later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results directory in
+  existence; when it exits, the herd kills everything left in that cgroup (a background process it started included; the
+  emulator isn't among them, since `boot` started it in its own), and only then creates the artifacts directory for
+  `run`, a new one for every run, so no earlier run's evidence is lying around either, mounted into the sandbox alone,
+  which runs as a different user that the build's user can't write as. After `prepare`, the herd also compares the
+  working tree's `e2e.tests` files with the copy it took before: a build that changed them fails the unit, so a test
+  can't be weakened for one run without a commit that shows it. The change contributes the app being tested and its
+  tests, nothing that decides selection or reads results.
 
 - **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
   default-branch version; manifest validation rejects a manifest where they do.
