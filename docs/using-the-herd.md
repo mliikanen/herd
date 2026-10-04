@@ -108,7 +108,8 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
   the project's CI workflows or the local actions they use, which the herd isn't allowed to make);
 - an end-to-end test is flaky past the allowed retries (it flakes on the default branch too, so you fix it there, or, if
   this change added or changed the test, add a task to stabilize it here; a test this change made flaky is fixed in the
-  change without asking you), fails on the default branch too (you fix it there or waive it for this change), or fails
+  change without asking you), fails on the default branch too (you fix it there, or waive it for this change, which lets
+  the herd finish the rest of the change while the PR stays blocked on CI until the default branch is fixed), or fails
   in a way the spec doesn't settle as an outdated test or a regression;
 - something went wrong after the change was archived (a failed check, a review finding, or a new commit that
   needs review), when fixing it would mean un-archiving;

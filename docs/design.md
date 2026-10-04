@@ -619,9 +619,9 @@ silently dropped — comes from two rules together, not from the scan alone:
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
   next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
   outcomes in `review-notes.md`, one line per failed test (a full-suite run can fail several, for different reasons):
-  `ci-triage "<check>" <sha> <run key> "<test id>": fix | flaky | preexisting | unsettled`, with the check's and the
-  test's names as JSON strings since they may contain spaces (a failure that isn't a test's, a build step say, takes the
-  test id `"-"`). The run key names the exact failed run, since a re-run keeps the check's name and commit:
+  `ci-triage "<check>" <sha> <run key> "<test id>": fix | flaky | preexisting | unsettled | waived`, with the check's
+  and the test's names as JSON strings since they may contain spaces (a failure that isn't a test's, a build step say,
+  takes the test id `"-"`). The run key names the exact failed run, since a re-run keeps the check's name and commit:
   `check:<check run id>` for a check run, or `status:<status id>` for a legacy commit status, whose every update is a
   new status with its own id. All of a run's lines are written in one verdict commit, keyed by it: the scan never
   dispatches triage for a run that already has lines, and a re-run that fails again is a new run, triaged and counted
@@ -630,18 +630,22 @@ silently dropped — comes from two rules together, not from the scan alone:
   fix tasks, which wait for the stop's resolution; with at least one `fix` and no escalation the change goes back to
   *implementing* for its new tasks; and when every line is `flaky`, no task is added and the change stays in its state,
   while the commit that records them, itself a push, runs the check again on the new tip (required workflows run on
-  every push; see Requirements on a project). Flakes count per test, as everywhere. A triage unit that can't rerun the
-  test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts alone, and
-  records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person decides
-  rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates. A
-  "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no update-branch
-  merge has followed yet, comes before everything else in every state before the archive (a stop resolved by an
-  effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next action
-  is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path for a CI
-  failure after an update-branch merge too (see Keeping up with the default branch). A required check that still has no
-  result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't wait forever:
-  the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it, since a stuck
-  CI is for a person to look at.
+  every push; see Requirements on a project). Flakes count per test, as everywhere. `waived` is recorded mechanically,
+  without a model, for a failing test with an effective `e2e-waive`: it adds no task and no escalation, since the person
+  already decided. When every line of a run is `waived`, the run is triaged and the change carries on through its other
+  work, but the required check is still red, so the change can't become *ready-to-merge* (the status pane shows "waiting
+  for a default-branch fix"); the next update-branch merge that brings the fix in clears it. A triage unit that can't
+  rerun the test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts
+  alone, and records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person
+  decides rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator
+  escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no
+  update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
+  by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next
+  action is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path
+  for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
+  still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
+  wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
+  since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -943,7 +947,8 @@ from evidence rather than taste:
    again and owes its red/green proof), or once the change merges a newer default branch (the baseline moved, so the
    comparison runs again). A lapsed waiver means the test runs, and if it still fails on the default branch, a fresh
    escalation. A waiver doesn't touch CI: the required check still fails until the default branch is fixed, which keeps
-   the merge blocked on the real problem.
+   the merge blocked on the real problem, but its failures in the waived test are triaged as `waived` rather than
+   escalated again (see Failing checks before the archive), so the rest of the change can still progress while it waits.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
