@@ -377,8 +377,8 @@ exactly one answer per request id. What happens to the requesting task follows f
 - **`added` for a `followup`**: the task is appended under "(added during apply)". The requesting task is judged
   on its own work as usual: accepted if a normal commit carried the request, back to `[ ]` if it was request-only.
 - **`needs-human`** (an `input` or `capability`, or an `escalate` whose evidence the reviewer confirmed by rerunning the
-  test): the reviewer records the marker, with an `escalate`'s reason ("fails on the default branch too" or "spec
-  doesn't settle it"), the requesting task goes back to `[ ]`, and the change stops until a person resolves it.
+  test): the reviewer records the marker, with an `escalate`'s reason ("fails on the default branch too", "spec doesn't
+  settle it" or "flaky test"), the requesting task goes back to `[ ]`, and the change stops until a person resolves it.
 - **`refused`**: the requesting task goes back to `[ ]`, with the reason in `review-notes.md` for the next
   attempt.
 
@@ -392,11 +392,13 @@ push-capable credential in the system.
 by a model, and touching only the file each names. The complete list:
 - **a failed attempt's record** in `review-notes.md` (below);
 - **a mechanical `needs-human` marker** in `review-notes.md`, for the escalations that need no judgment: a cap reached
-  (`caps.review_rounds`, `caps.failed_attempts`, `caps.gate_fixes`, `caps.flaky_retries`, `caps.added_tasks`,
-  `caps.pr_review_rounds`), an update-branch conflict, a required check past `pr_review.checks_timeout`, and the three
-  post-archive cases in *archived-pending* (a failed check, an open review finding, a non-bookkeeping commit).
-  Escalations that need judgment (a request for outside content, holistic feedback that maps to no task, a finding the
-  reviewer can't map to a task) are written by the reviewer in its verdict commit;
+  (`caps.review_rounds`, `caps.failed_attempts`, `caps.gate_fixes`, `caps.flaky_retries` when the counts already
+  recorded reach it between units (a unit that reaches it mid-run escalates in its own commit instead: a reviewer or
+  triage unit in its verdict, an implementer through an `escalate` request its reviewer confirms; see Test or
+  implementation?), `caps.added_tasks`, `caps.pr_review_rounds`), an update-branch conflict, a required check past
+  `pr_review.checks_timeout`, and the three post-archive cases in *archived-pending* (a failed check, an open review
+  finding, a non-bookkeeping commit). Escalations that need judgment (a request for outside content, holistic feedback
+  that maps to no task, a finding the reviewer can't map to a task) are written by the reviewer in its verdict commit;
 - **an `inputs.md` entry** for content provided through `herd provide` (see Outside content);
 - **the `e2e-mode` line** that fixes a change's end-to-end mode and final-approval kind at its first dispatch (see
   End-to-end tests).
@@ -574,11 +576,12 @@ silently dropped — comes from two rules together, not from the scan alone:
   names no phase: it applies to every phase the change requires). A change requires the phases of the approval kind
   fixed at its first dispatch (see Emulators in workers), not whatever the manifest says now: the `human` phase with
   `kind: human`, the `container` phase with `kind: container`, and both, container first, with `kind: container` and
-  `human_after: true`; *awaiting-approval* holds until every required phase's effective record is a pass, and states 7
-  and 8's "the effective final-approval record a pass" means every required phase. History is additive, so an old pass
-  stays in `review-notes.md`, but only a pass that's newer than any `rerun` or `fail` counts; after a `rerun`, the
-  change goes back to *awaiting-approval* until each required phase has a new pass. The records are single lines in
-  `review-notes.md` with a fixed syntax, so the scan never interprets prose:
+  `human_after: true`, where the human pass also has to be newer than the current container pass, so the person's check
+  always follows the container run it's meant to follow; *awaiting-approval* holds until every required phase's
+  effective record is a pass, and states 7 and 8's "the effective final-approval record a pass" means every required
+  phase. History is additive, so an old pass stays in `review-notes.md`, but only a pass that's newer than any `rerun`
+  or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until each required phase has a new
+  pass. The records are single lines in `review-notes.md` with a fixed syntax, so the scan never interprets prose:
   `final-approval <phase> <pass|fail> <tested sha>: <detail>`, where a `container` record also names the merge-base it
   was tested against before the colon (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`)
   and, before the archive, is current only while the change's merge-base is unchanged (from the archive on, the pin is
@@ -825,8 +828,10 @@ switch the safety net off. So:
   before the archive, whether or not the pin moves with it, the change's `container`-phase pass is no longer current,
   even if the merge is otherwise bookkeeping: that pass was earned against the old baseline and possibly the old
   harness, so the final e2e runs again (which is also when a waiver that lapsed on the merge gets its test run). This is
-  the one exception to clean merges keeping final-approval records; the `human` phase isn't affected. The `container`
-  record names its merge-base for this (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`).
+  the one exception to clean merges keeping final-approval records; the `human` phase isn't affected on its own, but
+  under `container+human` a human pass counts only when it's newer than the current container pass (that's what
+  `human_after` means), so once the container phase reruns, the person checks again after it. The `container` record
+  names its merge-base for this (`final-approval container pass <tested sha> base <merge-base sha>: <detail>`).
 
 The layers:
 
