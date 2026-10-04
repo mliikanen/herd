@@ -17,10 +17,10 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 - **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot,
   local (Ollama or similar) or a cloud API, and one host can mix them (see Models).
 - **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
-  slot like the implementer; a task review never runs on the backend that wrote the commit (see Models). It reviews
-  each task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback into tasks (see
-  Following up on PR review), and runs the archive step once final approval passes and review is done, since syncing
-  spec deltas can need judgment.
+  slot like the implementer; a task review never runs on the backend that wrote the commit (see Models). It reviews each
+  task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
+  into tasks (see Following up on PR review), and runs the archive step once final approval passes and review is done,
+  since syncing spec deltas can need judgment.
 - **Orchestrator**: plain code (no LLM, no LLM API key), owns the queue and git/GitHub plumbing — assigns work,
   creates/tears down working copies, starts worker containers, derives task/review state, pushes, opens and
   updates PRs. The orchestrator opens the PR and marks it ready, so it also watches the PR for review feedback until
@@ -256,13 +256,13 @@ status file on exit. The orchestrator then validates the commit before pushing i
   implementer commit must not touch `review-notes.md` or flip a checkbox to `[x]`; no worker commit may touch
   `.herd/`);
 - the status file agrees with the commit;
-- **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying a file matching
-  the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a `guarded.paths` file (a
-  lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the commit message. The
-  task review must then accept or reject each declared item, and validation of the verdict commit checks that it
-  does. An undeclared one fails validation before any review is spent. Legitimate cases (removing a
-  feature removes its tests) still pass, but never silently. Assertions weakened into tautologies need judgment,
-  so catching them stays with the reviewer. (The idea comes from no_human, see Prior art.)
+- **the tamper guard**, for implementer commits: the commit doesn't weaken the safety net silently. Deleting or emptying
+  a file matching the manifest's `guarded.tests`, adding one of its `guarded.skip_markers`, or changing a
+  `guarded.paths` file (a lint baseline, say) must each be declared, with a reason, under a `Guarded:` section of the
+  commit message. The task review must then accept or reject each declared item, and validation of the verdict commit
+  checks that it does. An undeclared one fails validation before any review is spent. Legitimate cases (removing a
+  feature removes its tests) still pass, but never silently. Assertions weakened into tautologies need judgment, so
+  catching them stays with the reviewer. (The idea comes from no_human, see Prior art.)
 
   The format is fixed, so validation never has to interpret prose. In the commit message, one line per item:
 
