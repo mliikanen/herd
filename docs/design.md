@@ -434,7 +434,7 @@ silently dropped — comes from two rules together, not from the scan alone:
   7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
      archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
      finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip (see
-     below) yet while `pr_review.timeout` hasn't passed since its push, or an awaited reviewer's first review of the
+     below) yet while its review window (see below) hasn't timed out, or an awaited reviewer's first review of the
      content tip that no `triage` unit has classified yet. The orchestrator runs no model and can't tell a clean review
      from one with findings only in its free-form summary, so every such review is classified (`clean`, or findings
      triaged), before the archive as after it. Next action: mark the PR ready for review if it's still a draft, then
@@ -443,14 +443,16 @@ silently dropped — comes from two rules together, not from the scan alone:
      mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
      open thread or untriaged finding, and every awaited reviewer's first review of the content tip classified clean, or
-     timed out), no required check failed on the current tip, change not yet archived on the branch. Next action: while
-     a required check is still running, none; wait (a failure then goes through Failing checks before the archive, never
-     past it). Once every required check has passed, the reviewer runs the archive and commits. A crash mid-archive
+     timed out), no required check failed on the current tip, change not yet archived on the branch. Next action: if the
+     branch is behind the default branch, update-branch first (a merge that touches the change's files sends it back
+     through holistic review, which is still possible before the archive); while a required check is still running,
+     none; wait (a failure then goes through Failing checks before the archive, never past it). Once the branch is up to
+     date and every required check on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive
      never gets pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action follows from why:
      - checks still running on the current tip, or an awaited reviewer hasn't reviewed the content tip and
-       `pr_review.timeout` hasn't passed: none; wait;
+       its review window hasn't timed out: none; wait;
      - the branch is behind the default branch: update-branch (see Keeping up with the default branch);
      - an awaited reviewer's first review of the content tip, not yet classified: a `triage` unit, which records it as
        `clean` or as a finding in `review-notes.md` (a bookkeeping commit, so the content tip doesn't move). The
@@ -495,6 +497,11 @@ silently dropped — comes from two rules together, not from the scan alone:
   turn. Reviews of later bookkeeping-only tips don't block anything; a thread they open is still an open thread (that
   needs no model to see), but a finding only in such a review's summary isn't waited for, an accepted trade-off since it
   reviews the same content.
+
+  **The review window** for an awaited reviewer opens at the later of two moments: the content tip's push, and the PR
+  being marked ready for review. A draft PR isn't reviewed, so a content tip pushed during holistic review or final
+  approval starts its window only when the herd marks the PR ready. `pr_review.timeout` counts from that opening,
+  wherever this document says a review timed out.
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes
   first: the next action is a `triage` unit, which turns the failure into a fix task under "(added for CI)",
@@ -594,11 +601,12 @@ work like any other, derived from git and GitHub on each scan, never remembered.
    - which commit each review covers (`commit_id`).
 
    Automated reviewers review again after every push, a few minutes later. So review is done only when every reviewer in
-   `pr_review.wait_for` has reviewed the **content tip** (see the state list), or `pr_review.timeout` has passed since
-   the push without one (a missing review then counts as none, and the status pane says so), and nothing is left open.
-   Replies the herd itself posted don't count as reviews; filter by author and commit, not by the number of reviews. The
-   herd posts as its GitHub App (`<app>[bot]`), so its replies never look like a person's comments; with a personal
-   token they would, and filtering by author would drop the person's real feedback.
+   `pr_review.wait_for` has reviewed the **content tip** (see the state list), or its review window (opened by that
+   push, or by marking the PR ready if later) has timed out without one (a missing review then counts as none, and the
+   status pane says so), and nothing is left open. Replies the herd itself posted don't count as reviews; filter by
+   author and commit, not by the number of reviews. The herd posts as its GitHub App (`<app>[bot]`), so its replies
+   never look like a person's comments; with a personal token they would, and filtering by author would drop the
+   person's real feedback.
 2. **Triage (reviewer).** New findings go to a reviewer unit together with the change, so the reviewer can check each
    claim against the code and the upstream sources it names. For each finding it decides one of:
    - *fix*: it appends a task under "(added during review)". Where the finding is one instance of a class (a missed
@@ -667,7 +675,7 @@ say which backend runs which kind of unit:
 ```yaml
 backends:
   opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY,
-                 price: { input: <per Mtok>, output: <per Mtok> } }   # in budget.currency (see Monitoring)
+                 price: { input: <per Mtok>, output: <per Mtok> } }   # budget.currency; input = highest input rate
   sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY,
                  price: { input: <per Mtok>, output: <per Mtok> } }
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
@@ -1025,25 +1033,31 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   attempts), so a task that keeps hanging escalates instead of looping. A unit killed because its backend stopped
   answering is an `infra` failure instead, and doesn't count.
 - **Spending.** The model gateway accounts for every cloud call **before** forwarding it. It asks the orchestrator, over
-  the control socket, to reserve the call's maximum cost: its input tokens plus the requested output limit, priced from
-  the backend's `price` in host config (per million input and output tokens). The orchestrator adds the reservation to
-  the monthly counter, atomically, only if the result stays within `budget.monthly` (a reservation that would cross it
-  is refused, not just those made after the limit), writes it durably, and only then acknowledges; the gateway forwards
-  the call only after that acknowledgement, and refuses it (an `infra` failure for the unit) when the handshake can't
-  complete. After the call, the gateway reports the actual usage the same way, and the orchestrator replaces the
-  reservation with it and writes a usage event to the event log. A crash between the two leaves the reservation counted,
-  so the counter can overcount but never undercount. The orchestrator stays the only writer of `/var/lib/herd/shared/`
-  and of the counter, and the key-holding proxy gets no writable shared mount. The status pane shows spend this month
-  against `budget.monthly`. At `warn_at` the operator gets an alert; at the budget, the orchestrator stops dispatching
-  units to cloud backends and refuses new reservations, running units' in-flight calls finish, and local slots carry on.
-  The status pane shows it as "paused: budget", not as `needs-human`: it's the operator's call to raise the budget or
-  wait for the month to turn. The budget is the one control that reads something besides git: the orchestrator's monthly
-  counter, kept in the herd's own files. It decides only whether cloud calls go out, never a change's state. A
-  reservation refused because it would cross the budget pauses cloud dispatch the same way, so units aren't dispatched
-  only to have their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed
-  attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is lost, cloud dispatch
-  pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's
-  billing), a request the orchestrator records in the event log before dispatch resumes.
+  the control socket, to reserve the call's maximum cost: an upper bound on its input tokens plus the requested output
+  limit, priced from the backend's `price` in host config (per million input and output tokens). The request body
+  carries no authoritative input count, so the bound comes from the provider's token-counting endpoint where it has one
+  (Anthropic's does), and otherwise from the request's byte length, which bounds text tokens from above; a call whose
+  input neither can bound (an image, for a provider without counting) is refused. `price.input` is the backend's highest
+  input rate (cache writes, say), so no billing category can exceed the reservation. If a provider ever reports more
+  than was reserved anyway, the counter takes the reported amount and dispatch pauses once it crosses the budget. The
+  orchestrator adds the reservation to the monthly counter, atomically, only if the result stays within `budget.monthly`
+  (a reservation that would cross it is refused, not just those made after the limit), writes it durably, and only then
+  acknowledges; the gateway forwards the call only after that acknowledgement, and refuses it (an `infra` failure for
+  the unit) when the handshake can't complete. After the call, the gateway reports the actual usage the same way, and
+  the orchestrator replaces the reservation with it and writes a usage event to the event log. A crash between the two
+  leaves the reservation counted, so the counter can overcount but never undercount. The orchestrator stays the only
+  writer of `/var/lib/herd/shared/` and of the counter, and the key-holding proxy gets no writable shared mount. The
+  status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an alert; at the budget,
+  the orchestrator stops dispatching units to cloud backends and refuses new reservations, running units' in-flight
+  calls finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the
+  operator's call to raise the budget or wait for the month to turn. The budget is the one control that reads something
+  besides git: the orchestrator's monthly counter, kept in the herd's own files. It decides only whether cloud calls go
+  out, never a change's state. A reservation refused because it would cross the budget pauses cloud dispatch the same
+  way, so units aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason,
+  which counts neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If
+  the counter is lost, cloud dispatch pauses until the operator sets this month's spend with
+  `herd budget set --spent <amount>` (read from the provider's billing), a request the orchestrator records in the event
+  log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change entering `needs-human` or `awaiting-approval`, the budget
   warning or limit, a project turning inactive, low disk, and infrastructure failures past `alerts.infra_after` all
   raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like the budget
