@@ -486,38 +486,39 @@ silently dropped — comes from two rules together, not from the scan alone:
      order.
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
-  6. *awaiting-approval* — holistic review accepted, `final_approval.kind` is `human` or `container`, the effective
-     final-approval record (see below) isn't a pass, change not archived. Next action, the first that applies: a
-     required check is past `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks
-     before the archive); a required check failed on the current tip, so CI triage (see Failing checks before the
-     archive); the effective record is a `fail` not yet triaged, so a `triage` unit (see Final approval); otherwise
-     ensure a PR exists (a **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into
-     one), and then, for `container`, an `e2e` unit (see End-to-end tests: the red/green loop), or for `human` (or after
-     a container pass with `human_after`) the human runs the project's final approval. Skipped entirely when
-     `final_approval.kind: none`.
-  7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
-     archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
-     finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip (see
-     below) yet while its review window (see below) hasn't timed out, or an awaited reviewer's first review of the
-     content tip that no `triage` unit has classified yet. The orchestrator runs no model and can't tell a clean review
-     from one with findings only in its free-form summary, so every such review is classified (`clean`, or findings
-     triaged), before the archive as after it. Next action, the first that applies: a required check is past
+  6. *awaiting-approval* — holistic review accepted, the change's recorded approval kind (its `e2e-mode` line, not the
+     manifest's current `final_approval.kind`) is not `none`, the effective final-approval record (see below) isn't a
+     pass, change not archived. Next action, the first that applies: a required check is past `pr_review.checks_timeout`
+     with no result, so the orchestrator escalates (see Failing checks before the archive); a required check failed on
+     the current tip, so CI triage (see Failing checks before the archive); the effective record is a `fail` not yet
+     triaged, so a `triage` unit (see Final approval); otherwise ensure a PR exists (a **draft**, unless it was already
+     marked ready before a `rerun`; it isn't turned back into one), and then, for `container`, an `e2e` unit (see
+     End-to-end tests: the red/green loop), or for `human` (or after a container pass with `human_after`) the human runs
+     the project's final approval. Skipped entirely when the recorded kind is `none`.
+  7. *in-review* — holistic review accepted and (if the recorded approval kind requires it) every required phase's
+     effective final-approval record a pass, change not archived, and review isn't done: the PR has unresolved review
+     threads, a review requesting changes, a review finding not yet triaged, an awaited reviewer (`pr_review.wait_for`)
+     that hasn't reviewed the content tip (see below) yet while its review window (see below) hasn't timed out, or an
+     awaited reviewer's first review of the content tip that no `triage` unit has classified yet. The orchestrator runs
+     no model and can't tell a clean review from one with findings only in its free-form summary, so every such review
+     is classified (`clean`, or findings triaged), before the archive as after it. Next action, the first that applies:
+     a required check is past `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing
+     checks before the archive); a required check failed on the current tip, so CI triage (see Failing checks before the
+     archive); otherwise mark the PR ready for review if it's still a draft, then follow up as Following up on PR review
+     describes. A triaged finding becomes a task under "(added during review)", which sends the change back to
+     *implementing*. Review comes before archiving, because a fix after the archive would mean editing the synced main
+     specs by hand.
+  8. *archiving* — holistic review accepted, (if the recorded approval kind requires it) every required phase's
+     effective final-approval record a pass, review done (no open thread or untriaged finding, and every awaited
+     reviewer's first review of the content tip either classified clean or with all its findings triaged and resolved,
+     or timed out), change not yet archived on the branch. Next action, the first that applies: a required check is past
      `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before the archive); a
-     required check failed on the current tip, so CI triage (see Failing checks before the archive); otherwise mark the
-     PR ready for review if it's still a draft, then follow up as Following up on PR review describes. A triaged finding
-     becomes a task under "(added during review)", which sends the change back to *implementing*. Review comes before
-     archiving, because a fix after the archive would mean editing the synced main specs by hand.
-  8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
-     open thread or untriaged finding, and every awaited reviewer's first review of the content tip either classified
-     clean or with all its findings triaged and resolved, or timed out), change not yet archived on the branch. Next
-     action, the first that applies: a required check is past `pr_review.checks_timeout` with no result, so the
-     orchestrator escalates (see Failing checks before the archive); a required check failed on the current tip, so a
-     `triage` unit turns it into a fix task (see Failing checks before the archive); the branch is behind the default
-     branch, so update-branch (a merge that touches the change's files sends it back through holistic review, which is
-     still possible before the archive); while a required check is still running, none; wait (a failure then goes
-     through Failing checks before the archive, never past it). Once the branch is up to date and every required check
-     on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive never gets pushed, so it's
-     discarded with the clone and redone, same as any other unit of work.
+     required check failed on the current tip, so a `triage` unit turns it into a fix task (see Failing checks before
+     the archive); the branch is behind the default branch, so update-branch (a merge that touches the change's files
+     sends it back through holistic review, which is still possible before the archive); while a required check is still
+     running, none; wait (a failure then goes through Failing checks before the archive, never past it). Once the branch
+     is up to date and every required check on its tip has passed, the reviewer runs the archive and commits. A crash
+     mid-archive never gets pushed, so it's discarded with the clone and redone, same as any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action is the first of these that applies, in this order:
      1. a check failed or is past `pr_review.checks_timeout` with no result, a review finding is open, or a
@@ -597,18 +598,19 @@ silently dropped — comes from two rules together, not from the scan alone:
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
   next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
-  outcome in `review-notes.md` as `ci-triage <check> <sha>: fix | flaky | preexisting`, so the scan never dispatches
-  triage for the same failed check twice. `fix` adds a fix task under "(added for CI)", sending the change back to
-  *implementing*; `flaky` adds no task and re-runs the check; `preexisting` adds no task and escalates to `needs-human`
-  ("fails on the default branch too"). Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates.
-  A "fails on the default branch too" stop resolved as fixed on the default branch, that no update-branch merge has
-  followed yet, comes before everything else in every state before the archive (a stop resolved by an effective
-  `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next action is
-  update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path for a CI
-  failure after an update-branch merge too (see Keeping up with the default branch). A required check that still has no
-  result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't wait forever:
-  the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it, since a stuck
-  CI is for a person to look at.
+  outcome in `review-notes.md` as `ci-triage <check> <sha> <check run id>: fix | flaky | preexisting`, keyed by the
+  exact check run, since a re-run keeps the check's name and commit; the scan never dispatches triage for the same
+  failed run twice, and a re-run that fails again is a new run, triaged and counted afresh. `fix` adds a fix task under
+  "(added for CI)", sending the change back to *implementing*; `flaky` adds no task and re-runs the check; `preexisting`
+  adds no task and escalates to `needs-human` ("fails on the default branch too"). Those tasks count toward
+  `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" stop resolved as fixed on
+  the default branch, that no update-branch merge has followed yet, comes before everything else in every state before
+  the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing
+  newer to merge): the next action is update-branch, so the retry runs against a branch that contains the default
+  branch's fix. This is the path for a CI failure after an update-branch merge too (see Keeping up with the default
+  branch). A required check that still has no result `pr_review.checks_timeout` after the push it's for (queued, running
+  or merely expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts,
+  before the archive or after it, since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -670,13 +672,14 @@ describe.
 ## Final approval
 
 The gate runs inside the workers. Some checks don't fit there — typically end-to-end tests that need an emulator, a
-device or a GUI. `final_approval.kind` chooses only who performs the **whole-change** approval: `none`; `human`, a
-person; or `container`, an `e2e` unit on an emulator in a worker, optionally followed by a person's check
-(`human_after`). It doesn't decide whether end-to-end tests run during implementation: with an `e2e` block and emulator
-capacity, the per-task loop runs for every kind, `human` included (see End-to-end tests: the red/green loop); without
-them, tasks that *write* those tests are implemented and reviewed like any other task, and *running* them is left to the
-whole-change approval and CI. What follows describes the `human` phase; the `container` phase is recorded the same way,
-by an `e2e` unit.
+device or a GUI. `final_approval.kind` chooses only who performs the **whole-change** approval, and a change keeps the
+kind it started with (recorded in its `e2e-mode` line), so the manifest's current value applies to new changes only:
+`none`; `human`, a person; or `container`, an `e2e` unit on an emulator in a worker, optionally followed by a person's
+check (`human_after`). It doesn't decide whether end-to-end tests run during implementation: with an `e2e` block and
+emulator capacity, the per-task loop runs for every kind, `human` included (see End-to-end tests: the red/green loop);
+without them, tasks that *write* those tests are implemented and reviewed like any other task, and *running* them is
+left to the whole-change approval and CI. What follows describes the `human` phase; the `container` phase is recorded
+the same way, by an `e2e` unit.
 
 When a proposal reaches *awaiting-approval*, the orchestrator makes sure its **draft** PR exists (normally opened by
 `herd-propose` at proposal time) and puts in its body the
@@ -818,10 +821,10 @@ The layers:
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
    `E2E:` section (`- <test id> flaky`), a task review, `e2e` or `triage` unit adds `e2e-flaky <test id> <sha>` to its
-   verdict commit, and CI triage records `ci-triage <check> <sha>: flaky`. Flaky outcomes are counted from those records
-   per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change escalates to
-   `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever; the
-   person fixes the test or its environment in a separate change, or waives it like a pre-existing failure.
+   verdict commit, and CI triage records `ci-triage <check> <sha> <check run id>: flaky`. Flaky outcomes are counted
+   from those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change
+   escalates to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle
+   forever; the person fixes the test or its environment in a separate change, or waives it like a pre-existing failure.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, the same one
    the harness is pinned to), but only if the same test definition exists unchanged there. Not the default branch's
    current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like this
