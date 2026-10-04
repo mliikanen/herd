@@ -1263,11 +1263,13 @@ retained snapshot would charge the new machine's traffic to the old one.
   replaced by the reported usage as usual, dated at the call's start. That can count such a call twice (once in the
   bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the next
   reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new one, the
-  cutoff and the reason go to the event log. Restoring a lost counter is the one aggregate case: the same command
-  without `--source`, with the cutoff at now, giving the month's total across every bill, while paid dispatch is paused
-  anyway. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, through
-  any of its backends, its time is split evenly among them, and their share goes to their change; time with no call in
-  flight goes to the machine's own idle bucket, never to a change.
+  cutoff and the reason go to the event log. Restoring a lost counter works the same way, one source at a time, so a
+  later reconciliation never double-counts an unscoped total: the operator gives each source's month-to-date bill with
+  the cutoff at now, and paid dispatch, paused anyway, resumes once every source the config names (every cloud billing
+  account and every rented machine, current or retained) has one. Hours are attributed for the usage ledger by time, not
+  tokens: while units are calling the machine, through any of its backends, its time is split evenly among them, and
+  their share goes to their change; time with no call in flight goes to the machine's own idle bucket, never to a
+  change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
@@ -1477,7 +1479,7 @@ log, the orchestrator never reads it back.
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
-- `herd budget set --spent <amount> [--as-of <time> --source <source>]`: sets this month's spend, after the counter was
+- `herd budget set --spent <amount> --as-of <time> --source <source>`: sets this month's spend, after the counter was
   lost or to reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
 - `herd machines stopped <machine or snapshot id>`: confirms a rented machine is stopped, and
@@ -1555,8 +1557,9 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   reservation refused because it would cross the budget pauses paid dispatch the same way, so units aren't dispatched
   only to have their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed
   attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is lost, paid dispatch
-  pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read from the provider's
-  billing), a request the orchestrator records in the event log before dispatch resumes.
+  pauses until the operator sets this month's spend per source with
+  `herd budget set --spent <amount> --as-of now --source <source>` (read from the provider's billing), a request the
+  orchestrator records in the event log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after`, an idle rented machine, an unready rented backend on a healthy machine (see Rented GPU
