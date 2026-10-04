@@ -77,9 +77,14 @@ guarded:                                      # the tamper guard (see Who commit
     - gradle/**
     - gradlew
 final_approval:
-  kind: human                                 # or: none
+  kind: human                                 # or: none, or container (see End-to-end tests: the red/green loop)
   instructions: |                             # shown in the herd's status pane and in the draft PR body
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
+  human_after: false                          # container only: also require a person's pass afterwards
+e2e:                                          # optional: end-to-end tests the herd runs itself
+  prepare: ./e2e/prepare.sh                   # builds the app and boots the unit's emulator; exits when it's ready
+  select: ./e2e/select.sh                     # given a base and a head commit, prints the relevant test ids
+  run: ./e2e/run.sh                           # runs the given test ids; nonzero exit on any failure
 missing_capabilities:                         # a task that needs one of these escalates instead of being attempted
   - macOS / Xcode
 caps: { review_rounds: 3, added_tasks: 3, failed_attempts: 3, gate_fixes: 3, pr_review_rounds: 5 }
@@ -154,8 +159,10 @@ These are the generic rules `herd-ready` checks. A project's workflow doc adds i
 - **Each `tasks.md` item is one reviewable commit**: one coherent step that leaves the gate green, small enough for
   one review. Split items that aren't; merge items that can't pass the gate on their own.
 - **Sections are in dependency order.** Tasks run strictly in sequence (see Concurrency model).
-- **Nothing needs a `missing_capabilities` entry**, and no task *runs* the final-approval checks. Tasks may write or
-  update those tests; running them is the human's final approval.
+- **Nothing needs a `missing_capabilities` entry.** Without an `e2e` block, no task *runs* the final-approval checks:
+  tasks may write or update those tests, and running them is the human's final approval. With one, the herd runs the
+  relevant end-to-end tests itself, and **a task that changes behavior a test can see includes or updates that test**,
+  so the red/green proof has something to prove (see End-to-end tests: the red/green loop).
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it (see Outside content).
 - **No task needs a secret.**
@@ -466,13 +473,15 @@ silently dropped — comes from two rules together, not from the scan alone:
      order.
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
-  6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
-     (see below) isn't a pass, change not archived. Next action, the first that applies: a required check is past
-     `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks before the archive); a
-     required check failed on the current tip, so CI triage (see Failing checks before the archive); the effective
-     record is a `fail` not yet triaged, so a `triage` unit (see Final approval); otherwise ensure a PR exists (a
-     **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into one), and the human runs
-     the project's final approval. Skipped entirely when `final_approval.kind: none`.
+  6. *awaiting-approval* — holistic review accepted, `final_approval.kind` is `human` or `container`, the effective
+     final-approval record (see below) isn't a pass, change not archived. Next action, the first that applies: a
+     required check is past `pr_review.checks_timeout` with no result, so the orchestrator escalates (see Failing checks
+     before the archive); a required check failed on the current tip, so CI triage (see Failing checks before the
+     archive); the effective record is a `fail` not yet triaged, so a `triage` unit (see Final approval); otherwise
+     ensure a PR exists (a **draft**, unless it was already marked ready before a `rerun`; it isn't turned back into
+     one), and then, for `container`, an `e2e` unit (see End-to-end tests: the red/green loop), or for `human` (or after
+     a container pass with `human_after`) the human runs the project's final approval. Skipped entirely when
+     `final_approval.kind: none`.
   7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
      archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
      finding not yet triaged, an awaited reviewer (`pr_review.wait_for`) that hasn't reviewed the content tip (see
@@ -646,6 +655,72 @@ Archiving happens only after the pass and the review, deliberately: `openspec ar
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
 un-archiving.
 
+## End-to-end tests: the red/green loop
+
+The gate proves a task compiles and its unit tests pass; it can't prove the feature works end to end. For projects whose
+end-to-end tests can run on an emulator in a worker (Driving Log's Maestro flows, say), the herd closes a red/green loop
+around the agents with them, in layers that get broader and more independent as the change matures. A project opts in
+with an `e2e` block in the manifest: three commands of its own, which the herd treats as opaque, like the gate.
+
+- **`prepare`** builds the app and boots an emulator inside the unit's container, ready for tests. **`select`**, given a
+  base and a head commit, prints the ids of the tests relevant to that diff (for Driving Log, the Maestro areas whose
+  flows or screens it touches); it's a deterministic script in the project, so selection is reviewable and repeatable,
+  and the agent can't quietly skip a test. **`run`** runs the given ids and exits nonzero on any failure, leaving
+  results (reports, screenshots, view hierarchies, device logs) in a known directory.
+
+The layers:
+
+1. **Inner loop: the implementer.** When a task's diff selects any tests, they're part of the implementer's gate for
+   that task: it runs them, reads the results, fixes what's red and reruns until they're green, before it commits. This
+   is where the loop does its work: the agent gets the same feedback a person would, in the same unit, as often as it
+   needs.
+2. **Red/green proof.** A test the task adds or changes has to show that it actually tests the change: it must fail on
+   the build of the commit the task started from, and pass on the task's own commit. The implementer runs both and
+   records them in an `E2E:` section of its commit message, in the fixed format of `Guarded:`
+   (`- <test id> red <start sha> green <head sha>` for added or changed tests, `- <test id> green` for unchanged ones).
+   A test that's green on both is vacuous, and the task isn't done.
+3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
+   task's commit, and the added or changed ones on the starting commit too, and a result that doesn't match the `E2E:`
+   section is a revise verdict.
+4. **Final e2e: `final_approval.kind: container`.** In *awaiting-approval*, an `e2e` unit (a reviewer unit kind) runs
+   every test `select` picks for the whole change (from where it branched off the default branch to its content tip) on
+   one fresh emulator. A pass is recorded like a person's final-approval pass, as a bookkeeping line in
+   `review-notes.md`; a failure goes through the test-or-implementation rule below. `final_approval.human_after: true`
+   adds a person's pass after the unit's, for checks only a real device can do.
+5. **CI: the full suite.** The project's CI runs every end-to-end test as a required check, independent of the herd's
+   selection and of its emulator setup. A failure goes through Failing checks before the archive like any other, with
+   the job's artifacts handed to the triage unit (see below).
+
+**Test or implementation?** When a test fails, whoever triages it (the implementer in its own loop, the reviewer, or a
+`triage` unit after the final e2e or CI) follows the same order, so the answer comes from evidence rather than taste:
+
+1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing.
+2. **Run it on the default branch's build.** If it fails there too, the test was already broken: it's reported as a
+   separate finding, not fixed inside this change. If it passes there, this change caused the failure.
+3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
+   gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
+   code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
+   proposer's call.
+
+Updating a test to make it pass is always explicit: a project's end-to-end tests belong in `guarded.tests` (for Driving
+Log, `maestro/**`), so a commit that changes one declares it under `Guarded:` with the spec delta that justifies it, and
+the task review has to accept it (see Who commits, who pushes).
+
+**CI artifacts for triage.** A triage unit for a failed CI check gets the job's logs and uploaded artifacts (the
+end-to-end reports and screenshots, for instance): the orchestrator fetches them through the GitHub App (which therefore
+has *Actions* read access) and mounts them read-only into the unit, like provided inputs. The triage unit itself has no
+GitHub access. Without the artifacts it would be reasoning from a check's name.
+
+**Emulators in workers.** The project's toolchain image includes what `prepare` needs (an emulator and a system image,
+for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container by
+`GroupAdd=keep-groups`, as for the GPU). Each such unit boots its own emulator and throws it away with the unit, like
+its clone: sharing one would carry app data and device state from one unit into the next. Emulators are heavy (a few GB
+of memory and a few cores each, on the host that also serves the desktop and the local model server), so host config
+caps how many run at once (`e2e.max_emulators`, default 1); a unit that needs one waits for capacity, and its wait
+doesn't count against its timeouts. Whether emulators in rootless containers are stable enough on the host is measured
+before a project enables any of this (Build plan step 2's reality check gains an emulator probe); until then, and on a
+host without KVM, a project keeps `final_approval.kind: human` and relies on CI.
+
 ## Following up on PR review
 
 The orchestrator opens the change's PR and marks it ready for review, so it is also the one that watches the PR until
@@ -763,11 +838,12 @@ projects:
     slots: [gpu, gpu-private]           # optional: e.g. code that must not leave the host
 ```
 
-A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer
-has four that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release
-notes), `triage` (PR review findings and final-approval failures into tasks) and `archive` (mostly running
-`openspec archive`). A slot that doesn't list a role or kind never runs it, and a slot with `projects` runs only
-those projects' units. Slots that share a GPU share it in turn: the model server queues their requests.
+A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer has
+five that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release notes),
+`triage` (PR review findings and final-approval failures into tasks) `archive` (mostly running `openspec archive`) and
+`e2e` (the final end-to-end run and its triage, see End-to-end tests: the red/green loop). A slot that doesn't list a
+role or kind never runs it, and a slot with `projects` runs only those projects' units. Slots that share a GPU share it
+in turn: the model server queues their requests.
 
 - **The slots are the capacity.** The scheduler gives each unit to a free slot that can run its kind for its project,
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
@@ -1202,6 +1278,7 @@ timeouts:                              # per unit kind; a unit past either is ki
   holistic:  { wall: 30m, quiet: 10m }
   triage:    { wall: 20m, quiet: 10m }
   archive:   { wall: 10m, quiet: 5m }
+  e2e:       { wall: 60m, quiet: 15m }   # emulator boot and a full selection; waiting for one doesn't count
 budget:
   currency: USD                        # every cloud backend's price is in this currency
   timezone: UTC                        # where a billing month starts and ends
@@ -1354,6 +1431,10 @@ Steps marked **(manual)** need a human.
      acceptance rate is close enough to the cloud backend's that the extra rounds cost less than they save.
    - **The host copes:** the gate (a Gradle build, say) and the model running at once don't run the host out of
      RAM or throttle it.
+   - **Emulators are stable in a worker:** for a project with an `e2e` block, a rootless worker container with
+     `/dev/kvm` boots the project's emulator and runs its full end-to-end suite ten times; boot time, flake rate and
+     memory are recorded, and `final_approval.kind: container` is enabled only if the flake rate is low enough to
+     trust a red result.
    - **Switching is affordable:** if the slots use two local models, the measured time to swap one for the other
      on the card is small next to a task's time; if not, use one local model, or keep both resident if they fit.
 
@@ -1379,8 +1460,9 @@ Steps marked **(manual)** need a human.
    `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
    `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
    repositories, with repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit
-   statuses* and *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`),
-   and not *Workflows*; and its private key, read by the orchestrator only.
+   statuses*, *Actions* and *Administration* (read only: CI results for the state machine, CI logs and artifacts for
+   triage, branch protection for `herd doctor`), and not *Workflows*; and its private key, read by the orchestrator
+   only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
@@ -1405,5 +1487,5 @@ Each waits for the point where it can be answered with evidence rather than gues
     too, once the reality check passes (Build plan step 2): decide by replaying accepted tasks (see Models).
 - **When a project needs it:**
   - A second workflow besides OpenSpec.
-  - Automating final approval for projects whose end-to-end tests can run in a container (e.g. an emulator with KVM
-    passthrough), as a `final_approval.kind: container` with its own image.
+  - Whether `e2e.select` should also let the reviewer add tests it judges relevant beyond the script's choice, once
+    the first project has data on what the script misses.

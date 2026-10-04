@@ -41,8 +41,10 @@ checks these rules, and the project's workflow doc adds its own:
 - **Each `tasks.md` item is one reviewable commit**: one coherent step that leaves the gate green, small enough for
   one review. Split items that aren't; merge items that can't pass the gate on their own.
 - **Sections are in dependency order.** Tasks run strictly in sequence.
-- **Nothing needs a capability the project lists as missing** (the manifest's `missing_capabilities`), and no task
-  *runs* the final-approval checks. Tasks may write or update those tests; running them is your final approval.
+- **Nothing needs a capability the project lists as missing** (the manifest's `missing_capabilities`). If the herd
+  doesn't run the project's end-to-end tests itself, no task *runs* them: tasks may write or update those tests, and
+  running them is your final approval. If it does (the project's workflow doc says), a task that changes behavior a test
+  can see includes or updates that test, so the herd can show it going from red to green.
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it.
 - **No task needs a secret.**
@@ -111,15 +113,19 @@ Never provide a credential this way: a task that needs a secret stays with you.
 
 ## Final approval
 
-Some projects have a check the herd can't run, typically end-to-end tests that need an emulator, a device or a GUI.
-When a change reaches it, the draft PR (and the status pane) shows the project's instructions.
+Some projects have a check that runs only when the whole change is done, typically end-to-end tests that need an
+emulator, a device or a GUI. It takes one of two forms, which the project's workflow doc names:
 
-Check out the branch, follow the instructions, and record the result with `/herd-resolve`, which pins it to the
-commit you tested:
-
-- **pass**: the change moves on to review;
-- **fail**: describe the failing check and what happened. The herd turns it into new tasks, and the draft PR just
-  gets more commits.
+- **The herd runs it** (`container`): an emulator in a worker runs every end-to-end test relevant to the change,
+  after the herd has already run each task's relevant tests while implementing it, red before and green after. You
+  only step in if a failure can't be settled from the spec, or if the project also asks for your own check afterwards
+  for something only a real device can do. CI runs the full suite on the PR either way.
+- **You run it** (`human`): when a change reaches it, the draft PR (and the status pane) shows the project's
+  instructions. Check out the branch, follow them, and record the result with `/herd-resolve`, which pins it to the
+  commit you tested:
+  - **pass**: the change moves on to review;
+  - **fail**: describe the failing check and what happened. The herd turns it into new tasks, and the draft PR just
+    gets more commits.
 
 ## Review
 
