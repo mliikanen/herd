@@ -725,17 +725,23 @@ switch the safety net off. So the harness is a directory, `e2e.harness`, which t
 default branch into the unit, like `.herd/`, at a pinned revision: the default-branch commit the change's branch is
 currently based on (its merge-base with the default branch), not the moving tip. Every unit of the change uses that same
 harness, so an implementer and the reviewer who checks its `E2E:` section run the same `select` and `run`, and the pin
-moves only when update-branch merges a newer default branch into the change. When it moves, the change's
-`container`-phase pass is no longer current, even if the merge is otherwise bookkeeping: that pass was earned under the
-old harness, so the final e2e runs again under the new pin (which is also when a waiver that lapsed on the merge gets
-its test run). This is the one exception to clean merges keeping final-approval records; the `human` phase isn't
-affected. The `container` record names its pin for this
-(`final-approval container pass <tested sha> harness <pin sha>: <detail>`). and the three commands must live in it. They
-may load code only from that copy, from the toolchain image (which is built from the default branch too), and from the
-working tree's `e2e.tests`, the test definitions under test; the change contributes the app being tested and its tests,
-nothing that decides selection or reads results. Everything under `e2e.harness` is a built-in guarded path, so a change
-that edits the harness declares it, and an edit takes effect only once it's merged. `herd doctor` runs the harness from
-its copy with the working tree's own harness directory removed, which shows it doesn't reach outside its boundary.
+moves only when update-branch merges a newer default branch into the change, and only before the archive: from the
+archive commit on, the pin is frozen, since an archived change can't go back to *awaiting-approval*, and CI's full suite
+covers anything a later merge brings in. When it moves before the archive, the change's `container`-phase pass is no
+longer current, even if the merge is otherwise bookkeeping: that pass was earned under the old harness, so the final e2e
+runs again under the new pin (which is also when a waiver that lapsed on the merge gets its test run). This is the one
+exception to clean merges keeping final-approval records; the `human` phase isn't affected. The `container` record names
+its pin for this (`final-approval container pass <tested sha> harness <pin sha>: <detail>`). and the three commands must
+live in it. The logic that selects tests and reads their results may come only from that copy, from the toolchain image
+(which is built from the default branch too), and from the working tree's `e2e.tests`, the test definitions under test.
+`prepare` is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its
+wrapper and build scripts), which is the change's code, and those build inputs are guarded paths anyway (see Who
+commits, who pushes). `e2e.tests` and `e2e.harness` may not overlap, or copying the harness would replace a changed test
+with its default-branch version: manifest validation rejects a manifest where they do; the change contributes the app
+being tested and its tests, nothing that decides selection or reads results. Everything under `e2e.harness` is a
+built-in guarded path, so a change that edits the harness declares it, and an edit takes effect only once it's merged.
+`herd doctor` runs the harness from its copy with the working tree's own harness directory removed, which shows it
+doesn't reach outside its boundary.
 
 The layers:
 
@@ -882,9 +888,10 @@ behind. That merge triggers the CI checks again, which is where two concurrent p
 file (a dependency catalog, `CLAUDE.md`, a shared spec) actually collide — per-task testing alone won't catch that.
 A conflicting update-branch escalates to `needs-human`; a CI failure after the update gets a fix task (see Failing
 checks before the archive), and escalates past `caps.gate_fixes` of them. A clean update-branch merge that brings in no
-change to the change's own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or
-final-approval pass stale: CI re-runs the gate, and the human re-runs final approval at their discretion. One that does
-touch the change's files sends it back through holistic review against the merged tip.
+change to the change's own files is bookkeeping (see Current records), so it doesn't make a holistic-accept or a
+`human`-phase final-approval pass stale (a `container`-phase pass is the exception before the archive, when the merge
+moves the harness pin: see End-to-end tests): CI re-runs the gate, and the human re-runs final approval at their
+discretion. One that does touch the change's files sends it back through holistic review against the merged tip.
 
 ## Cleaning up after merge
 
