@@ -1200,9 +1200,10 @@ retained snapshot would charge the new machine's traffic to the old one.
   health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert
   episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
-  alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
-  condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
-  it stopped, so a machine idle all day alerts once plus the daily reminder.
+  alert: up and healthy with no call in flight for its `idle_alert` (default 30 minutes), counted from the end of the
+  last call, so a long generation never looks idle. It's an alert episode like an ongoing condition in Monitoring,
+  opened when the threshold passes and cleared when the next call starts or by the operator confirming it stopped, so a
+  machine idle all day alerts once plus the daily reminder.
 - **Removing or repointing a machine.** Host config can change a machine entry at any scan. A machine's identity is its
   `instance`, so a change to anything else (`endpoint`, `access` and its `wireguard` block, `price`, `idle_alert`, a
   rotated `secret`) is an update in place: the same machine, reached the new way or billed at the new rate from that
@@ -1277,7 +1278,10 @@ retained snapshot would charge the new machine's traffic to the old one.
   counter, of every source that has accrued anything this billing period, so an account removed or a machine retired
   earlier in the month is still asked for. Hours are attributed for the usage ledger by time, not tokens: while units
   are calling the machine, through any of its backends, its time is split evenly among them, and their share goes to
-  their change; time with no call in flight goes to the machine's own idle bucket, never to a change.
+  their change; time with no call in flight goes to the machine's own idle bucket, never to a change. Hours are what the
+  budget counts, but the ledger also keeps each rented call's token usage (the OpenAI-compatible response's `usage`),
+  per unit and change like a cloud call's: the gateway reports it after the call, with no reservation to replace, so
+  tokens per task stay comparable across backends.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: the orchestrator ends each one
   once any call it has in flight finishes, with a `budget` reason (not `infra`, and not a failed attempt), and since
