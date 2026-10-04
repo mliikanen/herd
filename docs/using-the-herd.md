@@ -18,7 +18,7 @@ commit until it is merged.** The default branch gets a change only as one merge,
    reviews the whole change, and updates the draft PR.
 4. **You run final approval**, if the project has one, and record the result.
 5. **The herd** marks the PR ready for review and follows up on what reviewers say, until nothing is open.
-6. **The herd** archives the change as the last commit that changes content. **You merge it.**
+6. **The herd** archives the change as the last change to the proposal's own files. **You merge it.**
 
 Your time goes to steps 1, 2, 4 and 6, and to any `needs-human` stop along the way.
 
@@ -133,11 +133,11 @@ its implementation, comes back to you as a `needs-human` stop, because scope is 
 
 ## Merging
 
-Once review is done, the herd archives the change (syncing its spec deltas into the main specs) as the last commit
-that changes content; only the herd's own notes, or a merge of the default branch, can follow it. When the checks pass
-and the archive has been reviewed (or the automated reviewer didn't answer within the configured timeout), the change
-is ready to merge, and **you merge it**. If the default branch has moved on, the herd merges it into the change branch
-first. A conflict there stops at `needs-human`.
+Once review is done, the herd archives the change (syncing its spec deltas into the main specs) as the last change to
+the proposal's own files; only the herd's own notes, or a merge of the default branch (which may change other files),
+can follow it. When the checks pass and the archive has been reviewed (or the automated reviewer didn't answer within
+the configured timeout), the change is ready to merge, and **you merge it**. If the default branch has moved on, the
+herd merges it into the change branch first. A conflict there stops at `needs-human`.
 
 ## After merge
 

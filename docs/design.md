@@ -391,8 +391,11 @@ independently:
 - `review-notes.md` (new, per change) carries reviewer feedback back to whichever worker picks up the task next,
   the final-approval result, and any `needs-human` marker. The implement→reject→revise sequence visible in the
   branch's commit history is how many review rounds a task has had — not a separate counter.
-- Whether a proposal's PR exists, and whether it's still a draft, is answered by asking GitHub
-  (`gh pr list --head <branch> --json number,isDraft`), not remembered.
+- Whether a proposal's PR exists, whether it's still a draft, and whether it was merged or closed unmerged, is answered
+  by asking GitHub for PRs in every state
+  (`gh pr list --head <branch> --state all --json number,isDraft,state,mergedAt`), not remembered. The default lists
+  only open PRs, which would make a closed one look like no PR at all, so *closed* couldn't be derived and the herd
+  might open a second PR.
 - The set of registered projects is host **config** (`/etc/herd/config.yaml`), not state: it's written by
   the `herd` CLI, never by the orchestrator, and re-read on every scan (see Registering projects).
 
@@ -400,23 +403,25 @@ The only state that lives purely in the orchestrator process's memory — and is
 *current assignment lock* (which worker container currently holds which proposal), whose only job is to stop two
 workers racing on the same branch while the process is alive.
 
-**The scan loop.** The orchestrator doesn't keep a work list between passes. It runs the same full scan on start
-and then repeatedly: every few minutes (`scan_interval` in host config), and right away when the `herd` CLI pokes
-it after changing the config or recording a human action. Each scan re-reads the host config, fetches every
-registered project's bare mirror, derives each proposal's state, and dispatches work to free worker slots. A
-project, a proposal or a human fix that appeared since the last pass is picked up by the next one with no restart,
-because nothing is remembered between passes to go stale. Crash recovery (below) is just the first scan.
+**The scan loop.** The orchestrator doesn't keep a work list between passes. It runs the same full scan on start and
+then repeatedly: every few minutes (`scan_interval` in host config), and right away when the `herd` CLI pokes it after
+changing the config or recording a human action. Each scan re-reads the host config, fetches every registered project's
+bare mirror, derives each proposal's state, and dispatches work to free worker slots. A project, a proposal or a human
+fix that appeared since the last pass is picked up by the next one with no restart, because no proposal state is
+remembered between passes to go stale. Crash recovery (below) is just the first scan. The only things the orchestrator
+keeps across passes are operational stores that decide nothing about any proposal: the budget counter and usage ledger,
+and the alert queue (see Monitoring). It reads them back on start.
 
-**Crash recovery** (orchestrator container restart or a full host reboot look identical from here, given
-its systemd unit's `Restart=always` and lingering, see Containers): on start, the orchestrator, for every
-registered project, (1) lists every change branch without a merged PR, (2) reads each one's `.openspec.yaml` and
-`tasks.md`/`review-notes.md` to compute its exact next action from scratch — no assumption carried over from
-before the crash, (3) reconciles against running worker containers (kill any orphaned worker rather than adopt
-it — its state is suspect) and `gh pr list` (don't open a second PR for a branch that already has one), (4)
-re-enqueues and resumes. The cost of a crash is bounded to whatever unpushed work was sitting in a worker's
-ephemeral clone — redone from the last pushed commit (and, per the rule above, that redo never reuses the discarded
-partial work) — which is cheap specifically because workers are stateless and task granularity is small (one
-`tasks.md` item at a time).
+**Crash recovery** (orchestrator container restart or a full host reboot look identical from here, given its systemd
+unit's `Restart=always` and lingering, see Containers): on start, the orchestrator, for every registered project, (1)
+lists every change branch without a merged PR, (2) reads each one's `.openspec.yaml` and `tasks.md`/`review-notes.md` to
+compute its exact next action from scratch — no assumption carried over from before the crash, (3) reconciles against
+running worker containers (kill any orphaned worker rather than adopt it — its state is suspect) and `gh pr list` (don't
+open a second PR for a branch that already has one), (4) reads back the operational stores (budget counter, usage
+ledger, alert queue) and starts a new proxy epoch (see Network and secrets), (5) re-enqueues and resumes. The cost of a
+crash is bounded to whatever unpushed work was sitting in a worker's ephemeral clone — redone from the last pushed
+commit (and, per the rule above, that redo never reuses the discarded partial work) — which is cheap specifically
+because workers are stateless and task granularity is small (one `tasks.md` item at a time).
 
 **The guarantee that a started-but-unfinished task can never be missed on restart** — not just redone, but never
 silently dropped — comes from two rules together, not from the scan alone:
@@ -462,14 +467,15 @@ silently dropped — comes from two rules together, not from the scan alone:
      "(added during review)", which sends the change back to *implementing*. Review comes before archiving, because a
      fix after the archive would mean editing the synced main specs by hand.
   8. *archiving* — holistic review accepted, (if required) the effective final-approval record a pass, review done (no
-     open thread or untriaged finding, and every awaited reviewer's first review of the content tip classified clean, or
-     timed out), change not yet archived on the branch. Next action, the first that applies: a required check failed on
-     the current tip, so a `triage` unit turns it into a fix task (see Failing checks before the archive); the branch is
-     behind the default branch, so update-branch (a merge that touches the change's files sends it back through holistic
-     review, which is still possible before the archive); while a required check is still running, none; wait (a failure
-     then goes through Failing checks before the archive, never past it). Once the branch is up to date and every
-     required check on its tip has passed, the reviewer runs the archive and commits. A crash mid-archive never gets
-     pushed, so it's discarded with the clone and redone, same as any other unit of work.
+     open thread or untriaged finding, and every awaited reviewer's first review of the content tip either classified
+     clean or with all its findings triaged and resolved, or timed out), change not yet archived on the branch. Next
+     action, the first that applies: a required check failed on the current tip, so a `triage` unit turns it into a fix
+     task (see Failing checks before the archive); the branch is behind the default branch, so update-branch (a merge
+     that touches the change's files sends it back through holistic review, which is still possible before the archive);
+     while a required check is still running, none; wait (a failure then goes through Failing checks before the archive,
+     never past it). Once the branch is up to date and every required check on its tip has passed, the reviewer runs the
+     archive and commits. A crash mid-archive never gets pushed, so it's discarded with the clone and redone, same as
+     any other unit of work.
   9. *archived-pending* — archive commit pushed, change not yet *ready-to-merge*. Every archived change that isn't
      ready is here, and its next action is the first of these that applies, in this order:
      1. a check failed, a review finding is open, or a non-bookkeeping commit arrived after the archive: the
@@ -484,10 +490,10 @@ silently dropped — comes from two rules together, not from the scan alone:
      4. checks still running on the current tip, or an awaited reviewer hasn't reviewed the content tip and its
         review window hasn't timed out: none; wait.
   10. *ready-to-merge* — archive commit pushed, branch up to date with the default branch, checks passing on the current
-     tip, every awaited reviewer's review of the content tip classified clean (or timed out), no open thread, and the
-     holistic-accept still current (see Current records). Next action: none; a human merges. A later bookkeeping push
-     (a clean update-branch merge, say) moves the change back to *archived-pending* until checks pass on the new tip;
-     its review of the content tip still stands.
+     tip, every awaited reviewer's review of the content tip either classified clean or with all its findings triaged
+     and resolved (or timed out), no open thread, and the holistic-accept still current (see Current records). Next
+     action: none; a human merges. A later bookkeeping push (a clean update-branch merge, say) moves the change back to
+     *archived-pending* until checks pass on the new tip; its review of the content tip still stands.
 
   **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so
   "for the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is
@@ -620,7 +626,7 @@ un-archiving.
 The orchestrator opens the change's PR and marks it ready for review, so it is also the one that watches the PR until
 it is merged and follows up on what reviewers say. It runs no model, so it doesn't judge feedback. It collects
 feedback, hands it to the reviewer to triage, has implementers fix it, and posts the answers. Every step is a unit of
-work like any other, derived from git and GitHub on each scan, never remembered.
+work like any other, derived from git and GitHub on each scan; no proposal state is remembered.
 
 1. **Watch.** Every scan, for each PR in *in-review* or later and not yet merged, the orchestrator reads:
    - the review threads (`reviewThreads` over GraphQL, with `isResolved`), every page of them: a check that reads only
