@@ -34,6 +34,7 @@ flowchart TD
         H["Holistic review of the whole change"]
         RV["PR review: findings become tasks<br/>or answered with a reason"]
         A["Archive the change<br/>(spec deltas into main specs)"]
+        AP["Wait for checks and the review<br/>of the archive"]
     end
     P --> R --> I --> H
     H -- "final approval needed" --> FA
@@ -41,11 +42,11 @@ flowchart TD
     FA -- "pass" --> RV
     FA -- "fail: becomes tasks" --> I
     RV -- "fix tasks" --> I
-    RV -- "review clean" --> A --> M
+    RV -- "review clean" --> A --> AP --> M
     I -. "something it can't do on its own" .-> NH
     RV -. "scope change or too many rounds" .-> NH
     A -. "anything after the archive" .-> NH
-    NH -. "herd picks it back up" .-> I
+    NH -. "herd re-derives where the change is<br/>and picks it back up there" .-> RD["Wherever the branch<br/>now says"]
 ```
 
 Your time goes to steps 1, 2, 4 and 6, and to any `needs-human` stop along the way.

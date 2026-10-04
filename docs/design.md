@@ -456,6 +456,7 @@ stateDiagram-v2
         open --> awaiting: implementer commit
         awaiting --> accepted: task review accepts
         awaiting --> open: task review revises
+        accepted --> open: next open task
     }
 
     implementing --> holistic_review_pending: every task [x]
@@ -478,7 +479,8 @@ stateDiagram-v2
     archived_pending --> needs_human: failed check, finding or content commit
     implementing --> needs_human: cap reached
     in_review --> needs_human: review rounds cap or scope request
-    needs_human --> implementing: a person resolves (state re-derived)
+    needs_human --> rederived: a person resolves
+    rederived: resumes where the branch now says
 
     waiting_on_dependency: waiting-on-dependency
     holistic_review_pending: holistic-review-pending
