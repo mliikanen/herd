@@ -805,7 +805,8 @@ backends:
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
   local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
   rented-coder:   { kind: openai, model: <open-weight coder>, revision: <commit>, hosting: rented,
-                    endpoint: https://<rented host>/v1, secret: RENTED_GPU_KEY,
+                    endpoint: https://<rented host>/v1, access: https-key, secret: RENTED_GPU_KEY,
+                    context: 131072, idle_alert: 30m,
                     price: { per_hour: <rate> } }   # see Rented GPU backends
 slots:                                 # each slot runs one unit at a time
   - name: gpu
@@ -1090,27 +1091,38 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   leaving it, so such a project never gets a rented slot; whether to use rented hardware at all is the operator's call,
   per project.
 
-- **Network.** The model gateway is the only client, and the endpoint is never an open port: it's HTTPS with a key
-  (`secret`, kept in `~herd/secrets/` and read by the proxy alone, like a provider key), or reachable only through a
-  WireGuard tunnel the proxy holds. Its host is on the proxy's egress for that backend only, and `herd doctor` checks
-  that it refuses an unauthenticated request. The gateway applies the same rules as to any backend: it pins the attested
-  model ID, allow-lists the inference route and token-only features, and bounds the requested output by the backend's
-  context.
+- **Network.** The model gateway is the only client, and the endpoint is never an open port. A rented backend declares
+  how it's protected with `access`: `https-key`, HTTPS with a key (`secret`, kept in `~herd/secrets/` and read by the
+  proxy alone, like a provider key), for which `herd doctor` checks that a request without the key is refused; or
+  `wireguard`, reachable only through a WireGuard tunnel the proxy holds, where tunnel membership is the authentication,
+  so `doctor` checks instead that the endpoint answers through the tunnel and can't be reached at its public address.
+  Its host is on the proxy's egress for that backend only. The gateway applies the same rules as to any backend: it pins
+  the attested model ID, allow-lists the inference route and token-only features, and bounds the requested output by the
+  backend's `context`, which a rented backend must declare (the OpenAI-compatible model list doesn't report it);
+  `doctor` checks the value with a request near that length.
 - **Lifecycle.** At first the operator starts and stops the machine; the herd dispatches units to a rented slot only
   while its endpoint answers health checks, and a unit whose machine disappears mid-call (spot and marketplace machines
   can be reclaimed) ends as an `infra` failure and is retried. So a machine left running for nothing doesn't burn money
-  unnoticed, an idle machine (up, healthy, no call for `idle_alert`, default 30 minutes) raises an alert. Letting the
-  herd start and stop the machine itself through the provider's API, on demand, is an open question.
-
-- **Cost.** A rented backend's `price` is `per_hour`, not per token. The budget counts its hours from the health checks:
-  while the herd sees the endpoint up, the counter accrues the hourly rate, so the monthly budget covers rented hours
-  alongside cloud tokens. It's an approximation of the provider's bill, which the operator reconciles; the gateway still
-  meters tokens per unit for the usage ledger and acceptance rates, so cost per accepted task can be compared with a
-  cloud model's.
-
+  unnoticed, an idle machine raises an alert: up and healthy with no call for the backend's `idle_alert` (default 30
+  minutes). It's an alert episode like an ongoing condition in Monitoring, opened when the threshold passes and cleared
+  by the next call or by the machine going down, so a machine idle all day alerts once plus the daily reminder. Letting
+  the herd start and stop the machine itself through the provider's API, on demand, is an open question.
+- **Cost.** A rented backend's `price` is `per_hour`, not per token, in `budget.currency`. The budget counts its hours
+  from the health checks: while the herd sees the endpoint up, the counter accrues the hourly rate, so the monthly
+  budget covers rented hours alongside cloud tokens. That's an approximation of the provider's bill, which the operator
+  reconciles. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, its
+  time is split evenly among them, and their share goes to their change; time with no call in flight goes to the
+  backend's own idle bucket, never to a change. **The budget can't stop a rented machine yet**, since the herd doesn't
+  control it: at the limit the herd stops dispatching to rented slots like any paid backend, but the machine keeps
+  billing, so the herd raises an urgent alert asking the operator to stop it, the counter keeps accruing, and the status
+  pane shows "over budget: rented machine still up" until it's down. For per-token backends the budget is a hard limit;
+  for rented ones it's a hard stop on dispatch and an alert on spend, until the herd can stop the machine itself (see
+  Open questions).
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
-  Models). The bigger models it can serve are the reason to try it; the replay is what shows whether they pay off.
+  Models). Cost per accepted task is measured in an exclusive window, with the machine serving only the replay, so idle
+  time and other units' calls don't distort it. The bigger models it can serve are the reason to try it; the replay is
+  what shows whether they pay off.
 
 ## The herd's own account
 
@@ -1311,7 +1323,7 @@ timeouts:                              # per unit kind; a unit past either is ki
   triage:    { wall: 20m, quiet: 10m }
   archive:   { wall: 10m, quiet: 5m }
 budget:
-  currency: USD                        # every cloud backend's price is in this currency
+  currency: USD                        # every paid backend's price (per token or per hour) is in this currency
   timezone: UTC                        # where a billing month starts and ends
   monthly: 200                         # paid backends: cloud APIs and rented GPUs
   warn_at: 80%
@@ -1371,13 +1383,14 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
-  `alerts.infra_after` all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational
-  control like the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about
-  any change's state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already
-  hold. An alert about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An
-  ongoing condition (a project inactive, low disk, the budget, infrastructure failures) is an **episode**: the scan that
-  first sees it appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after
-  a `cleared` one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the
+  `alerts.infra_after`, an idle rented machine (see Rented GPU backends), and a rented machine still up after the budget
+  limit all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like
+  the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's
+  state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert
+  about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing
+  condition (a project inactive, low disk, the budget, infrastructure failures) is an **episode**: the scan that first
+  sees it appends an opening entry, the scan that sees it gone appends a `cleared` entry, and a new opening after a
+  `cleared` one starts a new episode, so a second outage on the same day alerts again. The alert is keyed by the
   episode, and a daily reminder while it lasts by the episode and the day. Losing the queue costs at most one repeated
   alert per open condition. Delivery on both channels is at-least-once: push delivery is recorded per id after the
   service accepts it, so a crash in between sends that one again, never none. Alerts go out on two channels from two
