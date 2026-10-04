@@ -1144,13 +1144,15 @@ revision below).
   (`price`, `idle_alert`, a rotated `secret`) is an update in place: the same machine, a new rate from that moment on. A
   change to its identity (`endpoint`, `access`, the WireGuard `peer`), or dropping the entry, means a different machine,
   or none, from the herd's point of view, but the old machine doesn't stop with it: the orchestrator keeps the old
-  definition (tunnel, key reference, health checks, hourly accrual, alerts) as a **retained snapshot** with an immutable
+  definition (tunnel, credentials, health checks, hourly accrual, alerts) as a **retained snapshot** with an immutable
   id (the machine's name and the moment it was retained, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own
   files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
-  times, so the snapshot id, not the name, is what identifies it. The snapshot takes no new units, its running units
-  finish on it (as Models promises), and it keeps accruing cost and raises a "retained machine not confirmed stopped"
-  alert episode, shown with its id, until its units have finished **and** the operator runs
-  `herd machines stopped <snapshot id>`.
+  times, so the snapshot id, not the name, is what identifies it. The snapshot's credentials can't depend on files the
+  operator may rotate or delete for the replacement machine, so when a snapshot is retained the proxy copies the secrets
+  it uses into its own store (`~herd/secrets/retained/<snapshot id>/`, mode `0600`), keeps that copy unchanged, and
+  deletes it only when the snapshot is retired. The snapshot takes no new units, its running units finish on it (as
+  Models promises), and it keeps accruing cost and raises a "retained machine not confirmed stopped" alert episode,
+  shown with its id, until its units have finished **and** the operator runs `herd machines stopped <snapshot id>`.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
@@ -1173,10 +1175,11 @@ revision below).
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
   Models). Cost per accepted task is measured in an exclusive window, with the machine serving only the replay: the cost
-  is everything accrued over that window, startup and the gaps between calls included (which the ledger would otherwise
-  book to the idle bucket), divided by the tasks the replay got accepted, so other units' calls don't distort it and
-  idle time isn't hidden. The bigger models it can serve are the reason to try it; the replay is what shows whether they
-  pay off.
+  is what the provider billed for that window, entered by the operator from the bill, since health-check accrual starts
+  only at the first healthy probe and so misses boot and model loading; that figure includes startup and the gaps
+  between calls (which the ledger would otherwise book to the idle bucket), divided by the tasks the replay got
+  accepted, so other units' calls don't distort it and idle time isn't hidden. The bigger models it can serve are the
+  reason to try it; the replay is what shows whether they pay off.
 
 ## The herd's own account
 
