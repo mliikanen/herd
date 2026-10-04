@@ -817,17 +817,19 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   `human_after` always stays with the person), run it on the merge-base build `caps.flaky_retries` + 1 times, as step 1
   of the rule requires: stable there means this change made it intermittent, a regression that goes on to the spec step
   and becomes a fix task like any other. A check that both passes and fails there, or that passes on the second
-  merge-base try after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, N
-  counting every flaky outcome seen, including on the merge-base runs) and it counts toward `caps.flaky_retries` like
-  any other, so the next action is the person's check again until the count reaches the cap. A check that fails on every
-  merge-base run is pre-existing (fixed on the default branch or waived), and that, or a failure the spec doesn't
-  settle, escalates to `needs-human` as it would anywhere else, and otherwise the triage unit turns the failure into
-  appended task(s) under "(added during final approval)", and the proposal goes back to *implementing*. Either way its
-  verdict commit records `final-approval-triaged <sha of the fail record>`, escalation included, so once a person
-  resolves the stop (a waiver, say) the same fail isn't triaged and escalated again; the same goes for a
-  `container`-phase fail. Once those tasks are accepted and the holistic review is current again, the change returns to
-  *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR stays open
-  throughout and simply gets more commits.
+  merge-base try after failing the first, is a flake: the triage unit records it (`e2e-flaky <test id> <sha> xN`, where
+  the id is the harness's test id for an end-to-end test, and for a manual check one `herd-resolve` assigns, `human:`
+  plus a short slug the person confirms, offering the slugs this change already used so the same check keeps one id and
+  its flakes add up; N counting every flaky outcome seen, including on the merge-base runs) and it counts toward
+  `caps.flaky_retries` like any other, so the next action is the person's check again until the count reaches the cap. A
+  check that fails on every merge-base run is pre-existing (fixed on the default branch or waived), and that, or a
+  failure the spec doesn't settle, escalates to `needs-human` as it would anywhere else, and otherwise the triage unit
+  turns the failure into appended task(s) under "(added during final approval)", and the proposal goes back to
+  *implementing*. Either way its verdict commit records `final-approval-triaged <sha of the fail record>`, escalation
+  included, so once a person resolves the stop (a waiver, say) the same fail isn't triaged and escalated again; the same
+  goes for a `container`-phase fail. Once those tasks are accepted and the holistic review is current again, the change
+  returns to *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR
+  stays open throughout and simply gets more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
