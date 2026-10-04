@@ -226,8 +226,9 @@ It gets the change, code and archive together, as the one merge of the change's 
 - **Pausing.** Setting `ready: false` (or removing the field) on the branch stops the herd after the unit it's
   running, so a person can revise the change. Setting it back resumes from whatever the files then say.
 - **A person pushing while the herd works.** The orchestrator's next push to that branch is rejected as
-  non-fast-forward. It discards that unit, as it would a crashed one, and the next scan derives the change's state
-  from the new tip. Git enforces this, so nothing a person pushes can be silently overwritten.
+  non-fast-forward. It discards that unit like a crashed one, but records it as `superseded`, which isn't committed
+  and doesn't count as a failed attempt (see Failed attempts), and the next scan derives the change's state from the
+  new tip. Git enforces this, so nothing a person pushes can be silently overwritten.
 
 ## Concurrency model
 
@@ -374,10 +375,12 @@ is the task for `implement` and `task` units, and the change itself for `holisti
 The count of those lines for one unit kind and subject, since that kind's last accepted commit for that subject,
 is derived from git like everything else, and past `caps.failed_attempts` the change escalates to `needs-human`.
 
-Failures of the herd's own infrastructure (the model backend unreachable or rate-limited, the host out of disk)
-are different: they say nothing about the change, so they're **not** committed. They go to the event log, don't
-count toward the cap, and back off. If they persist past `alerts.infra_after` (host config), the operator gets an
-alert, so a long outage shows up once instead of as a growing branch history that retriggers CI and review.
+A unit whose push lost the race to a person's push is `superseded`, not failed: it says nothing about the worker or the
+change, so it's retried from the new tip, isn't committed and doesn't count. Failures of the herd's own infrastructure
+(the model backend unreachable or rate-limited, the host out of disk) are similar: they say nothing about the change, so
+they're **not** committed. They go to the event log, don't count toward the cap, and back off. If they persist past
+`alerts.infra_after` (host config), the operator gets an alert, so a long outage shows up once instead of as a growing
+branch history that retriggers CI and review.
 
 ## Communication and the work queue: git + files, no message bus, no separate durable store
 
@@ -863,16 +866,17 @@ sniff or redirect, and no other unit's token to steal; workers also run with eve
 (`--cap-drop=all`). The plain-HTTP hop between a worker and the proxy below is therefore private to that unit. The
 worker's only way out is the proxy, which serves two purposes:
 - **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`, or
-  the harness's equivalent, points at the gateway, with a placeholder key). The gateway checks the unit's token, swaps
-  in the backend's real key and calls the provider over HTTPS. It also sets the provider endpoint and the model itself,
-  from the token's registered backend, overwriting whatever the request named (one key can authorize several models),
-  and rejects requests to any other endpoint. Beyond that it allow-lists what a request may contain: the inference route
-  only, known headers, and body features that run entirely on tokens. Server-executed tools (a provider's web search,
-  web fetch or code execution) would reach outside the egress allow-list and add fees the reservation doesn't price, so
-  they're rejected, as are batch, file and other separately billed APIs, unless the herd constrains and meters them
-  itself. So workers never hold an API key, the gate and the agent-written code it runs have none to leak, and a unit
-  can only call the model its slot assigns, at the price its reservation assumed. Local backends go through the gateway
-  too, which keeps that rule uniform.
+  the harness's equivalent, points at the gateway, and the SDK's credential, `ANTHROPIC_API_KEY` or its equivalent,
+  holds the unit's token). The gateway validates that token first, and only then replaces it with the backend's real key
+  and calls the provider over HTTPS. It also sets the provider endpoint and the model itself, from the token's
+  registered backend, overwriting whatever the request named (one key can authorize several models), and rejects
+  requests to any other endpoint. Beyond that it allow-lists what a request may contain: the inference route only, known
+  headers, and body features that run entirely on tokens. Server-executed tools (a provider's web search, web fetch or
+  code execution) would reach outside the egress allow-list and add fees the reservation doesn't price, so they're
+  rejected, as are batch, file and other separately billed APIs, unless the herd constrains and meters them itself. So
+  workers never hold an API key, the gate and the agent-written code it runs have none to leak, and a unit can only call
+  the model its slot assigns, at the price its reservation assumed. Local backends go through the gateway too, which
+  keeps that rule uniform.
 - **Egress allow-list.** Everything else (package registries) goes through the proxy's `CONNECT` tunnel, allowed only to
   the destinations on the unit's list, each a host and port (`host[:port]`, 443 when no port is given; a `CONNECT`
   tunnel carries arbitrary TCP, so a hostname alone would open every port on it): the manifest's `egress`, which a role
@@ -880,11 +884,12 @@ worker's only way out is the proxy, which serves two purposes:
   (`Proxy-Authorization`, set through the standard proxy variables), and the proxy rejects a request without a valid
   one, or one arriving on a network other than its unit's; that's what tells it whose list applies. A hostname alone
   doesn't keep a tunnel out of the herd's own networks, since an allowed name could resolve, or be rebound, to an
-  internal address. So the proxy resolves each destination itself and rejects loopback, link-local and every herd
-  network (unit networks, the model server's), whatever the name; another private range (a company registry, say) is
-  reachable only if host config allows it, which is the operator's decision, never the project manifest's. The proxy
-  doesn't break TLS. A tool that ignores the proxy settings can't connect at all, so a mistake fails closed;
-  `herd doctor` proves the real gate works this way. Gradle, for one, needs its proxy and credentials in
+  internal address. So the proxy resolves each destination itself, connects to exactly the address it validated (never
+  resolving the name again for the connection), repeats the check on every retry or reconnect, and rejects loopback,
+  link-local and every herd network (unit networks, the model server's), whatever the name; another private range (a
+  company registry, say) is reachable only if host config allows it, which is the operator's decision, never the project
+  manifest's. The proxy doesn't break TLS. A tool that ignores the proxy settings can't connect at all, so a mistake
+  fails closed; `herd doctor` proves the real gate works this way. Gradle, for one, needs its proxy and credentials in
   `JAVA_TOOL_OPTIONS`, plus `-Djdk.http.auth.tunneling.disabledSchemes=` because Java disables Basic auth for HTTPS
   tunnels by default.
 
@@ -913,7 +918,10 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
   socket and could start another container with the directory mounted read-write. What protects it is host ownership:
   the directory and its files belong to the operator, with group `herd` (the service user's own group, not `herd-ops`)
   allowed to read and nothing more, and a rootless container can never exceed its user's permissions on the host. So no
-  mount gives the `herd` account write access. `herd doctor` checks the ownership and modes.
+  mount gives the `herd` account write access. Group `herd` survives the CLI's updates because the directory is setgid
+  (mode `2750`, owner the operator, group `herd`), so every file created in it inherits the group whatever the
+  operator's own groups are; files are `0640`, and the CLI writes each change to a temporary file in the same directory
+  and renames it into place. `herd doctor` checks the ownership and modes.
 - **`/var/lib/herd/shared/`**: written by the orchestrator, readable by `herd-ops`. It holds the event log, each
   running unit's log, and a heartbeat file the `herd` CLI checks.
 - **`/var/lib/herd/requests/`**: writable by `herd-ops`. The `herd` CLI drops a request here (rescan now, run `doctor`
@@ -1244,15 +1252,15 @@ Steps marked **(manual)** need a human.
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
    `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
    and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
-   (owned by the operator, group `herd`, read-only for the group) and `/var/lib/herd/`, puts `herd` on `PATH`, installs
-   the Quadlet units (orchestrator, network proxy, each with its `[Install]` section), enables lingering and the Podman
-   API socket for `herd`, checks that `herdr` is installed, installs herdr's integration for the planner agent, and adds
-   the operator's login unit for `herdr server`.
-7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read
-   by the network proxy only); a GitHub App for the herd, installed on the registered repositories, with
-   repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit statuses* and
-   *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`), and not
-   *Workflows*; and its private key, read by the orchestrator only.
+   (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/`, puts `herd` on `PATH`,
+   installs the Quadlet units (orchestrator, network proxy, each with its `[Install]` section), enables lingering and
+   the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's integration for the planner
+   agent, and adds the operator's login unit for `herdr server`.
+7. **(manual)** Host secrets, in the `herd` user's files: `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by
+   the network proxy only; a worker's own `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for
+   the herd, installed on the registered repositories, with repository permissions *Contents* and *Pull requests* (read
+   and write), *Checks*, *Commit statuses* and *Administration* (read only: CI results for the state machine, branch
+   protection for `herd doctor`), and not *Workflows*; and its private key, read by the orchestrator only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
