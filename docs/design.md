@@ -179,10 +179,10 @@ The herd can start observing a new project at any time, without restarting anyth
 
 - **Registering.** `herd init` registers the project it onboards. `herd add <repo-url>` registers a project that already
   has `.herd/` (for example, on a second host). Both write `/etc/herd/config.yaml` and poke the orchestrator (see The
-  herd's own account). The orchestrator gets that file **read-only**, so registering stays a host-side action that no
-  worker agent or orchestrator bug can widen. The operator's planner agent runs under their account and could run
-  `herd add` too, but it's the person's own supervised session: a config change through it is theirs to approve, like
-  any other command it runs.
+  herd's own account). The `herd` account can only read that file on the host (see The herd's own account), so
+  registering stays a host-side action that no worker agent or orchestrator bug can widen, even through the Podman
+  socket. The operator's planner agent runs under their account and could run `herd add` too, but it's the person's own
+  supervised session: a config change through it is theirs to approve, like any other command it runs.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
   a `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
   builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
@@ -803,11 +803,11 @@ from a per-project, per-role image:
   in each response, so it parses and rewrites provider requests and reads their responses. The **egress allow-list** is
   an off-the-shelf forward proxy configured for authenticated `CONNECT` with destination checks. It holds the model
   backends' API keys and nothing else, and runs no model and no project code.
-- **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container
-  lifecycle, commit validation, push, `gh pr create`/update-branch/mark-ready. Needs the GitHub App's private key,
-  the `herd` user's rootless Podman API socket, and the host config read-only; no LLM key. It's the one privileged
-  component, which is acceptable because it runs no model and no project code. The socket is worth the `herd`
-  account, which holds nothing but the herd.
+- **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container lifecycle,
+  commit validation, push, `gh pr create`/update-branch/mark-ready. Needs the GitHub App's private key, the `herd`
+  user's rootless Podman API socket, and the host config read-only (which host ownership enforces; see The herd's own
+  account); no LLM key. It's the one privileged component, which is acceptable because it runs no model and no project
+  code. The socket is worth the `herd` account, which holds nothing but the herd.
 
 **Repo access: a local bare mirror per project, one fresh clone per unit of work.** The orchestrator keeps a bare
 mirror of each registered repo in a volume (fetched before each assignment). For each unit of work it clones
@@ -885,7 +885,11 @@ socket, the App's private key and the proxy's API keys reach nothing else on the
 `herd` user's Podman. They share three things through the filesystem, using a `herd-ops` group the operator
 belongs to:
 - **`/etc/herd/`**: host config, written by the operator (through the `herd` CLI) and mounted read-only into the
-  orchestrator.
+  orchestrator. The read-only mount alone wouldn't protect it, since the orchestrator holds the `herd` user's Podman
+  socket and could start another container with the directory mounted read-write. What protects it is host ownership:
+  the directory and its files belong to the operator, with the `herd` group allowed to read and nothing more, and a
+  rootless container can never exceed its user's permissions on the host. So no mount gives the `herd` account write
+  access. `herd doctor` checks the ownership and modes.
 - **`/var/lib/herd/shared/`**: written by the orchestrator, readable by `herd-ops`. It holds the event log, each
   running unit's log, and a heartbeat file the `herd` CLI checks.
 - **`/var/lib/herd/requests/`**: writable by `herd-ops`. The `herd` CLI drops a request here (rescan now, run `doctor`
@@ -964,9 +968,9 @@ directory. A project without a checkout gets its workspace without a planner pan
   install, or after a reboot without the login unit below) `herd` starts it headless (`herdr server`) and waits for its
   socket. Then it makes sure the `herd` workspace exists with the bridge running in it (creating them through the
   `herdr` CLI if not: `herdr workspace create --label herd`, then `herdr pane run` for the bridge), and attaches a
-  client (`herdr`). The install script also adds an operator user unit that starts `herdr server` at login, so the
-  bridge, and with it desktop alerts, runs without anyone attaching. One command either way, and detaching (closing the
-  terminal) leaves everything running.
+  client (the exact attach command is settled at Build plan step 5). The install script also adds an operator user unit
+  that starts `herdr server` at login, so the bridge, and with it desktop alerts, runs without anyone attaching. One
+  command either way, and detaching (closing the terminal) leaves everything running.
 - `herd <project>` does the same and focuses that project's workspace, re-creating its planner pane if the
   person closed it.
 - The orchestrator does not depend on herdr. It runs as the `herd` user's systemd unit whether or not anyone is
