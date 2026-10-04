@@ -86,6 +86,7 @@ e2e:                                          # end-to-end tests the herd runs i
   prepare: ./e2e/prepare.sh                   # (re)builds and installs the app, boots the emulator if needed
   select: ./e2e/select.sh                     # select <base sha>: relevant test ids, one per line on stdout
   run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
+  ci_artifacts: [maestro-full]                # CI jobs whose logs and artifacts triage may see; must be secret-free
                                               # (the scripts always run from the default branch: see the section)
 missing_capabilities:                         # a task that needs one of these escalates instead of being attempted
   - macOS / Xcode
@@ -736,13 +737,15 @@ The layers:
 `triage` unit after the final e2e or CI) follows the same order, so the answer comes from evidence rather than taste:
 
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing.
-2. **Run it on the default branch's build.** If it passes there, this change caused the failure: go on to 3. If it
-   fails there too, the test was already broken, and fixing it isn't this change's job. So that can't loop, the triager
-   escalates to `needs-human` ("fails on the default branch too"), and the person either fixes the default branch in a
-   separate change and resolves the stop once it's merged, or waives the test for this change with `herd-resolve`, which
-   records `e2e-waive <test id>: <reason>`; the herd's own e2e runs for the change then skip it. A waiver doesn't touch
-   CI: the required check still fails until the default branch is fixed, which keeps the merge blocked on the real
-   problem.
+2. **Run it on the default branch's build**, but only if the same test definition exists unchanged on the default
+   branch. A test this change adds or changes (under `e2e.tests`) is meant to fail on the old build, or may not exist
+   there at all, so it skips this step and goes straight to 3. For an unchanged test: if it passes there, this change
+   caused the failure: go on to 3. If it fails there too, the test was already broken, and fixing it isn't this change's
+   job. So that can't loop, the triager escalates to `needs-human` ("fails on the default branch too"), and the person
+   either fixes the default branch in a separate change and resolves the stop once it's merged, or waives the test for
+   this change with `herd-resolve`, which records `e2e-waive <test id>: <reason>`; the herd's own e2e runs for the
+   change then skip it. A waiver doesn't touch CI: the required check still fails until the default branch is fixed,
+   which keeps the merge blocked on the real problem.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
@@ -754,8 +757,13 @@ Driving Log, `maestro/**`), which makes them built-in guarded paths, so any comm
 
 **CI artifacts for triage.** A triage unit for a failed CI check gets the job's logs and uploaded artifacts (the
 end-to-end reports and screenshots, for instance): the orchestrator fetches them through the GitHub App (which therefore
-has *Actions* read access) and mounts them read-only into the unit, like provided inputs. The triage unit itself has no
-GitHub access. Without the artifacts it would be reasoning from a check's name.
+has *Actions* read access) and mounts them read-only into the unit, like provided inputs; the triage unit itself has no
+GitHub access. That output crosses into a model-backed worker, so only some of it does: the logs and artifacts of jobs
+the manifest lists in `e2e.ci_artifacts`, which must be secret-free (`herd doctor` checks that their workflow job
+references no secrets and runs in no deployment environment, and the orchestrator re-checks the workflow file of the run
+it fetches from). Downloads are capped in size and extracted safely, with no symlinks and no path that escapes the
+mount. Any other failed check reaches triage only as its name and conclusion; without the artifacts the triager reasons
+from far less, which is why the project's end-to-end CI job should be one it can list.
 
 **Emulators in workers.** The project's toolchain image includes what `prepare` needs (an emulator and a system image,
 for Android), and units with e2e work get `/dev/kvm` (with the `herd` user in `kvm`, kept in the container by
@@ -900,10 +908,11 @@ in turn: the model server queues their requests.
   model for this rule and the ones below. A holistic review spans commits that may come from several models, so
   excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable
   slot has one.
-- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover
-  `implement` and every reviewer kind, and for each implementer backend among them, some slot must offer a `task`
-  review on a different model. A project that fails is shown *inactive* with the reason ("no slot can review
-  local-coder's work"), before any of its changes start, rather than stalling one after its first task.
+- **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
+  and every reviewer kind the project can dispatch (`e2e` only when its manifest has `final_approval.kind: container`),
+  and for each implementer backend among them, some slot must offer a `task` review on a different model. A project that
+  fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes start,
+  rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
