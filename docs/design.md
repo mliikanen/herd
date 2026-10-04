@@ -342,7 +342,8 @@ by a model, and touching only the file each names. The complete list:
 - **a failed attempt's record** in `review-notes.md` (below);
 - **a mechanical `needs-human` marker** in `review-notes.md`, for the escalations that need no judgment: a cap
   reached (`caps.review_rounds`, `caps.failed_attempts`, `caps.gate_fixes`, `caps.added_tasks`,
-  `caps.pr_review_rounds`), an update-branch conflict, a review finding after the archive. Escalations that need
+  `caps.pr_review_rounds`), an update-branch conflict, and the three post-archive cases in *archived-pending* (a
+  failed check, an open review finding, a non-bookkeeping commit). Escalations that need
   judgment (a request for outside content, holistic feedback that maps to no task, a finding the reviewer can't map
   to a task) are written by the reviewer in its verdict commit;
 - **an `inputs.md` entry** for content provided through `herd provide` (see Outside content).
@@ -424,9 +425,10 @@ silently dropped — comes from two rules together, not from the scan alone:
   5. *holistic-review-pending* — every task `[x]`, no **current** holistic-accept in `review-notes.md` (see
      below), change not archived.
   6. *awaiting-approval* — holistic review accepted, `final_approval.kind: human`, the effective final-approval record
-     (see below) isn't a pass, change not archived. Next action: ensure a PR exists (a **draft**, unless it was
-     already marked ready before a `rerun`; it isn't turned back into one); the human runs the project's final
-     approval. Skipped entirely when `final_approval.kind: none`.
+     (see below) isn't a pass, change not archived. Next action: if the effective record is a `fail` not yet triaged, a
+     `triage` unit (see Final approval); otherwise ensure a PR exists (a **draft**, unless it was already marked ready
+     before a `rerun`; it isn't turned back into one), and the human runs the project's final approval. Skipped entirely
+     when `final_approval.kind: none`.
   7. *in-review* — holistic review accepted and (if required) the effective final-approval record a pass, change not
      archived, and review isn't done: the PR has unresolved review threads, a review requesting changes, a review
      finding not yet triaged (including ones in a review's summary, which have no thread), or an awaited reviewer
@@ -516,7 +518,8 @@ A proposal stops and waits for a human when any of these happens:
 - the holistic review rejects with feedback that can't be mapped to a specific task;
 - a task needs something in the manifest's `missing_capabilities`, or anything else the pipeline doesn't have (a
   device, a credential, a change to CI workflows), or content from outside the project (see Outside content);
-- a review finding arrives after the archive commit (see *archived-pending*).
+- after the archive commit, a check fails, a review finding arrives, or a non-bookkeeping commit lands (see
+  *archived-pending*).
 
 The marker is a committed line in `review-notes.md` (`needs-human: <reason>`, pinned to a SHA like any verdict),
 so the state is derived from git like everything else. The human resolves it by fixing whatever's wrong (editing
@@ -537,9 +540,12 @@ manifest's `final_approval.instructions`. The human checks the branch out, follo
 `review-notes.md`, pinned to the SHA tested (`herd-resolve` writes the entry):
 - **pass** → the proposal moves to *in-review* (GitHub's review of the PR), and from there to *archiving* once no
   review thread is open;
-- **fail** → the human writes the failure as the note; the reviewer turns it into appended task(s) under "(added
-  during final approval)" and the proposal goes back to *implementing*. The draft PR stays open throughout and
-  simply gets more commits.
+- **fail** → the human writes the failure as the note. While that `fail` is the effective record and hasn't been
+  triaged, *awaiting-approval*'s next action is a `triage` unit: the reviewer turns it into appended task(s) under
+  "(added during final approval)" and records `final-approval-triaged <sha of the fail record>`, and the proposal goes
+  back to *implementing*. Once those tasks are accepted and the holistic review is current again, the change returns to
+  *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR stays open
+  throughout and simply gets more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
@@ -633,8 +639,10 @@ say which backend runs which kind of unit:
 
 ```yaml
 backends:
-  opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY }
-  sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY }
+  opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY,
+                 price: { input: <per Mtok>, output: <per Mtok> } }   # in budget.currency (see Monitoring)
+  sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY,
+                 price: { input: <per Mtok>, output: <per Mtok> } }
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
   local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
 slots:                                 # each slot runs one unit at a time
@@ -890,17 +898,17 @@ pane.
 It's stateless, like the orchestrator: after a herdr restart or a reboot it rebuilds what's missing on its next
 pass, and herdr brings back the planner panes' sessions.
 
-**Desktop alerts come from the bridge.** The bridge runs in the operator's herdr, under the operator's account,
-so it's the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence
-number, to a queue in `/var/lib/herd/shared/`, and shows each with `herdr notification show "<title>" --body
-"<details>"`. The bridge's one piece of state is a cursor in the operator's own state directory
-(`~/.local/state/herd/alerts.cursor`), the sequence number of the last alert it showed, updated after each one.
-After a restart it shows the alerts queued since the cursor, so nothing raised while it was down is missed and
-nothing is shown twice. Without a cursor (first run, or lost) it shows only the last hour's alerts rather than
-replaying the whole queue; the status pane still lists everything waiting. With herdr's
-`[ui.toast] delivery = "system"`, that goes through the OS notification service even when no client is attached,
-as long as herdr's server is running in the operator's session. The `herd` user has no desktop session to
-notify, so it sends only push alerts (see Monitoring).
+**Desktop alerts come from the bridge.** The bridge runs in the operator's herdr, under the operator's account, so it's
+the one that can reach their desktop: it reads alerts the orchestrator appends, each with a sequence number, to a queue
+in `/var/lib/herd/shared/`, and shows each with `herdr notification show "<title>" --body "<details>"`. The bridge's one
+piece of state is a cursor in the operator's own state directory (`~/.local/state/herd/alerts.cursor`), the sequence
+number of the last alert it showed, updated after each one. After a restart it shows the alerts queued since the cursor,
+so nothing raised while it was down is missed. Delivery is at-least-once: a crash between showing an alert and saving
+the cursor shows that one alert again. Without a cursor (first run, or lost) it shows only the last hour's alerts rather
+than replaying the whole queue; the status pane still lists everything waiting. With herdr's `[ui.toast] delivery =
+"system"`, that goes through the OS notification service even when no client is attached, as long as herdr's server is
+running in the operator's session. The `herd` user has no desktop session to notify, so it sends only push alerts (see
+Monitoring).
 
 **The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit
 pushed, review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`. **Both the
@@ -944,7 +952,8 @@ timeouts:                              # per unit kind; a unit past either is ki
   triage:    { wall: 20m, quiet: 10m }
   archive:   { wall: 10m, quiet: 5m }
 budget:
-  monthly: 200                         # in the providers' billing currency, cloud backends only
+  currency: USD                        # every cloud backend's price is in this currency
+  monthly: 200                         # cloud backends only
   warn_at: 80%
 alerts:
   desktop: true                        # through the bridge's herdr (operator's account)
