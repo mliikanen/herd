@@ -1090,10 +1090,11 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
 
 The bill belongs to a **machine**, not to a model, so host config describes them separately. A `machines` entry is one
 rented machine: its endpoint, how it's protected, its secret, its hourly `price` and its `idle_alert`. A backend of
-`kind: openai` names the `machine` it runs on, plus its model, revision and context; several backends may share a
-machine (two models served by one server), and the machine is still billed once. Validation rejects two machines with
-the same endpoint, since that would bill one machine twice, and a machine's endpoint must reach that machine alone (the
-operator's assertion, like the model revision below).
+`kind: openai` that names a `machine` is a rented backend (the `machine` field is what marks it; there's no separate
+flag), and gives its model, revision and context; several backends may share a machine (two models served by one
+server), and the machine is still billed once. Validation rejects two machines with the same endpoint, since that would
+bill one machine twice, and a machine's endpoint must reach that machine alone (the operator's assertion, like the model
+revision below).
 
 - **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
   model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
@@ -1126,28 +1127,30 @@ operator's assertion, like the model revision below).
   declare (the OpenAI-compatible model list doesn't report it); `doctor` checks the value with a request near that
   length.
 
-- **Lifecycle.** At first the operator starts and stops the machine. The herd dispatches units to a rented slot only
-  while its machine's endpoint answers health checks, and a unit whose machine disappears mid-call (spot and marketplace
-  machines can be reclaimed) ends as an `infra` failure and is retried. **Endpoint health decides dispatch, never
-  whether billing stopped**: an expired key, a broken tunnel, a crashed model server or a network blip look exactly like
-  a stopped machine while the provider keeps billing. Only the operator can say a machine is stopped, with
-  `herd machines stopped <machine or snapshot id>` (a request; see The herd's own account), which closes that machine's
-  billing-related alerts until its endpoint answers again.
-
-- **Idle machines.** So a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
+- **Lifecycle.** At first the operator starts and stops the machine. The herd dispatches a unit to a rented backend only
+  while that backend is ready: its machine's endpoint answers health checks **and** the machine's model list still
+  contains the backend's own `<model>@<revision>` (one machine may serve several models, and one can disappear while the
+  endpoint stays up), and a unit whose machine disappears mid-call (spot and marketplace machines can be reclaimed) ends
+  as an `infra` failure and is retried. **Endpoint health decides dispatch, never whether billing stopped**: an expired
+  key, a broken tunnel, a crashed model server or a network blip look exactly like a stopped machine while the provider
+  keeps billing. Only the operator can say a machine is stopped, with `herd machines stopped <machine or snapshot id>`
+  (a request; see The herd's own account), which closes that machine's billing-related alerts until its endpoint answers
+  again.
+- **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
   it stopped, so a machine idle all day alerts once plus the daily reminder.
-
-- **Removing or repointing a machine.** Host config can drop or change a machine entry at any scan, but the machine
-  doesn't stop with it: the orchestrator keeps the old definition (tunnel, key reference, health checks, hourly accrual,
-  alerts) as a **retained snapshot** with an immutable id (the machine's name and the moment it was retained, say
-  `h100-a@2026-10-04T15:02Z`), persisted in the herd's own files as an operational store and read back on start like the
-  budget counter. A name can be reused or repointed many times, so the snapshot id, not the name, is what identifies it.
-  The snapshot takes no new units, its running units finish on it (as Models promises), and it keeps accruing cost and
-  raises a "retained machine not confirmed stopped" alert episode, shown with its id, until its units have finished
-  **and** the operator runs `herd machines stopped <snapshot id>`.
-
+- **Removing or repointing a machine.** Host config can change a machine entry at any scan. A change to its settings
+  (`price`, `idle_alert`, a rotated `secret`) is an update in place: the same machine, a new rate from that moment on. A
+  change to its identity (`endpoint`, `access`, the WireGuard `peer`), or dropping the entry, means a different machine,
+  or none, from the herd's point of view, but the old machine doesn't stop with it: the orchestrator keeps the old
+  definition (tunnel, key reference, health checks, hourly accrual, alerts) as a **retained snapshot** with an immutable
+  id (the machine's name and the moment it was retained, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own
+  files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
+  times, so the snapshot id, not the name, is what identifies it. The snapshot takes no new units, its running units
+  finish on it (as Models promises), and it keeps accruing cost and raises a "retained machine not confirmed stopped"
+  alert episode, shown with its id, until its units have finished **and** the operator runs
+  `herd machines stopped <snapshot id>`.
 - **Cost.** A machine's `price` is `per_hour`, in `budget.currency`, accrued **once per machine** however many backends
   use it. The budget counts its hours from the health checks: while the herd sees the endpoint up, the counter accrues
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
