@@ -17,8 +17,8 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 - **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot,
   local (Ollama or similar) or a cloud API, and one host can mix them (see Models).
 - **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
-  slot like the implementer; a task review never runs on the backend that wrote the commit (see Models). It reviews each
-  task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
+  slot like the implementer; a task review never runs on the model that wrote the commit (see Models). It reviews
+  each task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
   into tasks (see Following up on PR review), and runs the archive step once final approval passes and review is done,
   since syncing spec deltas can need judgment.
 - **Orchestrator**: plain code (no LLM, no LLM API key), owns the queue and git/GitHub plumbing — assigns work,
@@ -281,7 +281,12 @@ status file on exit. The orchestrator then validates the commit before pushing i
   count for `skip`. The task review answers each in
   `review-notes.md` as `guarded <commit sha> <id>: accept|reject — <reason>`, and validation of the verdict commit
   requires exactly one answer per declared id. A rejected item sends the task back to `[ ]` like any revise
-  verdict.
+  verdict, and **stays open**: the next attempt starts on top of the rejected commit, so leaving the file alone
+  would leave the rejected change in place. A task can't be accepted while any of its guarded items is open. An
+  item closes when a later commit of the task demonstrably reverses it (the file restored to its content before the
+  task, the skip markers gone, the guarded path back as it was), which the orchestrator checks from the diff, or
+  when a later task review explicitly accepts its current state (`guarded <commit sha> <id>: accept`, naming the
+  original commit). Validation of an accept verdict refuses while any item is open.
 
   The guard covers implementer commits because those are the ones a task review follows. Reviewer commits are
   held to a narrow scope instead, so they can't touch guarded files at all: a verdict or triage commit only
@@ -566,7 +571,11 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   the herd has already accepted on the candidate and compare. There's no separate metrics store.
 - **A container gets only its backend's settings.** Endpoint and model name as env, and the secret only if the
   backend names one; a local slot's workers never see an API key. Egress is that backend's endpoint plus the
-  manifest's list.
+  manifest's list. The secret's value lives in a Podman secret under the herd's account (`podman secret create`,
+  done once by the operator); the orchestrator starts the worker with `--secret <name>,type=env` and handles only
+  the name, never the value. That keeps keys out of the orchestrator's config, environment and logs, but it isn't
+  a hard wall: anything holding the Podman socket could read a running container's environment, so the socket is
+  the trust boundary (see Containers).
 - **The harness follows the backend kind.** The implementer harness serves every kind. The reviewer runs `claude -p`
   on `anthropic` backends and the implementer harness with the review prompt otherwise; both produce the same
   structured verdict.
@@ -737,7 +746,7 @@ herd takes from it:
   issue. No task loop, separate reviewer or state machine. Taken: a candidate implementer harness (Containers).
 - **no_human**: ticket to reviewed PR on your own machine, with an adversarial review by a different model and a
   guard against tampering with tests. Taken: the tamper guard (Who commits, who pushes), and the same rule as the
-  herd's that a review never runs on the backend that wrote the code.
+  herd's that a review never runs on the model that wrote the code.
 - **Hydra** (Conduction): the closest workflow, an OpenSpec pipeline from `tasks.md` through containerized quality
   checks, code and security review and `needs-input` escalation to a human merge. But it's Conduction's internal
   pipeline in a private repository, PHP/Nextcloud-only and Claude-only; its agents are GitHub users that push and
