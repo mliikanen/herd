@@ -133,8 +133,10 @@ emulator, a device or a GUI. It takes one of two forms, which the project's work
   instructions. Check out the branch, follow them, and record the result with `/herd-resolve`, which pins it to the
   commit you tested:
   - **pass**: the change moves on to review;
-  - **fail**: describe the failing check and what happened. The herd turns it into new tasks, and the draft PR just
-    gets more commits.
+  - **fail**: describe the failing check and what happened. The herd checks it the way it checks any failing test: if
+    you also report it flaky on a rerun, or failing on the default branch too, or the spec doesn't say which behavior is
+    right, it stops and asks you; otherwise it turns the failure into new tasks, and the draft PR just gets more
+    commits. `/herd-resolve` asks for the rerun and the default-branch try when you record a fail.
 
 ## Review
 

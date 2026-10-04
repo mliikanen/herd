@@ -364,7 +364,8 @@ string, and the kind is one of:
   reason says whether it also fails on the merge-base or the spec doesn't decide it, with the evidence); unlike the
   others, its commit carries the task's work as it stands (see Test or implementation?).
 
-When the task can't go further without it, the commit is **request-only**: no code, just the task's checkbox
+When the task can't go further without it, the commit is **request-only** (except for `escalate`, above, whose commit
+carries the task's work and is validated as Test or implementation? describes): no code, just the task's checkbox
 flipped to `[r]`, so the reviewer picks it up through the ordinary task review and the task model stays `[ ]` /
 `[r]` / `[x]`. That review answers each request in `review-notes.md` as
 `request <commit sha> <id>: added|needs-human|refused — <reason>`, and validation of the verdict commit requires
@@ -608,23 +609,28 @@ silently dropped — comes from two rules together, not from the scan alone:
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
   next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
-  outcome in `review-notes.md` as `ci-triage "<check>" <sha> <check run id>: fix | flaky | preexisting | unsettled`,
-  with the check's name as a JSON string since names may contain spaces, keyed by the exact check run, since a re-run
-  keeps the check's name and commit; the scan never dispatches triage for the same failed run twice, and a re-run that
-  fails again is a new run, triaged and counted afresh. `fix` adds a fix task under "(added for CI)", sending the change
-  back to *implementing*; `flaky` adds no task, and the commit that records it is itself a push, which runs the check
-  again on the new tip (required workflows run on every push; see Requirements on a project); `preexisting` adds no task
-  and escalates to `needs-human` ("fails on the default branch too"); `unsettled` adds no task and escalates to
-  `needs-human` ("spec doesn't settle it"). Both escalations are keyed to the record's check run like the rest, so the
-  same failed run never escalates twice. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator
-  escalates. A "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no
-  update-branch merge has followed yet, comes before everything else in every state before the archive (a stop resolved
-  by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next
-  action is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path
-  for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
-  still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
-  wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
-  since a stuck CI is for a person to look at.
+  outcomes in `review-notes.md`, one line per failed test (a full-suite run can fail several, for different reasons):
+  `ci-triage "<check>" <sha> <check run id> "<test id>": fix | flaky | preexisting | unsettled`, with the check's and
+  the test's names as JSON strings since they may contain spaces (a failure that isn't a test's, a build step say, takes
+  the test id `"-"`). All of a run's lines are written in one verdict commit, keyed by the exact check run, since a
+  re-run keeps the check's name and commit: the scan never dispatches triage for a run that already has lines, and a
+  re-run that fails again is a new run, triaged and counted afresh. Each `fix` adds a fix task under "(added for CI)";
+  `preexisting` escalates to `needs-human` ("fails on the default branch too") and `unsettled` to `needs-human` ("spec
+  doesn't settle it"), and an escalation comes before the fix tasks, which wait for the stop's resolution; with only
+  `fix` and `flaky` lines the change goes back to *implementing*; and when every line is `flaky`, no task is added, and
+  the commit that records them is itself a push, which runs the check again on the new tip (required workflows run on
+  every push; see Requirements on a project). Flakes count per test, as everywhere. A triage unit that can't rerun the
+  test (the change's `e2e-mode` is `off`, so there's no emulator for it) classifies from the job's artifacts alone, and
+  records `unsettled` with the reason ("can't reproduce: no emulator") when they don't settle it, so a person decides
+  rather than the herd guessing. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates. A
+  "fails on the default branch too" or "flaky test" stop resolved as fixed on the default branch, that no update-branch
+  merge has followed yet, comes before everything else in every state before the archive (a stop resolved by an
+  effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next action
+  is update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path for a CI
+  failure after an update-branch merge too (see Keeping up with the default branch). A required check that still has no
+  result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't wait forever:
+  the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it, since a stuck
+  CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -858,13 +864,13 @@ from evidence rather than taste:
 1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
    `E2E:` section (`- <test id> flaky`), a task review or `triage` unit adds `e2e-flaky <test id> <sha>` to its verdict
-   commit, and CI triage records `ci-triage "<check>" <sha> <check run id>: flaky`. Flaky outcomes are counted from
-   those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change escalates
-   to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever; the
-   person fixes the test or its environment in a separate change and resolves the stop once that's merged (update-branch
-   comes first, as for a "fails on the default branch too" stop), and the test's flake count starts over from that
-   resolution. A flaky test can't be waived: a waiver needs a failure on the merge-base to point at, and a flake may not
-   have one.
+   commit, and CI triage records `ci-triage "<check>" <sha> <check run id> "<test id>": flaky`. Flaky outcomes are
+   counted from those records per test (or CI check) per change, and when the count reaches `caps.flaky_retries` the
+   change escalates to `needs-human` ("flaky test") instead of retrying again, so an intermittently failing test can't
+   cycle forever; the person fixes the test or its environment in a separate change and resolves the stop once that's
+   merged (update-branch comes first, as for a "fails on the default branch too" stop), and the test's flake count
+   starts over from that resolution. A flaky test can't be waived: a waiver needs a failure on the merge-base to point
+   at, and a flake may not have one.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
    the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
    branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
