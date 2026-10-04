@@ -1041,8 +1041,8 @@ session to notify, so it sends only push alerts (see Monitoring).
 **The event log.** The orchestrator writes one structured JSON event per state transition (task assigned, commit pushed,
 review verdict, PR opened, escalation) to an append-only log in `/var/lib/herd/shared/`, rotated daily and kept for 90
 days (`logs.event_log_keep` in host config). **Both the event log and the herdr layout are display-only. The
-orchestrator never reads them back**, so git stays the only source of truth. Losing the log, the bridge or the herdr
-session loses only what's on screen.
+orchestrator never reads them back**, so git and GitHub (PRs, checks, reviews, threads) stay the only sources of truth
+for proposal state. Losing the log, the bridge or the herdr session loses display and history, never state.
 
 **The status snapshot.** History expires, but the current picture mustn't: a proposal open for longer than the event log
 keeps would otherwise drop out of view after a bridge restart. So at the end of every scan the orchestrator also writes

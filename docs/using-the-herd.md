@@ -124,9 +124,10 @@ commit you tested:
 
 After final approval, the herd marks the PR ready for review. Automated reviewers (Copilot, for example) review it
 again after every push. Checks have to pass on the latest commit, but the herd waits for their review of the latest
-commit that changes content: its own notes don't restart the wait. Each finding is either fixed, as a new task that
-goes through implementation and review like any other, or answered with a reason for not changing anything. The herd
-posts the reply and resolves the thread.
+commit that changes the proposal: neither its own notes nor a clean merge of the default branch that leaves the
+proposal's files alone restarts the wait. Each finding is either fixed, as a new task that goes through implementation
+and review like any other, or answered with a reason for not changing anything. The herd posts the reply and resolves
+the thread.
 
 You can review too: your comments are handled the same way. A request to change the change's *scope*, rather than
 its implementation, comes back to you as a `needs-human` stop, because scope is the proposer's call.
@@ -134,8 +135,10 @@ its implementation, comes back to you as a `needs-human` stop, because scope is 
 ## Merging
 
 Once review is done, the herd archives the change (syncing its spec deltas into the main specs) as the last change to
-the proposal's own files; only the herd's own notes, or a merge of the default branch (which may change other files),
-can follow it. When the checks pass and the archive has been reviewed (or the automated reviewer didn't answer within
+the proposal's own files. Normally only the herd's own notes, or a clean merge of the default branch that leaves the
+proposal's files alone, follow it; anything else after the archive (a merge that touches the proposal's files, a
+failed check, a review finding, or any other push) stops the change at `needs-human`, because fixing it would mean
+un-archiving. When the checks pass and the archive has been reviewed (or the automated reviewer didn't answer within
 the configured timeout), the change is ready to merge, and **you merge it**. If the default branch has moved on, the
 herd merges it into the change branch first. A conflict there stops at `needs-human`.
 
