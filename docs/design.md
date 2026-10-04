@@ -832,15 +832,9 @@ from a per-project, per-role image:
     itself rather than trusting the implementer's claim. The holistic review's prompt includes a security
     checklist; there's no separate security-review unit. A project that wants static analysis (Semgrep, say)
     adds it to its gate, where it runs on every task.
-- **Local model server** — when a backend is local: Ollama (or similar) as its own container on an internal network
-  shared only with the network proxy, never with workers, with no egress of its own. Models get onto it only through an
-  orchestrator-run request, `herd models pull <model>`, which runs a one-off pull container whose only egress is the
-  model registry and writes into the server's models volume; the operator never touches the `herd` user's Podman or
-  storage. Workers reach it only through the model gateway, like any backend. It's the only container given the GPU,
-  however the vendor exposes it to rootless Podman. An Intel or AMD card is `--device /dev/dri`, and since the device
-  usually belongs to the `render` group, which a rootless container doesn't keep by default, also
-  `--group-add keep-groups` (Quadlet `GroupAdd=keep-groups`, which needs the `crun` runtime) with the user in `render`.
-  An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`).
+- **Local model server** — when host config has a local backend: Ollama (or similar) as its own container, on an
+  internal network shared only with the network proxy, with no egress of its own and the only container given the GPU.
+  Workers reach it only through the model gateway, like any backend. See The local model server.
 - **Network proxy** — one container on every unit's internal network (see Network and secrets), the model server's, and
   the outside one, with two parts. The **model gateway** is the herd's own small component, not a generic proxy: the
   model and output limit are fields in the request body (for Anthropic and Ollama alike), and metering needs the usage
@@ -934,6 +928,60 @@ could read any of that user's containers, the proxy included. The socket is the 
 belongs to an account that holds nothing but the herd, and why the orchestrator runs no model and no project code. A
 firewall per container (Hydra's iptables approach) doesn't fit: rootless Podman's networking runs inside the user's own
 namespace, where host rules can't tell containers apart.
+
+## The local model server
+
+The model server exists only while host config has a backend of a local kind (`ollama`), and the herd manages all of it:
+the operator never touches the `herd` user's Podman, storage or GPU setup. Everything here is reconciled from host
+config on each scan, like the rest of the orchestrator's work.
+
+```yaml
+models:                                # host config; only read when a local backend exists
+  keep_alive: 10m                      # an idle model unloads after this, freeing VRAM (it's also the desktop's GPU)
+  max_loaded: 1                        # models resident at once
+  parallel: 1                          # concurrent requests per loaded model
+  context: 32768                       # context length the server allocates; must cover the harness's needs
+  registry_egress: [registry.ollama.ai]  # what a pull may reach (host[:port], TLS, as for units), plus any
+                                       # download host the registry redirects to; doctor's test pull shows them
+```
+
+- **Lifecycle.** The orchestrator starts the server through the Podman API, the same way it starts workers, rather than
+  as a Quadlet unit, since a local backend can be added or removed in host config at any time and the orchestrator can't
+  drive systemd from its container. On each scan it makes sure the server is running when a local backend is configured,
+  and stopped when none is. Unlike a worker, the server is herd infrastructure: a restarting orchestrator adopts a
+  running server by its label instead of killing it as an orphan. Its settings come from `models` above (as the server's
+  environment: keep-alive, loaded-model limit, parallelism, context length), and changing them restarts it on the next
+  scan, once no unit is using it.
+
+- **GPU access.** The server is the only container given the GPU, however the vendor exposes it to rootless Podman. An
+  Intel or AMD card is `--device /dev/dri`, and since the device usually belongs to the `render` group, which a rootless
+  container doesn't keep by default, also `--group-add keep-groups` (which needs the `crun` runtime) with the `herd`
+  user in `render`. An NVIDIA card goes through CDI (`nvidia-ctk cdi generate`, then `--device nvidia.com/gpu=all`). The
+  B70 runs under official Ollama's Vulkan backend.
+
+- **Getting models onto it.** The server has no egress, so it can't pull anything itself. `herd models pull <model>` is
+  a request (see The herd's own account): the orchestrator runs a one-off pull container that shares only the server's
+  models volume, on its own internal network behind the network proxy, registered there like a unit with
+  `models.registry_egress` as its whole allow-list. The registry's digests are checked on download, so a corrupted or
+  swapped blob doesn't land. The server reads new models from the volume without a restart. `herd models list` and
+  `herd models rm <model>` are requests too; removing a model a configured backend still names is refused. Every model
+  on the host was pulled explicitly by the operator, and nothing a worker does can add one.
+
+- **Sharing the GPU.** `max_loaded` and `keep_alive` decide how the card is shared. With one model resident, two local
+  models (an implementer and a reviewer, say) swap in and out, and each switch costs a load from disk. So among queued
+  units for local slots, the scheduler prefers one whose model is already loaded, which the server reports; it's a
+  preference, never a rule, so a unit that has waited longer than its unit kind's `quiet` timeout is dispatched
+  regardless. Slots that share the card share it in turn: the server queues requests beyond `parallel`. A model load
+  counts as model activity for the quiet timeout (see Monitoring), so a slow cold load isn't mistaken for a hung unit.
+
+- **Accounting.** The gateway meters local calls like cloud ones, so the usage ledger and the per-model acceptance rates
+  cover them, but a local backend has no `price` and makes no reservation: it never counts against the budget, and a
+  budget pause doesn't stop local slots.
+
+- **Checks.** `herd doctor`'s orchestrator half asks the server for its models (every model a configured backend names
+  must be present), loads each and confirms it's resident entirely in VRAM at `models.context`, with no CPU offload, and
+  reports how long the load took; a test pull of a small model proves `models.registry_egress` is complete. The host
+  half confirms the `herd` user is in `render` (or that CDI is set up).
 
 ## The herd's own account
 
@@ -1116,7 +1164,7 @@ the unit panes' timeline. Like the log, the orchestrator never reads it back.
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
 - `herd provide <project> <change> <file>...`: see Outside content.
 - `herd budget set --spent <amount>`: sets this month's spend after the counter was lost (see Monitoring).
-- `herd models pull <model>`: puts a model on the local model server (see Containers).
+- `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
 
@@ -1285,13 +1333,16 @@ Steps marked **(manual)** need a human.
      acceptance rate is close enough to the cloud backend's that the extra rounds cost less than they save.
    - **The host copes:** the gate (a Gradle build, say) and the model running at once don't run the host out of
      RAM or throttle it.
+   - **Switching is affordable:** if the slots use two local models, the measured time to swap one for the other
+     on the card is small next to a task's time; if not, use one local model, or keep both resident if they fit.
 
    If any fails, the herd stays cloud only, and the result goes in Open questions.
 3. Role layers and generic `SYSTEM_PROMPT.md` per role; the toolchain-image + role-layer build.
 4. The orchestrator: per-project bare mirror and per-unit clone lifecycle, worker container lifecycle, intake from
-   `ready: true`, round-robin assignment to worker slots, the state derivation above, commit validation and
-   push, escalation markers, draft PR, update-branch, mark-ready, PR body template, watching PRs for review and
-   posting the reviewer's replies, and deleting merged change branches.
+   `ready: true`, round-robin assignment to worker slots, the state derivation above, commit validation and push,
+   escalation markers, draft PR, update-branch, mark-ready, PR body template, watching PRs for review and posting the
+   reviewer's replies, deleting merged change branches, and the local model server's lifecycle and model requests (see
+   The local model server).
 5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring:
    unit timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd
    watchdog for the orchestrator), log retention and the disk check.
