@@ -715,10 +715,11 @@ checks the branch out, follows them, and records the result in `review-notes.md`
   rerun it once and, for an end-to-end test this change didn't touch, to try it on the default branch, and records both
   in the note): a flake or a pre-existing failure the person reported, or a failure the spec doesn't settle, escalates
   to `needs-human` as it would anywhere else, and otherwise it turns the failure into appended task(s) under "(added
-  during final approval)" and records `final-approval-triaged <sha of the fail record>`, and the proposal goes back to
-  *implementing*. Once those tasks are accepted and the holistic review is current again, the change returns to
-  *awaiting-approval* with the `fail` already triaged, and the next action is the human again. The draft PR stays open
-  throughout and simply gets more commits.
+  during final approval)", and the proposal goes back to *implementing*. Either way its verdict commit records
+  `final-approval-triaged <sha of the fail record>`, escalation included, so once a person resolves the stop (a waiver,
+  say) the same fail isn't triaged and escalated again; the same goes for a `container`-phase fail. Once those tasks are
+  accepted and the holistic review is current again, the change returns to *awaiting-approval* with the `fail` already
+  triaged, and the next action is the human again. The draft PR stays open throughout and simply gets more commits.
 
 Archiving happens only after the pass and the review, deliberately: `openspec archive` syncs the spec deltas and
 moves the change directory, so feeding failures or review feedback back as new tasks after an archive would mean
@@ -737,8 +738,8 @@ rejects `container` without it, and the project is inactive with that reason unt
 
 The commands' contract, so the orchestrator can handle ids and results deterministically:
 
-- Every command runs in the repository root of the unit's clone, against the unit's own emulator, with
-  `$HERD_E2E_ARTIFACTS` naming an empty directory it may write to.
+- Every command runs in the repository root of the unit's clone, against the unit's own emulator, and `select` and `run`
+  with `$HERD_E2E_ARTIFACTS` naming an empty directory they may write to (`prepare` gets none; see below).
 - **`prepare`** takes no arguments and is idempotent: it rebuilds the app from the working tree and installs it, booting
   the emulator first only if it isn't already running, and exits 0 once tests can run; any other exit fails the unit.
   The herd runs it before every `run`, so a rerun after an edit always tests the edited code, never the previously
@@ -790,8 +791,12 @@ switch the safety net off. So:
   passes them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts.
   `prepare` is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its
   wrapper and build scripts), which is the change's code, so it runs with the whole working tree, in the unit's
-  container but outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). The change
-  contributes the app being tested and its tests, nothing that decides selection or reads results.
+  container but outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). So it can't
+  touch what's trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results
+  directory in existence; when it exits, the herd kills everything left in that cgroup (a background process it started
+  included), and only then creates the artifacts directory for `run`, mounted into the sandbox alone, which runs as a
+  different user that the build's user can't write as. The change contributes the app being tested and its tests,
+  nothing that decides selection or reads results.
 
 - **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
   default-branch version; manifest validation rejects a manifest where they do.
