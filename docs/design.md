@@ -965,8 +965,10 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
 Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator, the
 model keys the proxy. They're kept in `~herd/secrets/`, owned by `herd` with mode `0700`, one file per key at `0600`, so
 no other host user (the operator included) and no group can read them whatever the umask was when they were created;
-each container mounts only its own key file, read-only. The install script creates the directory with those modes, and
-`herd doctor` checks the owner and modes of the directory and every file in it.
+each container mounts only its own key file, read-only. The install script, which runs with root, creates the directory
+with those modes and checks every key file. Neither half of `herd doctor` can see inside it (the operator isn't `herd`,
+and the orchestrator mounts only its own key), so `doctor` checks the owner and modes through `sudo -u herd` when the
+operator has sudo, and otherwise reports the check as skipped rather than passed.
 
 ## Outside content
 
