@@ -407,6 +407,8 @@ by a model, and touching only the file each names. The complete list:
   that maps to no task, a finding the reviewer can't map to a task) are written by the reviewer in its verdict commit;
 - **an `inputs.md` entry** for content provided through `herd provide` (see Outside content);
 - **the `e2e-mode` line** that fixes a change's end-to-end mode and final-approval kind at its first dispatch (see
+  End-to-end tests);
+- **a `final-approval rerun: evidence lost` record**, when a failure's evidence is gone before its triage (see
   End-to-end tests).
 
 Everything else on a change branch is a worker's commit, a person's, or an update-branch merge.
@@ -848,10 +850,11 @@ The commands' contract, so the orchestrator can handle ids and results determini
   directory is deleted once the herd has read its results, so retries don't pile up; what the unit's verdict cites (the
   failing tests' reports, screenshots and logs) is first copied to the change's evidence store under `/var/lib/herd/`,
   which the orchestrator mounts read-only into the `triage` unit that handles the failure. It holds evidence only for a
-  failure not yet triaged, and each failure's copy is deleted as soon as its triage verdict is committed, so a change
-  never holds more than its untriaged failures' evidence, each bounded by the per-run caps, however long it lives. A
-  closed PR keeps its evidence, since the change may be reopened; it's deleted with the change branch. If the evidence
-  is missing when triage is due (lost in a restore, say), the failure isn't triaged blind: the orchestrator records
+  failure not yet triaged, and each failure's copy is deleted as soon as its triage verdict is committed, or as soon as
+  the failure's record stops being effective without one (a `rerun`, a newer content tip), so a change never holds more
+  than its untriaged failures' evidence, each bounded by the per-run caps, however long it lives. A closed PR keeps its
+  evidence, since the change may be reopened; it's deleted with the change branch. If the evidence is missing when
+  triage is due (lost in a restore, say), the failure isn't triaged blind: the orchestrator records
   `final-approval rerun: evidence lost` and the run happens again.
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
@@ -915,12 +918,13 @@ switch the safety net off. So:
   them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts. Test
   definitions are the change's too, and a test tool may run code from them (a Maestro flow's scripts, say), so inside
   `run` the tests themselves execute as yet another user, without access to `$HERD_E2E_ARTIFACTS`, writing their raw
-  output to a scratch directory; only after they exit does the pinned `run` translate that output into `results.jsonl`
-  and the evidence, so no test can write or replace the results. `prepare` is the exception by nature: building the app
-  means running the working tree's own build (`./gradlew`, its wrapper and build scripts), which is the change's code,
-  so it runs with the whole working tree, in the unit's container but outside that sandbox and with no access to the
-  unit's emulator, so it can't tamper with the device the trusted `run` tests on; its build configuration (the wrapper
-  and build scripts) is guarded (see Who commits, who pushes), while the app source it compiles isn't, and needn't be:
+  output to a scratch directory, a size-limited mount with the same per-run caps as the artifacts directory (hitting
+  them fails the run); only after they exit does the pinned `run` translate that output into `results.jsonl` and the
+  evidence, so no test can write or replace the results. `prepare` is the exception by nature: building the app means
+  running the working tree's own build (`./gradlew`, its wrapper and build scripts), which is the change's code, so it
+  runs with the whole working tree, in the unit's container but outside that sandbox and with no access to the unit's
+  emulator, so it can't tamper with the device the trusted `run` tests on; its build configuration (the wrapper and
+  build scripts) is guarded (see Who commits, who pushes), while the app source it compiles isn't, and needn't be:
   whatever that builds is only the app under test, which never reaches the results. So it can't touch what's trusted
   later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results directory in
   existence; when it exits, the herd kills everything left in that cgroup (a background process it started included; the
@@ -1040,16 +1044,16 @@ from evidence rather than taste:
    the next action before any retry, whatever the change's state: see Failing checks before the archive), or waives the
    test for this change with `herd-resolve`, which records `e2e-waive <test id> <default sha> <files digest>: <reason>`,
    naming the merge-base commit the test was found failing on and a digest of the test's `files` (`sha256:` and the
-   lowercase hex SHA-256 over the files sorted by path bytewise, each framed as its path as a JSON string, a newline,
-   its length in bytes in decimal, a newline and its exact bytes, so `herd-resolve` and the scan compute the same
-   value); the herd's own e2e runs for the change then skip it. The waiver covers exactly that failure and lapses on its
-   own when either changes: once the test's files on the branch no longer match the digest (a later task touched the
-   test, so it's change-local again and owes its red/green proof), or once the change merges a newer default branch (the
-   baseline moved, so the comparison runs again). A lapsed waiver means the test runs, and if it still fails on the
-   default branch, a fresh escalation. A waiver doesn't touch CI: the required check still fails until the default
-   branch is fixed, which keeps the merge blocked on the real problem, but its failures in the waived test are triaged
-   as `waived` rather than escalated again (see Failing checks before the archive), so the rest of the change can still
-   progress while it waits.
+   lowercase hex SHA-256 over the files sorted by path bytewise, each framed as its path's UTF-8 bytes (paths are UTF-8,
+   see `select`) preceded by their length in bytes in decimal and a newline, then a newline, its length in bytes in
+   decimal, a newline and its exact bytes, so `herd-resolve` and the scan compute the same value); the herd's own e2e
+   runs for the change then skip it. The waiver covers exactly that failure and lapses on its own when either changes:
+   once the test's files on the branch no longer match the digest (a later task touched the test, so it's change-local
+   again and owes its red/green proof), or once the change merges a newer default branch (the baseline moved, so the
+   comparison runs again). A lapsed waiver means the test runs, and if it still fails on the default branch, a fresh
+   escalation. A waiver doesn't touch CI: the required check still fails until the default branch is fixed, which keeps
+   the merge blocked on the real problem, but its failures in the waived test are triaged as `waived` rather than
+   escalated again (see Failing checks before the archive), so the rest of the change can still progress while it waits.
 3. **The spec decides.** If the change's spec deltas change the behavior the test asserts, the test is out of date and
    gets updated (ideally a task already said so). If they don't, the implementation broke existing behavior and the
    code is fixed. If the spec doesn't settle it, the change escalates to `needs-human`: intended behavior is the
