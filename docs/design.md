@@ -1123,14 +1123,15 @@ may share a machine (two models served by one server), and the machine is still 
 machines with the same `instance` or the same endpoint, since that would bill one machine twice, and a machine's
 endpoint must reach that machine alone (the operator's assertion, like the model revision below). Endpoints are unique
 across retained definitions too: a replacement instance that reuses its predecessor's endpoint isn't activated (no
-units, and no accrual, though it is health-checked so the herd can tell whether it's up; the status pane says why, and
-if it answers, a "replacement blocked, possibly billing" alert episode opens, cleared when the block lifts or the
-endpoint goes quiet, with the daily reminder like any episode) until the retained snapshot holding that endpoint is
-confirmed stopped and retired, since until then both would answer at the same URL. For the same reason an endpoint stays
-bound to its instance until that definition is retired: the operator gives a replacement instance a new endpoint, or
-keeps the old URL leading to the old machine until it's confirmed stopped and retired. The herd can't see where a URL
-leads, so this is the operator's assertion too, like an endpoint reaching one machine alone; repointing a URL under a
-retained snapshot would charge the new machine's traffic to the old one.
+units, but it is health-checked, and while the shared endpoint answers both definitions accrue, since the herd can't
+tell which instance is answering and both may be billing; the status pane says why, and if it answers, a "replacement
+blocked, possibly billing" alert episode opens, cleared when the block lifts or the endpoint goes quiet, with the daily
+reminder like any episode) until the retained snapshot holding that endpoint is confirmed stopped and retired, since
+until then both would answer at the same URL. For the same reason an endpoint stays bound to its instance until that
+definition is retired: the operator gives a replacement instance a new endpoint, or keeps the old URL leading to the old
+machine until it's confirmed stopped and retired. The herd can't see where a URL leads, so this is the operator's
+assertion too, like an endpoint reaching one machine alone; repointing a URL under a retained snapshot would charge the
+new machine's traffic to the old one.
 
 - **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
   model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
@@ -1189,12 +1190,13 @@ retained snapshot would charge the new machine's traffic to the old one.
   with `herd machines started <machine>` (a request, validated and persisted the same way), so nothing depends on the
   orchestrator having watched the machine go down and come back. An endpoint that keeps answering past
   `alerts.infra_after` after its confirmation means the machine wasn't stopped after all: that raises a "confirmed
-  stopped but still answering" alert episode and restores the machine's accrual back to the confirmation, since it may
-  well have been billing all along (health checks keep running through the confirmation, so the herd knows the endpoint
-  was up the whole time), while dispatch stays off until the operator either stops it or runs `herd machines started`.
-  Since unhealthy may still mean billing, an active machine whose health checks fail for longer than
-  `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns
-  or the operator confirms it stopped.
+  stopped but still answering" alert episode and restores the machine's accrual back to the confirmation; for a retained
+  snapshot, which never returns to dispatch, it also withdraws the confirmation, so retiring the snapshot needs a fresh
+  `herd machines stopped <snapshot id>` once it really has stopped, since it may well have been billing all along
+  (health checks keep running through the confirmation, so the herd knows the endpoint was up the whole time), while
+  dispatch stays off until the operator either stops it or runs `herd machines started`. Since unhealthy may still mean
+  billing, an active machine whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy,
+  not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
