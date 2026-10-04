@@ -121,10 +121,14 @@ could widen its own egress or weaken its own gate. Commit validation also reject
 
 - Uses OpenSpec, with changes in `openspec/changes/`.
 - Hosted on GitHub, with branch protection on the default branch requiring PRs, required CI status checks, and
-  up-to-date branches (see Keeping up with the default branch). The CI checks should run the same gate as the
-  manifest, as an independent second net.
-- The gate runs headless in a Linux container. Anything that can't (a Mac, a device, a GUI emulator) is either
-  the project's human final-approval step or a `missing_capabilities` entry.
+  up-to-date branches (see Keeping up with the default branch). The CI checks should run the same gate as the manifest,
+  as an independent second net. The required checks' workflows run on **every** push to a PR, with no path filters: the
+  herd's own bookkeeping commits move the tip, and a required check that doesn't run there would never report
+  (`herd doctor` checks this).
+- The gate runs headless in a Linux container. Anything that can't is one of three things: the herd's own end-to-end
+  runs on an emulator in a worker (an `e2e` block, and `final_approval.kind: container` for the whole-change run; see
+  End-to-end tests), the project's human final-approval step (a device, a Mac-only GUI), or a `missing_capabilities`
+  entry.
 - The default branch is **PR-only for everyone**, with no bypass. Nothing needs one: a proposal lives on its own
   branch from its first commit and reaches the default branch only as the one merge of its PR (see The hand-off).
 
@@ -205,11 +209,11 @@ The herd can start observing a new project at any time, without restarting anyth
   is theirs to approve, like any other command it runs.
 - **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has a
   `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
-  builds, the worker slots it may use can run every unit kind (see Models), and, for a project with
-  `final_approval.kind: container`, the host has emulator capacity (`e2e.max_emulators` above 0; see End-to-end tests).
-  Otherwise it's *inactive*, and the status pane says which check failed. Nothing records that `herd doctor` passed.
-  `doctor` is the human's deeper check (gate in a real worker, branch protection, model backend) to run before trusting
-  a project, not a switch the orchestrator reads.
+  builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
+  status pane says which check failed. Emulator capacity isn't part of it: a change that needs a container pass and
+  finds none waits on its own (see End-to-end tests), so the rest of the project carries on. Nothing records that
+  `herd doctor` passed. `doctor` is the human's deeper check (gate in a real worker, branch protection, model backend)
+  to run before trusting a project, not a switch the orchestrator reads.
 - **First scan of a new project.** The orchestrator creates the project's bare mirror and builds its images. It
   then treats the project like any other: it queues change branches already marked `ready: true`, and leaves the
   others alone. The herdr bridge adds the project's workspace, with its planner pane, on its next pass.
@@ -601,16 +605,17 @@ silently dropped — comes from two rules together, not from the scan alone:
   outcome in `review-notes.md` as `ci-triage <check> <sha> <check run id>: fix | flaky | preexisting`, keyed by the
   exact check run, since a re-run keeps the check's name and commit; the scan never dispatches triage for the same
   failed run twice, and a re-run that fails again is a new run, triaged and counted afresh. `fix` adds a fix task under
-  "(added for CI)", sending the change back to *implementing*; `flaky` adds no task and re-runs the check; `preexisting`
-  adds no task and escalates to `needs-human` ("fails on the default branch too"). Those tasks count toward
-  `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" stop resolved as fixed on
-  the default branch, that no update-branch merge has followed yet, comes before everything else in every state before
-  the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there may be nothing
-  newer to merge): the next action is update-branch, so the retry runs against a branch that contains the default
-  branch's fix. This is the path for a CI failure after an update-branch merge too (see Keeping up with the default
-  branch). A required check that still has no result `pr_review.checks_timeout` after the push it's for (queued, running
-  or merely expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts,
-  before the archive or after it, since a stuck CI is for a person to look at.
+  "(added for CI)", sending the change back to *implementing*; `flaky` adds no task, and the commit that records it is
+  itself a push, which runs the check again on the new tip (required workflows run on every push; see Requirements on a
+  project); `preexisting` adds no task and escalates to `needs-human` ("fails on the default branch too"). Those tasks
+  count toward `caps.gate_fixes`; past it, the orchestrator escalates. A "fails on the default branch too" stop resolved
+  as fixed on the default branch, that no update-branch merge has followed yet, comes before everything else in every
+  state before the archive (a stop resolved by an effective `e2e-waive` doesn't: the waived test is skipped, and there
+  may be nothing newer to merge): the next action is update-branch, so the retry runs against a branch that contains the
+  default branch's fix. This is the path for a CI failure after an update-branch merge too (see Keeping up with the
+  default branch). A required check that still has no result `pr_review.checks_timeout` after the push it's for (queued,
+  running or merely expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker and
+  alerts, before the archive or after it, since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -896,8 +901,10 @@ e2e on keeps owing its red/green proofs and its reviews' reruns: if capacity lat
 emulator wait (the status pane says so, and it alerts once the wait passes `alerts.infra_after`) rather than skip. A
 change started with e2e off stays off, with CI covering it, even if capacity appears midway, so no accepted task is left
 without a proof it was never asked for. A project with an `e2e` block then gets no emulator work, relies on CI and on
-`final_approval.kind: human`, and a project with `kind: container` is inactive with that reason until the host has
-capacity.
+`final_approval.kind: human`, and a change whose pinned approval kind (from the manifest at its merge-base) includes
+`container` waits at its first dispatch, shown as "waiting for emulator capacity" and alerted once the wait passes
+`alerts.infra_after`, rather than starting with a mode it can't honor. Capacity is decided per change, not per project,
+because a change's pinned kind can differ from the manifest's current one.
 
 ## Following up on PR review
 
@@ -1036,9 +1043,10 @@ their requests.
   slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
   and every reviewer kind the project can dispatch (`e2e` only when its manifest has `final_approval.kind: container`,
-  or when an open change's `e2e-mode` line still requires a container pass, since a change keeps the approval kind it
-  started with), and for each implementer backend among them, some slot must offer a `task` review on a different model.
-  A project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its
+  or when an open change's pinned approval kind, recorded in its `e2e-mode` line or, before first dispatch, read from
+  the manifest at its merge-base, still requires a container pass, since a change keeps the approval kind it started
+  with), and for each implementer backend among them, some slot must offer a `task` review on a different model. A
+  project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its
   changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
@@ -1647,11 +1655,9 @@ Steps marked **(manual)** need a human.
    `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
    `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
    repositories, with repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit
-   statuses* and *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`),
-   *Actions* (read and write: CI logs and artifacts for triage, and re-running a check triaged as flaky, which a push
-   can't reliably do, since path-filtered workflows may not run again; the orchestrator calls only the re-run endpoint,
-   and its worst misuse, disabling a required workflow, leaves the check unreported, which blocks merging rather than
-   bypassing it), and not *Workflows*; and its private key, read by the orchestrator only.
+   statuses*, *Actions* and *Administration* (read only: CI results for the state machine, CI logs and artifacts for
+   triage, branch protection for `herd doctor`), and not *Workflows*; and its private key, read by the orchestrator
+   only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
