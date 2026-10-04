@@ -796,11 +796,13 @@ The layers:
    stay in its selection and its red run stays against the app without any of them. Selection for the task compares that
    baseline with the working tree. The red run uses the baseline's tree with the task's versions of the `e2e.tests`
    files laid over it, since the baseline has the old test or none: `prepare` builds the old app, and `run` runs the new
-   test against it. The implementer runs both and records them in an `E2E:` section of its commit message, in the fixed
-   format of `Guarded:` (`- <test id> red <baseline sha>` for an added or changed test, `- <test id> green` for an
-   unchanged one); validation checks that the SHA is the task's baseline, and the green run is on the commit that
-   carries the section, which a commit can't name by its own SHA, so it's implicit. A test that's green on both is
-   vacuous, and the task isn't done.
+   test against it. The implementer runs both and records the results in an `E2E:` section of its commit message, in the
+   fixed format of `Guarded:`: a `- <test id> green` line for **every** selected test, since the green run is on the
+   commit that carries the section (which a commit can't name by its own SHA, so it's implicit); an additional
+   `- <test id> red <baseline sha>` line for each change-local test; and an additional `- <test id> flaky` line for each
+   test that flaked along the way. Validation checks that every selected test has its green line, every change-local
+   test its red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and the task
+   isn't done.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
