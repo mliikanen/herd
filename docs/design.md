@@ -932,7 +932,9 @@ from a per-project, per-role image:
   model and output limit are fields in the request body (for Anthropic and Ollama alike), and metering needs the usage
   in each response, so it parses and rewrites provider requests and reads their responses. The **egress allow-list** is
   an off-the-shelf forward proxy configured for authenticated `CONNECT` with destination checks. It holds the model
-  backends' API keys and nothing else, and runs no model and no project code.
+  backends' credentials and nothing else: the cloud providers' API keys, the rented machines' HTTPS keys and WireGuard
+  private keys (read from `~herd/secrets/machines/`), and its own store of their copies (see Rented GPU backends), and
+  runs no model and no project code.
 - **Orchestrator** — generic image: bare-mirror and clone lifecycle, queue, image builds, worker container lifecycle,
   commit validation, push, `gh pr create`/update-branch/mark-ready. Needs the GitHub App's private key, the `herd`
   user's rootless Podman API socket, and the host config read-only (which host ownership enforces; see The herd's own
@@ -974,9 +976,10 @@ sniff or redirect, and no other unit's token to steal; workers also run with eve
 worker's only way out is the proxy, which serves two purposes:
 - **Model gateway.** A worker calls its backend over plain HTTP inside the internal network (`ANTHROPIC_BASE_URL`, or
   the harness's equivalent, points at the gateway, and the SDK's credential, `ANTHROPIC_API_KEY` or its equivalent,
-  holds the unit's token). The gateway validates that token first, and only then replaces it with the backend's real key
-  and calls the provider over HTTPS, or, for a rented backend with `access: wireguard`, over plain HTTP inside the
-  WireGuard tunnel the proxy holds, which already encrypts and authenticates both ends (see Rented GPU backends). It
+  holds the unit's token). The gateway validates that token first, and only then strips it, so the unit's token never
+  leaves the proxy: it calls the provider over HTTPS with the backend's real key in its place, or, for a rented backend
+  with `access: wireguard`, which has no key, over plain HTTP inside the WireGuard tunnel the proxy holds, with no
+  credential header at all, since the tunnel already encrypts and authenticates both ends (see Rented GPU backends). It
   also sets the provider endpoint and the model itself, from the token's registered backend, overwriting whatever the
   request named (one key can authorize several models), and rejects requests to any other endpoint. Beyond that it
   allow-lists what a request may contain: the inference route only, known headers, and body features that run entirely
@@ -1394,14 +1397,16 @@ for proposal state. Losing the log, the bridge or the herdr session loses displa
 keeps would otherwise drop out of view after a bridge restart. So at the end of every scan the orchestrator also writes
 `status.json` to `/var/lib/herd/shared/`: every registered project and every open proposal with its derived state,
 current task, review round, waiting reason and spend, plus every unit running right now (its id, kind, change and task,
-slot, model, log path and start time), so the bridge can tell live unit logs from finished ones and close panes whose
-unit has ended. It carries `generated_at`, and every consumer shows how old it is: past twice `scan_interval`, the
-status pane, `herd status` and the bridge show it as **stale** (orchestrator not scanning) in place of presenting old
-state as current, alongside the heartbeat check. It's rewritten whole from the scan, never appended, and replaced
-atomically (written to a temporary file, synced, renamed over the old one), so a reader never sees half of it, and no
-stale entries accumulate or make it grow; whether the snapshot itself is current is what `generated_at` tells. The
-status pane, `herd status`, and the bridge's attention panes read the snapshot; the event log is only for history and
-the unit panes' timeline. Like the log, the orchestrator never reads it back.
+slot, model, log path and start time), and every rented-machine definition, current and retained (its name, definition
+id, qualified `instance`, health, and whether its stop is confirmed), which is what `herd machines stopped` resolves a
+name against, so the bridge can tell live unit logs from finished ones and close panes whose unit has ended. It carries
+`generated_at`, and every consumer shows how old it is: past twice `scan_interval`, the status pane, `herd status` and
+the bridge show it as **stale** (orchestrator not scanning) in place of presenting old state as current, alongside the
+heartbeat check. It's rewritten whole from the scan, never appended, and replaced atomically (written to a temporary
+file, synced, renamed over the old one), so a reader never sees half of it, and no stale entries accumulate or make it
+grow; whether the snapshot itself is current is what `generated_at` tells. The status pane, `herd status`, and the
+bridge's attention panes read the snapshot; the event log is only for history and the unit panes' timeline. Like the
+log, the orchestrator never reads it back.
 
 **The `herd` CLI.** The herd repo installs `herd` on the host:
 - `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
