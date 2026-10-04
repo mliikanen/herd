@@ -882,9 +882,10 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   and any metrics read `Herd-Model`, the model that actually ran, never the name. How often each model's work is
   accepted comes straight from git history, which is how to judge a local model against a cloud one: replay tasks the
   herd has already accepted on the candidate and compare. There's no separate metrics store.
-- **No worker holds an API key.** A unit's container gets its backend's model name and the address of the
-  herd's model gateway, plus a token for that unit only. The gateway adds the backend's real key on the way out
-  (see Network and secrets), and accepts the unit's token only for that unit's backend.
+- **No worker holds an API key.** A unit's container gets its backend's model name and the address of the herd's model
+  gateway, plus a token for that unit only. The gateway strips that token on the way out and adds the backend's real key
+  where it has one (a WireGuard-protected rented backend has none; see Network and secrets), and accepts the unit's
+  token only for that unit's backend.
 - **The harness follows the backend kind.** The implementer harness serves every kind. The reviewer runs `claude -p`
   on `anthropic` backends and the implementer harness with the review prompt otherwise; both produce the same
   structured verdict.
@@ -1123,7 +1124,11 @@ machines with the same `instance` or the same endpoint, since that would bill on
 endpoint must reach that machine alone (the operator's assertion, like the model revision below). Endpoints are unique
 across retained definitions too: a replacement instance that reuses its predecessor's endpoint isn't activated (no
 health checks, accrual or units; the status pane says why) until the retained snapshot holding that endpoint is
-confirmed stopped and retired, since until then both would answer at the same URL.
+confirmed stopped and retired, since until then both would answer at the same URL. For the same reason an endpoint stays
+bound to its instance until that definition is retired: the operator gives a replacement instance a new endpoint, or
+keeps the old URL leading to the old machine until it's confirmed stopped and retired. The herd can't see where a URL
+leads, so this is the operator's assertion too, like an endpoint reaching one machine alone; repointing a URL under a
+retained snapshot would charge the new machine's traffic to the old one.
 
 - **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
   model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
@@ -1223,26 +1228,28 @@ confirmed stopped and retired, since until then both would answer at the same UR
   cutoff. A source is what one bill covers: a cloud billing account, named by the backend's `account`
   (`<provider>:<account id>`, say `anthropic:<org id>`; backends billed to one account share it whatever keys they use,
   and a key's rotation or rename doesn't change it) or a rented machine, keyed by its qualified `instance`, never by its
-  name, since names can be renamed and repointed (the command accepts a current name or a definition id too, resolved to
-  the `instance` when it's run), and every ledger entry records its source, since bills from different providers arrive
-  with different cutoffs. The orchestrator doesn't overwrite the counter with it, which could lose or double-count work
-  in flight: in one atomic step, it adds an adjustment for that source, dated at the cutoff: the billed amount (the
-  bill's running total for the billing month up to that cutoff) minus everything already counted for the source up to
-  the cutoff, the herd's own settled accrual (from the ledger's timestamped entries) and any earlier adjustment alike,
-  so the source's total up to the cutoff becomes the billed amount, and a later reconciliation corrects it rather than
-  adding to it. A cutoff earlier than the source's last one is refused. Nothing is deleted: the detailed entries keep
-  their project, change and idle attribution, so spend per proposal is still what the herd measured, and the adjustment
-  is attributed to the source alone, shown separately as reconciliation. Every other source's spend is left alone, and
-  every accrual and reservation after the cutoff stays, along with every reservation still unresolved, whatever its
-  timestamp: a call in flight at the cutoff may or may not be on the bill, so its reservation stays in the counter until
-  it settles and is replaced by the reported usage as usual, dated at the call's start. That can count such a call twice
-  (once in the bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the
-  next reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new
-  one, the cutoff and the reason go to the event log. Restoring a lost counter is the one aggregate case: the same
-  command without `--source`, with the cutoff at now, giving the month's total across every bill, while paid dispatch is
-  paused anyway. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine,
-  through any of its backends, its time is split evenly among them, and their share goes to their change; time with no
-  call in flight goes to the machine's own idle bucket, never to a change.
+  name, since names can be renamed and repointed (the command also accepts a current name, resolved when it's run, with
+  the request carrying both the name and the definition it resolved to, and accepted only if the name still points at
+  that definition when it's consumed, as for `machines stopped`; a retained machine is named only by its snapshot id or
+  `instance`), and every ledger entry records its source, since bills from different providers arrive with different
+  cutoffs. The orchestrator doesn't overwrite the counter with it, which could lose or double-count work in flight: in
+  one atomic step, it adds an adjustment for that source, dated at the cutoff: the billed amount (the bill's running
+  total for the billing month up to that cutoff) minus everything already counted for the source up to the cutoff, the
+  herd's own settled accrual (from the ledger's timestamped entries) and any earlier adjustment alike, so the source's
+  total up to the cutoff becomes the billed amount, and a later reconciliation corrects it rather than adding to it. A
+  cutoff earlier than the source's last one is refused. Nothing is deleted: the detailed entries keep their project,
+  change and idle attribution, so spend per proposal is still what the herd measured, and the adjustment is attributed
+  to the source alone, shown separately as reconciliation. Every other source's spend is left alone, and every accrual
+  and reservation after the cutoff stays, along with every reservation still unresolved, whatever its timestamp: a call
+  in flight at the cutoff may or may not be on the bill, so its reservation stays in the counter until it settles and is
+  replaced by the reported usage as usual, dated at the call's start. That can count such a call twice (once in the
+  bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the next
+  reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new one, the
+  cutoff and the reason go to the event log. Restoring a lost counter is the one aggregate case: the same command
+  without `--source`, with the cutoff at now, giving the month's total across every bill, while paid dispatch is paused
+  anyway. Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, through
+  any of its backends, its time is split evenly among them, and their share goes to their change; time with no call in
+  flight goes to the machine's own idle bucket, never to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
