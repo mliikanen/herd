@@ -45,7 +45,7 @@ flowchart TD
     RV -- "review clean" --> A --> AP --> M
     I -. "something it can't do on its own" .-> NH
     RV -. "scope change or too many rounds" .-> NH
-    A -. "anything after the archive" .-> NH
+    AP -. "failed check, finding<br/>or content commit" .-> NH
     NH -. "herd re-derives where the change is<br/>and picks it back up there" .-> RD["Wherever the branch<br/>now says"]
 ```
 
