@@ -797,12 +797,14 @@ The layers:
    baseline with the working tree. The red run uses the baseline's tree with the task's versions of the `e2e.tests`
    files laid over it, since the baseline has the old test or none: `prepare` builds the old app, and `run` runs the new
    test against it. The implementer runs both and records the results in an `E2E:` section of its commit message, in the
-   fixed format of `Guarded:`: a `- <test id> green` line for **every** selected test, since the green run is on the
-   commit that carries the section (which a commit can't name by its own SHA, so it's implicit); an additional
-   `- <test id> red <baseline sha>` line for each change-local test; and an additional `- <test id> flaky` line for each
-   test that flaked along the way. Validation checks that every selected test has its green line, every change-local
-   test its red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and the task
-   isn't done.
+   fixed format of `Guarded:`: a `- <test id> green` line for **every** test in the effective selection (what `select`
+   returned, minus tests with an effective `e2e-waive`, which aren't run; each of those gets a `- <test id> waived` line
+   instead, so a waiver stays visible), since the green run is on the commit that carries the section (which a commit
+   can't name by its own SHA, so it's implicit); an additional `- <test id> red <baseline sha>` line for each
+   change-local test; and an additional `- <test id> flaky` line for each test that flaked along the way. Validation
+   checks that every test in the effective selection has its green line, every waived one its waived line, every
+   change-local test its red line, and that the SHA is the task's baseline. A test that's green on both is vacuous, and
+   the task isn't done.
 3. **Task review.** The reviewer doesn't take the implementer's word for it: it runs the selected tests itself on the
    task's commit, and the added or changed ones against the task's baseline too, and a result that doesn't match the
    `E2E:` section is a revise verdict.
@@ -883,9 +885,11 @@ against its timeouts. That capacity is also the switch: `e2e.max_emulators` defa
 it only once the emulator probe in Build plan step 2's reality check passes on the host. While it's 0 (and on a host
 without KVM, where it must stay 0), no e2e layer runs at all, whatever a project's `e2e` block says: no per-task loop,
 no red/green proof, no `e2e` units. Capacity is re-read every scan, but a change can't switch mode halfway: whether its
-e2e layers apply is decided once, when its first unit is dispatched, and recorded by the orchestrator as a bookkeeping
-line in `review-notes.md`, which holds for the change's life. The line fixes the final-approval kind at the same moment,
-since the two must agree (an "off" change can't take a container pass):
+e2e layers apply is decided once, when its first unit is dispatched, from the manifest **at the change's pinned
+merge-base** (see The pin), not the current default branch, so the mode never names an `e2e` block, harness or image the
+pinned commit doesn't have (no block there means `off`), and recorded by the orchestrator as a bookkeeping line in
+`review-notes.md`, which holds for the change's life. The line fixes the final-approval kind at the same moment, since
+the two must agree (an "off" change can't take a container pass):
 `e2e-mode <on|off> approval <none|human|container|container+human>`. A later change to the manifest's `final_approval`
 applies to new changes only, so a change in flight never finds itself owing a phase it can't run. A change started with
 e2e on keeps owing its red/green proofs and its reviews' reruns: if capacity later drops to 0, its units that need an
