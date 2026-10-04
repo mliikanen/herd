@@ -203,12 +203,13 @@ The herd can start observing a new project at any time, without restarting anyth
   no worker agent or orchestrator bug can widen, even through the Podman socket. The operator's planner agent runs under
   their account and could run `herd add` too, but it's the person's own supervised session: a config change through it
   is theirs to approve, like any other command it runs.
-- **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has
-  a `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
-  builds, and the worker slots it may use can run every unit kind (see Models). Otherwise it's *inactive*, and the
-  status pane says which check failed. Nothing records
-  that `herd doctor` passed. `doctor` is the human's deeper check (gate in a real worker, branch protection, model
-  backend) to run before trusting a project, not a switch the orchestrator reads.
+- **Active is derived, not remembered.** On each scan, a registered project is *active* when its default branch has a
+  `.herd/project.yaml` that parses, the herd's GitHub App is installed on the repo, the project's toolchain image
+  builds, the worker slots it may use can run every unit kind (see Models), and, for a project with
+  `final_approval.kind: container`, the host has emulator capacity (`e2e.max_emulators` above 0; see End-to-end tests).
+  Otherwise it's *inactive*, and the status pane says which check failed. Nothing records that `herd doctor` passed.
+  `doctor` is the human's deeper check (gate in a real worker, branch protection, model backend) to run before trusting
+  a project, not a switch the orchestrator reads.
 - **First scan of a new project.** The orchestrator creates the project's bare mirror and builds its images. It
   then treats the project like any other: it queues change branches already marked `ready: true`, and leaves the
   others alone. The herdr bridge adds the project's workspace, with its planner pane, on its next pass.
@@ -592,12 +593,17 @@ silently dropped — comes from two rules together, not from the scan alone:
   the archive).
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes first: the
-  next action is a `triage` unit, which turns the failure into a fix task under "(added for CI)", sending the change
-  back to *implementing*. Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates. This is the
-  path for a CI failure after an update-branch merge too (see Keeping up with the default branch). A required check that
-  still has no result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't
-  wait forever: the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it,
-  since a stuck CI is for a person to look at.
+  next action is a `triage` unit, which applies the test-or-implementation rule (see End-to-end tests) and records its
+  outcome in `review-notes.md` as `ci-triage <check> <sha>: fix | flaky | preexisting`, so the scan never dispatches
+  triage for the same failed check twice. `fix` adds a fix task under "(added for CI)", sending the change back to
+  *implementing*; `flaky` adds no task and re-runs the check; `preexisting` adds no task and escalates to `needs-human`
+  ("fails on the default branch too"). Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates.
+  A resolved "fails on the default branch too" stop that no update-branch merge has followed yet comes before everything
+  else in every state before the archive: the next action is update-branch, so the retry runs against a branch that
+  contains the default branch's fix. This is the path for a CI failure after an update-branch merge too (see Keeping up
+  with the default branch). A required check that still has no result `pr_review.checks_timeout` after the push it's for
+  (queued, running or merely expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker
+  and alerts, before the archive or after it, since a stuck CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -706,10 +712,12 @@ The commands' contract, so the orchestrator can handle ids and results determini
   `{"id": ..., "files": [...]}`, where `files` lists the repository paths that define the test (all under `e2e.tests`).
   That's how the herd knows which selected tests a change adds or changes: a test is change-local if any of its files is
   among the changed paths, which decides both the required red run and whether step 2 below compares with the default
-  branch. Ids are unique, and each is a safe single path component (only letters, digits, `.`, `_` and `-`, and never
-  `.` or `..`), since it also names the test's evidence directory; output that breaks this is a failed attempt with
-  reason `e2e-contract`. A deterministic script, so selection is reviewable and repeatable and an agent can't quietly
-  skip a test. Any non-zero exit fails the unit.
+  branch. Every added or modified path under `e2e.tests` among the changed paths must appear in at least one selected
+  test's `files` (a deleted one is the tamper guard's business), so a selector that doesn't recognize a new test or
+  helper can't make its red/green proof disappear by selecting nothing. Ids are unique, and each is a safe single path
+  component (only letters, digits, `.`, `_` and `-`, and never `.` or `..`), since it also names the test's evidence
+  directory; output that breaks this is a failed attempt with reason `e2e-contract`. A deterministic script, so
+  selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails the unit.
 - **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
   deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
   (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
@@ -804,9 +812,8 @@ The layers:
    this change caused the failure: go on to 3. If it fails there too, the test was already broken, and fixing it isn't
    this change's job. So that can't loop, the triager escalates to `needs-human` ("fails on the default branch too"),
    and the person either fixes the default branch in a separate change and resolves the stop once it's merged,
-   (resolving that stop makes update-branch the next action before any retry, whatever the change's state, so the retry
-   runs against a branch that contains the fix; without it the stale branch would still fail and, the test now passing
-   on the default branch, look like a regression), or waives the test for this change with `herd-resolve`, which records
+   (resolving that stop makes update-branch the next action before any retry, whatever the change's state: see Failing
+   checks before the archive), or waives the test for this change with `herd-resolve`, which records
    `e2e-waive <test id> <default sha> <files digest>: <reason>`, naming the merge-base commit the test was found failing
    on and a digest of the test's `files`; the herd's own e2e runs for the change then skip it. The waiver covers exactly
    that failure and lapses on its own when either changes: once the test's files on the branch no longer match the
