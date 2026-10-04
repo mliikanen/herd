@@ -601,12 +601,14 @@ silently dropped — comes from two rules together, not from the scan alone:
   triage for the same failed check twice. `fix` adds a fix task under "(added for CI)", sending the change back to
   *implementing*; `flaky` adds no task and re-runs the check; `preexisting` adds no task and escalates to `needs-human`
   ("fails on the default branch too"). Those tasks count toward `caps.gate_fixes`; past it, the orchestrator escalates.
-  A resolved "fails on the default branch too" stop that no update-branch merge has followed yet comes before everything
-  else in every state before the archive: the next action is update-branch, so the retry runs against a branch that
-  contains the default branch's fix. This is the path for a CI failure after an update-branch merge too (see Keeping up
-  with the default branch). A required check that still has no result `pr_review.checks_timeout` after the push it's for
-  (queued, running or merely expected) doesn't wait forever: the orchestrator commits a mechanical `needs-human` marker
-  and alerts, before the archive or after it, since a stuck CI is for a person to look at.
+  A "fails on the default branch too" stop resolved as fixed on the default branch, that no update-branch merge has
+  followed yet, comes before everything else in every state before the archive (a stop resolved by an effective
+  `e2e-waive` doesn't: the waived test is skipped, and there may be nothing newer to merge): the next action is
+  update-branch, so the retry runs against a branch that contains the default branch's fix. This is the path for a CI
+  failure after an update-branch merge too (see Keeping up with the default branch). A required check that still has no
+  result `pr_review.checks_timeout` after the push it's for (queued, running or merely expected) doesn't wait forever:
+  the orchestrator commits a mechanical `needs-human` marker and alerts, before the archive or after it, since a stuck
+  CI is for a person to look at.
 
   Because every branch is always in exactly one of these states and each has a defined next action, a full scan
   over all open branches cannot skip anything — there's nothing outside the enum for a task or proposal to
@@ -654,6 +656,8 @@ A proposal stops and waits for a human when any of these happens:
 - the holistic review rejects with feedback that can't be mapped to a specific task;
 - a task needs something in the manifest's `missing_capabilities`, or anything else the pipeline doesn't have (a
   device, a credential, a change to CI workflows), or content from outside the project (see Outside content);
+- a test is flaky past `caps.flaky_retries`, fails on the change's merge-base too, or fails in a way the change's spec
+  deltas don't settle as either an outdated test or a regression (see End-to-end tests: the red/green loop);
 - after the archive commit, a check fails, a review finding arrives, or a non-bookkeeping commit lands (see
   *archived-pending*).
 
@@ -1022,10 +1026,11 @@ their requests.
   excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable
   slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
-  and every reviewer kind the project can dispatch (`e2e` only when its manifest has `final_approval.kind: container`),
-  and for each implementer backend among them, some slot must offer a `task` review on a different model. A project that
-  fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes start,
-  rather than stalling one after its first task.
+  and every reviewer kind the project can dispatch (`e2e` only when its manifest has `final_approval.kind: container`,
+  or when an open change's `e2e-mode` line still requires a container pass, since a change keeps the approval kind it
+  started with), and for each implementer backend among them, some slot must offer a `task` review on a different model.
+  A project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its
+  changes start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -1633,9 +1638,11 @@ Steps marked **(manual)** need a human.
    `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
    `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
    repositories, with repository permissions *Contents* and *Pull requests* (read and write), *Checks*, *Commit
-   statuses*, *Actions* and *Administration* (read only: CI results for the state machine, CI logs and artifacts for
-   triage, branch protection for `herd doctor`), and not *Workflows*; and its private key, read by the orchestrator
-   only.
+   statuses* and *Administration* (read only: CI results for the state machine, branch protection for `herd doctor`),
+   *Actions* (read and write: CI logs and artifacts for triage, and re-running a check triaged as flaky, which a push
+   can't reliably do, since path-filtered workflows may not run again; the orchestrator calls only the re-run endpoint,
+   and its worst misuse, disabling a required workflow, leaves the check unreported, which blocks merging rather than
+   bypassing it), and not *Workflows*; and its private key, read by the orchestrator only.
 8. The planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), including their worktree clean-up, and their
    installation by `herd init`.
 9. Onboard the first project (Onboarding a project, above). Onboard a second project on a different stack before
