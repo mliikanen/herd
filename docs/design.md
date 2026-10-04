@@ -1260,13 +1260,14 @@ retained snapshot would charge the new machine's traffic to the old one.
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
   dispatch is paused, ending the unit with a `budget` reason (not `infra`, and not a failed attempt). But the machine
-  keeps billing, so the herd raises an urgent alert asking the operator to stop it, the counter keeps accruing, and the
-  status pane shows "over budget: rented machine not confirmed stopped" until the operator runs
-  `herd machines stopped <machine>` or the billing month turns: the rollover lifts the budget pause, so the machine is a
-  dispatch target again and the episode closes with it, rather than asking for a machine to be stopped that the herd is
-  about to use (the idle and unhealthy alerts still cover it from there). For per-token backends the budget is a hard
-  limit; for rented ones it's a hard stop on dispatch and an alert on spend, until the herd can stop the machine itself
-  (see Open questions).
+  keeps billing, so the herd raises an urgent alert asking the operator to stop it (and does the same for every rented
+  machine not confirmed stopped when paid dispatch pauses because the counter was lost, since its hours are then being
+  spent with nothing to count them against), the counter keeps accruing, and the status pane shows "over budget: rented
+  machine not confirmed stopped" until the operator runs `herd machines stopped <machine>` or the billing month turns:
+  the rollover lifts the budget pause, so the machine is a dispatch target again and the episode closes with it, rather
+  than asking for a machine to be stopped that the herd is about to use (the idle and unhealthy alerts still cover it
+  from there). For per-token backends the budget is a hard limit; for rented ones it's a hard stop on dispatch and an
+  alert on spend, until the herd can stop the machine itself (see Open questions).
 
 - **Evaluation.** A rented backend earns a slot the same way a local one does: replay tasks the herd has already
   accepted and compare first-review acceptance, time per task and cost per accepted task with the cloud backend (see
