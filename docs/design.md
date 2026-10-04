@@ -1129,10 +1129,12 @@ says why, and a "replacement blocked, possibly billing" alert episode opens as s
 the endpoint answers (a silent machine may still be billing), cleared only when the block lifts or the replacement is
 confirmed stopped, with the daily reminder like any episode) until the retained snapshot holding that endpoint is
 confirmed stopped and retired, since until then both would answer at the same URL. For the same reason an endpoint stays
-bound to its instance until that definition is retired: the operator gives a replacement instance a new endpoint, or
-keeps the old URL leading to the old machine until it's confirmed stopped and retired. The herd can't see where a URL
-leads, so this is the operator's assertion too, like an endpoint reaching one machine alone; repointing a URL under a
-retained snapshot would charge the new machine's traffic to the old one.
+bound to its instance until that definition is retired, or moves to another endpoint by an in-place update and its
+in-flight calls on the old one have finished (see Removing or repointing a machine), whichever comes first: the operator
+gives a replacement instance a new endpoint, or keeps the old URL leading to the old machine until it's confirmed
+stopped and retired. The herd can't see where a URL leads, so this is the operator's assertion too, like an endpoint
+reaching one machine alone; repointing a URL under a retained snapshot would charge the new machine's traffic to the old
+one.
 
 - **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
   model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
