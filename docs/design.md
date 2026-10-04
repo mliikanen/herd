@@ -946,7 +946,10 @@ GitHub access. That output crosses into a model-backed worker, so only some of i
 can be passed on once the job is checked secret-free. That takes more than the absence of `secrets.*`: the job
 references no secrets and runs in no deployment environment; its token has no write permission and no `id-token`
 (read-only `contents` at most); every `actions/checkout` sets `persist-credentials: false`, so test code can't copy the
-token into an artifact; it calls no reusable workflow; and the workflow isn't triggered by `pull_request_target`.
+token into an artifact; it calls no reusable workflow; and the workflow isn't triggered by `pull_request_target`; and it
+runs on a GitHub-hosted runner (a `runs-on` label from GitHub's own fixed set, not `self-hosted` or a custom label, nor
+an expression that could resolve to one), which is ephemeral and holds nothing of anyone's beyond the job, whereas test
+code on a self-hosted runner could read the runner host's own files and credentials and copy them into its output.
 Anything the check can't prove from the workflow file disqualifies the job. Artifacts aren't: GitHub scopes them to the
 whole workflow run and doesn't record which job uploaded one, so a listed artifact is passed on only if the run's
 workflow file shows that exactly one job uploads an artifact by that name and it's the listed, secret-free job; an
