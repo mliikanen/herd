@@ -801,8 +801,10 @@ say which backend runs which kind of unit:
 ```yaml
 backends:
   opus:        { kind: anthropic, model: claude-opus-5-5,   secret: ANTHROPIC_API_KEY,
+                 account: anthropic:<org id>,                         # the bill this backend's spend is on
                  price: { input: <per Mtok>, output: <per Mtok> } }   # budget.currency; input = highest input rate
   sonnet:      { kind: anthropic, model: claude-sonnet-5-5, secret: ANTHROPIC_API_KEY,
+                 account: anthropic:<org id>,
                  price: { input: <per Mtok>, output: <per Mtok> } }
   local-coder:    { kind: ollama, model: <coder model>,   endpoint: http://ollama:11434 }
   local-reviewer: { kind: ollama, model: <another model>, endpoint: http://ollama:11434 }
@@ -1205,22 +1207,23 @@ endpoint must reach that machine alone (the operator's assertion, like the model
   the hourly rate, so the monthly budget covers rented hours alongside cloud tokens. That's an approximation of the
   provider's bill: health checks miss time (while the orchestrator is down, say), so the operator reconciles against the
   bill with `herd budget set --spent <amount> --as-of <time> --source <source>`, giving what one bill charged up to its
-  cutoff. A source is what one bill covers: a cloud provider account (the backends sharing one `secret`) or a rented
-  machine, keyed by its qualified `instance`, never by its name, since names can be renamed and repointed (the command
-  accepts a current name or a definition id too, resolved to the `instance` when it's run), and every ledger entry
-  records its source, since bills from different providers arrive with different cutoffs. The orchestrator doesn't
-  overwrite the counter with it, which could lose or double-count work in flight: in one atomic step, it replaces only
-  what the herd itself had accrued for that source up to that cutoff (from the ledger's timestamped entries), leaving
-  every other source's spend alone, with the billed amount, and keeps every accrual and reservation after the cutoff,
-  along with every reservation still unresolved, whatever its timestamp: a call in flight at the cutoff may or may not
-  be on the bill, so its reservation stays in the counter until it settles and is replaced by the reported usage as
-  usual. That can count such a call twice (once in the bill, once settled), never zero times, the same direction the
-  counter errs in everywhere else, and the next reconciliation absorbs it. The old total, the new one, the cutoff and
-  the reason go to the event log. Restoring a lost counter is the one aggregate case: the same command without
-  `--source`, with the cutoff at now, giving the month's total across every bill, while paid dispatch is paused anyway.
-  Hours are attributed for the usage ledger by time, not tokens: while units are calling the machine, through any of its
-  backends, its time is split evenly among them, and their share goes to their change; time with no call in flight goes
-  to the machine's own idle bucket, never to a change.
+  cutoff. A source is what one bill covers: a cloud billing account, named by the backend's `account`
+  (`<provider>:<account id>`, say `anthropic:<org id>`; backends billed to one account share it whatever keys they use,
+  and a key's rotation or rename doesn't change it) or a rented machine, keyed by its qualified `instance`, never by its
+  name, since names can be renamed and repointed (the command accepts a current name or a definition id too, resolved to
+  the `instance` when it's run), and every ledger entry records its source, since bills from different providers arrive
+  with different cutoffs. The orchestrator doesn't overwrite the counter with it, which could lose or double-count work
+  in flight: in one atomic step, it replaces only what the herd itself had accrued for that source up to that cutoff
+  (from the ledger's timestamped entries), leaving every other source's spend alone, with the billed amount, and keeps
+  every accrual and reservation after the cutoff, along with every reservation still unresolved, whatever its timestamp:
+  a call in flight at the cutoff may or may not be on the bill, so its reservation stays in the counter until it settles
+  and is replaced by the reported usage as usual. That can count such a call twice (once in the bill, once settled),
+  never zero times, the same direction the counter errs in everywhere else, and the next reconciliation absorbs it. The
+  old total, the new one, the cutoff and the reason go to the event log. Restoring a lost counter is the one aggregate
+  case: the same command without `--source`, with the cutoff at now, giving the month's total across every bill, while
+  paid dispatch is paused anyway. Hours are attributed for the usage ledger by time, not tokens: while units are calling
+  the machine, through any of its backends, its time is split evenly among them, and their share goes to their change;
+  time with no call in flight goes to the machine's own idle bucket, never to a change.
 - **The budget can't stop a rented machine yet**, since the herd doesn't control it. At the limit the herd stops
   dispatching to rented slots like any paid backend, and running rented units stop too: rented calls make no per-call
   reservation, so the gateway asks the orchestrator for a zero-cost authorization on every one and is refused while paid
