@@ -848,16 +848,17 @@ those projects' units. Slots that share a GPU share it in turn: the model server
 - **Any capable slot can take any unit.** Every unit starts from a fresh clone, so a task implemented on one slot can
   be revised or reviewed on another.
 - **A task review never runs on the model that wrote the commit.** The same model shares its own blind spots. Backend
-  names are only labels, so models are compared by their normalized `Herd-Model` value (kind, model and, for a rented
-  backend, revision): two backends naming the same model count as the same model for this rule and the ones below, and
-  two revisions of one model, being different weights, count as different models. The same open weights served two ways
-  (`ollama/…` on the B70, `openai/…` on a rented machine) have different names, though, so a backend can declare
-  `weights: <label>`: the label is recorded in a `Herd-Weights` trailer and only ever adds an equivalence: two commits
-  are the same model when their `Herd-Model` values match, whatever their labels say, **or** when both carry the same
-  label, so a label can unify the two servings but never split one model into two. `herd doctor` warns when backends of
-  different kinds look like the same model (the same base name) without a shared label. A holistic review spans commits
-  that may come from several models, so excluding all of them could leave no reviewer; it prefers a model that wrote
-  none of the change, when a capable slot has one.
+  names are only labels, so models are compared by their normalized `Herd-Model` value (kind, model, and the weights'
+  digest or revision wherever the backend has one: a local model's digest, a rented model's revision): two backends
+  naming the same model count as the same model for this rule and the ones below, and two revisions of one model, being
+  different weights, count as different models. The same open weights served two ways (`ollama/…` on the B70, `openai/…`
+  on a rented machine) have different names, though, so a backend can declare `weights: <label>`: the label is recorded
+  in a `Herd-Weights` trailer and only ever adds an equivalence: two commits are the same model when their `Herd-Model`
+  values match, whatever their labels say, **or** when both carry the same label, so a label can unify the two servings
+  but never split one model into two. `herd doctor` warns when backends of different kinds look like the same model (the
+  same base name) without a shared label. A holistic review spans commits that may come from several models, so
+  excluding all of them could leave no reviewer; it prefers a model that wrote none of the change, when a capable slot
+  has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
   and every reviewer kind, and for each implementer backend among them, some slot must offer a `task` review on a
   different model. A project with `locality: host` may use only slots whose every backend is local, for every role and
@@ -1145,11 +1146,15 @@ revision below).
   as an `infra` failure and is retried. **Endpoint health decides dispatch, never whether billing stopped**: an expired
   key, a broken tunnel, a crashed model server or a network blip look exactly like a stopped machine while the provider
   keeps billing. Only the operator can say a machine is stopped, with `herd machines stopped <machine or snapshot id>`
-  (a request; see The herd's own account). The orchestrator records the confirmation in the persisted machine
-  definitions, against the exact current definition or snapshot id, before it consumes the request, so a restart doesn't
-  lose it; it closes that machine's billing-related alerts until its endpoint answers again. Since unhealthy may still
-  mean billing, an active machine whose health checks fail for longer than `alerts.infra_after` opens a "machine
-  unhealthy, not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
+  (a request; see The herd's own account). Requests are consumed asynchronously and a name can be repointed in between,
+  so the CLI resolves a machine name to its current definition id when it's run (from the status snapshot) and the
+  request carries that id; a request whose id is no longer the named machine's current definition, or a retained one, is
+  rejected and reported, never applied to whatever the name points at now. The orchestrator records the confirmation in
+  the persisted machine definitions, against the exact current definition or snapshot id, before it consumes the
+  request, so a restart doesn't lose it; it closes that machine's billing-related alerts until its endpoint answers
+  again. Since unhealthy may still mean billing, an active machine whose health checks fail for longer than
+  `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared when its health returns
+  or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
@@ -1158,13 +1163,18 @@ revision below).
   (`price`, `idle_alert`, a rotated `secret`) is an update in place: the same machine, a new rate from that moment on. A
   change to its identity (`endpoint`, `access`, the WireGuard `peer`), or dropping the entry, means a different machine,
   or none, from the herd's point of view, but the old machine doesn't stop with it: the orchestrator keeps the old
-  definition (tunnel, credentials, health checks, hourly accrual, alerts) as a **retained snapshot** with an immutable
-  id (the machine's name and the moment it was retained, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own
-  files as an operational store and read back on start like the budget counter. A name can be reused or repointed many
-  times, so the snapshot id, not the name, is what identifies it. Noticing the change doesn't depend on a scan seeing
-  the old config: the orchestrator persists every machine definition it puts into use (with the hash of its credential
-  copy, below) in that same store before any health check, dispatch or accrual uses it, and every scan, the first after
-  a restart included, compares host config with those persisted definitions, not with what the previous scan read. So a
+  definition (tunnel, credentials, health checks, hourly accrual, alerts) as a **retained snapshot** under its
+  definition id, the immutable id every definition gets when it's first persisted (the machine's name and the moment it
+  was first loaded, say `h100-a@2026-10-04T15:02Z`), persisted in the herd's own files as an operational store and read
+  back on start like the budget counter. A name can be reused or repointed many times, so the definition id, not the
+  name, is what identifies it. Likewise identity, not the name, decides which machine an entry is: an entry whose
+  identity matches an existing definition, current or retained, takes that definition over rather than starting a second
+  one, so a rename keeps the machine's id, accrual and credential copy, and a retained machine that comes back into
+  config becomes current again. One physical machine never has two definitions, which keeps accrual once per machine
+  (validation already rejects two entries with one endpoint). Noticing the change doesn't depend on a scan seeing the
+  old config: the orchestrator persists every machine definition it puts into use (with the hash of its credential copy,
+  below) in that same store before any health check, dispatch or accrual uses it, and every scan, the first after a
+  restart included, compares host config with those persisted definitions, not with what the previous scan read. So a
   config change made while the orchestrator was down, or a crash before a scan finished, still finds the old machine to
   retain. The snapshot's credentials can't depend on files the operator may already have rotated or deleted as part of
   the very config change that retains it, so copying them at that point would be too late. Instead the proxy copies a
