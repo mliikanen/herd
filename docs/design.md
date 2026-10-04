@@ -1116,7 +1116,13 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
   unnoticed, an idle machine raises an alert: up and healthy with no call for the backend's `idle_alert` (default 30
   minutes). It's an alert episode like an ongoing condition in Monitoring, opened when the threshold passes and cleared
   by the next call or by the machine going down, so a machine idle all day alerts once plus the daily reminder. Letting
-  the herd start and stop the machine itself through the provider's API, on demand, is an open question.
+  the herd start and stop the machine itself through the provider's API, on demand, is an open question. Host config can
+  drop or repoint a rented backend at any scan, but its machine doesn't stop with it: the orchestrator keeps the old
+  definition (tunnel, key, health checks, hourly accrual, alerts) as a retained snapshot until the units that started on
+  it have finished **and** its endpoint is confirmed down. Until then the snapshot takes no new units, its running units
+  finish on it (as Models promises), and while its machine is still up it keeps accruing cost and raises a "removed
+  backend still up" alert, an episode like the idle one, so a machine dropped from config can't keep billing out of
+  sight.
 - **Cost.** A rented backend's `price` is `per_hour`, not per token, in `budget.currency`. The budget counts its hours
   from the health checks: while the herd sees the endpoint up, the counter accrues the hourly rate, so the monthly
   budget covers rented hours alongside cloud tokens. That's an approximation of the provider's bill: health checks miss
@@ -1398,18 +1404,19 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
-  `alerts.infra_after`, an idle rented machine (see Rented GPU backends), and a rented machine still up after the budget
-  limit all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational control like
-  the budget counter: unlike the event log, the orchestrator reads it back, and it decides nothing about any change's
-  state. Each alert has a stable id derived from facts, and the queue adds only ids it doesn't already hold. An alert
-  about a waiting change is keyed by the commit of its `needs-human` marker or final-approval state. An ongoing
-  condition (a project inactive, low disk, the budget, infrastructure failures, an idle rented machine, a rented machine
-  still up after the budget limit) is an **episode**: the scan that first sees it appends an opening entry, the scan
-  that sees it gone appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second
-  outage on the same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the
-  episode and the day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels
-  is at-least-once: push delivery is recorded per id after the service accepts it, so a crash in between sends that one
-  again, never none. Alerts go out on two channels from two accounts:
+  `alerts.infra_after`, an idle rented machine (see Rented GPU backends), a rented machine still up after the budget
+  limit, and a removed rented backend whose machine is still up all raise an alert. The queue doubles as the
+  orchestrator's own record of alerts, an operational control like the budget counter: unlike the event log, the
+  orchestrator reads it back, and it decides nothing about any change's state. Each alert has a stable id derived from
+  facts, and the queue adds only ids it doesn't already hold. An alert about a waiting change is keyed by the commit of
+  its `needs-human` marker or final-approval state. An ongoing condition (a project inactive, low disk, the budget,
+  infrastructure failures, an idle rented machine, a rented machine still up after the budget limit, a removed rented
+  backend still up) is an **episode**: the scan that first sees it appends an opening entry, the scan that sees it gone
+  appends a `cleared` entry, and a new opening after a `cleared` one starts a new episode, so a second outage on the
+  same day alerts again. The alert is keyed by the episode, and a daily reminder while it lasts by the episode and the
+  day. Losing the queue costs at most one repeated alert per open condition. Delivery on both channels is at-least-once:
+  push delivery is recorded per id after the service accepts it, so a crash in between sends that one again, never none.
+  Alerts go out on two channels from two accounts:
   - **desktop**, from the bridge in the operator's herdr (see Launching and watching the herd), while herdr's
     server runs in the operator's session;
   - **push** (ntfy or a similar service), sent by the orchestrator under the `herd` user, so it arrives with no
