@@ -1078,10 +1078,13 @@ holds (a coder model that needs 80 GB or more), it's billed per hour rather than
 speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-compatible API.
 
 - **Backend kind.** `kind: openai` is any OpenAI-compatible endpoint, and `hosting: rented` marks one on hired hardware.
-  The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face model), and `Herd-Model`
-  records both (`openai/<model>@<revision>`), so acceptance rates never mix two versions. `herd doctor` checks that the
-  server actually serves that model and revision.
-
+  The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face model). The
+  OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by convention: the
+  server must serve the model under the ID `<model>@<revision>` (vLLM, for one, takes the weights' revision and a
+  served-model name as separate options), `herd doctor` checks that the server's model list contains exactly that ID,
+  and the gateway sets it as the request's model. That's the operator's attestation, since they set up the server, not a
+  cryptographic proof of what weights are loaded; it's what keeps acceptance rates from silently mixing two versions.
+  `Herd-Model` records the same ID (`openai/<model>@<revision>`).
 - **Trust.** The machine's provider can see prompts and code, as a cloud API's can, often without the data commitments a
   model vendor gives. For the purposes of a project restricted to the host (see Models), a rented backend counts as
   leaving it, so such a project never gets a rented slot; whether to use rented hardware at all is the operator's call,
@@ -1090,10 +1093,9 @@ speak to it, since the usual servers (vLLM, SGLang, Ollama) expose an OpenAI-com
 - **Network.** The model gateway is the only client, and the endpoint is never an open port: it's HTTPS with a key
   (`secret`, kept in `~herd/secrets/` and read by the proxy alone, like a provider key), or reachable only through a
   WireGuard tunnel the proxy holds. Its host is on the proxy's egress for that backend only, and `herd doctor` checks
-  that it refuses an unauthenticated request. The gateway applies the same rules as to any backend: it pins model and
-  revision, allow-lists the inference route and token-only features, and bounds the requested output by the backend's
+  that it refuses an unauthenticated request. The gateway applies the same rules as to any backend: it pins the attested
+  model ID, allow-lists the inference route and token-only features, and bounds the requested output by the backend's
   context.
-
 - **Lifecycle.** At first the operator starts and stops the machine; the herd dispatches units to a rented slot only
   while its endpoint answers health checks, and a unit whose machine disappears mid-call (spot and marketplace machines
   can be reclaimed) ends as an `infra` failure and is retried. So a machine left running for nothing doesn't burn money
@@ -1311,7 +1313,7 @@ timeouts:                              # per unit kind; a unit past either is ki
 budget:
   currency: USD                        # every cloud backend's price is in this currency
   timezone: UTC                        # where a billing month starts and ends
-  monthly: 200                         # cloud backends only
+  monthly: 200                         # paid backends: cloud APIs and rented GPUs
   warn_at: 80%
 alerts:
   desktop: true                        # through the bridge's herdr (operator's account)
@@ -1347,8 +1349,9 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   the orchestrator replaces the reservation with it and writes a usage event to the event log. A crash between the two
   leaves the reservation counted, so the counter can overcount but never undercount. The orchestrator stays the only
   writer of `/var/lib/herd/shared/` and of the counter, and the key-holding proxy gets no writable shared mount. The
-  status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an alert; at the budget,
-  the orchestrator stops dispatching units to cloud backends and refuses new reservations, running units' in-flight
+  status pane shows spend this month against `budget.monthly`. At `warn_at` the operator gets an alert; "paid" means
+  cloud APIs and rented GPUs alike, and only local backends are outside the budget; at the budget, the orchestrator
+  stops dispatching units to paid backends (cloud and rented) and refuses new reservations, running units' in-flight
   calls finish, and local slots carry on. The status pane shows it as "paused: budget", not as `needs-human`: it's the
   operator's call to raise the budget or wait for the month to turn. The counter is keyed by billing period, the
   calendar month in `budget.timezone` (`2026-10`, say), and the orchestrator also records the last period it
@@ -1359,12 +1362,13 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   boundary can't move spend between months. Besides the counter, the orchestrator keeps a usage ledger, totals per
   project and change, so the status snapshot's spend per proposal survives a restart. Counter and ledger are the
   budget's control state, kept in the herd's own files and allowed as recovery input; with the alert queue (below),
-  they're the only state the orchestrator reads back besides git. They decide only whether cloud calls go out, never a
-  change's state. A reservation refused because it would cross the budget pauses cloud dispatch the same way, so units
-  aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason, which counts
-  neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If the counter is
-  lost, cloud dispatch pauses until the operator sets this month's spend with `herd budget set --spent <amount>` (read
-  from the provider's billing), a request the orchestrator records in the event log before dispatch resumes.
+  they're the only state the orchestrator reads back besides git. They decide only whether calls to paid backends go
+  out, never a change's state. A reservation refused because it would cross the budget pauses paid dispatch the same
+  way, so units aren't dispatched only to have their first call refused; the refused unit ends with a `budget` reason,
+  which counts neither as a failed attempt nor as an infrastructure failure, and is retried once dispatch resumes. If
+  the counter is lost, paid dispatch pauses until the operator sets this month's spend with
+  `herd budget set --spent <amount>` (read from the provider's billing), a request the orchestrator records in the event
+  log before dispatch resumes.
 - **Alerts that reach the operator anywhere.** A change starting to wait on a person (by its next action, as in the
   status pane), the budget warning or limit, a project turning inactive, low disk, and infrastructure failures past
   `alerts.infra_after` all raise an alert. The queue doubles as the orchestrator's own record of alerts, an operational
