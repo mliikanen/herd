@@ -1183,12 +1183,13 @@ retained snapshot would charge the new machine's traffic to the old one.
   deletes the request file, so a crash in between at worst handles the same request twice, which changes nothing, and
   never loses the confirmation; it closes that machine's billing-related alerts, stops its accrual, and takes it out of
   dispatch: a confirmed-stopped machine gets no new units, and the gateway refuses its calls. The confirmation clears
-  when the machine is seen starting again, its endpoint answering after health checks had seen it down, which counts as
-  the operator having started it. An endpoint that keeps answering past `alerts.infra_after` after its confirmation
-  means the machine wasn't stopped after all: that raises a "confirmed stopped but still answering" alert episode, and
-  the confirmation stays until the endpoint goes down and comes back. Since unhealthy may still mean billing, an active
-  machine whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed
-  stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
+  only explicitly, with `herd machines started <machine>` (a request, validated and persisted the same way), so nothing
+  depends on the orchestrator having watched the machine go down and come back. An endpoint that keeps answering past
+  `alerts.infra_after` after its confirmation means the machine wasn't stopped after all: that raises a "confirmed
+  stopped but still answering" alert episode and resumes the machine's accrual, since it may well be billing, while
+  dispatch stays off until the operator either stops it or runs `herd machines started`. Since unhealthy may still mean
+  billing, an active machine whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy,
+  not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call for its `idle_alert` (default 30 minutes). It's an alert episode like an ongoing
   condition in Monitoring, opened when the threshold passes and cleared by the next call or by the operator confirming
@@ -1473,7 +1474,8 @@ log, the orchestrator never reads it back.
 - `herd budget set --spent <amount> [--as-of <time> --source <source>]`: sets this month's spend, after the counter was
   lost or to reconcile it with the providers' bills (see Monitoring and Rented GPU backends).
 - `herd models pull|list|rm`: manages the models on the local model server (see The local model server).
-- `herd machines stopped <machine or snapshot id>`: confirms a rented machine is stopped (see Rented GPU backends).
+- `herd machines stopped <machine or snapshot id>`: confirms a rented machine is stopped, and
+  `herd machines started <machine>` withdraws that, putting it back into dispatch (see Rented GPU backends).
 - `herd status [--follow]` and `herd watch`: the status view and the bridge (above). Both also work outside herdr
   (`status` in any terminal; `watch` refuses to run outside a herdr pane).
 
@@ -1666,7 +1668,7 @@ Steps marked **(manual)** need a human.
    the orchestrator), log retention and the disk check; rented GPU backends (see Rented GPU backends): the persisted
    machine definitions, current and retained, and their confirmations, the proxy's credential store and userspace
    WireGuard, per-backend readiness, hourly accrual and the time-split ledger, budget reconciliation with a cutoff, the
-   idle, unhealthy and retained-machine alerts, and `herd machines stopped`.
+   idle, unhealthy and retained-machine alerts, and `herd machines stopped` and `started`.
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
    `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
    and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
