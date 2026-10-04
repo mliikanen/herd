@@ -458,9 +458,9 @@ silently dropped — comes from two rules together, not from the scan alone:
      moves the change back to *archived-pending* until checks pass on the new tip; its review of the content tip still
      stands.
 
-  **Current records.** A holistic-accept or a final-approval pass is pinned to the SHA it evaluated, and recording
-  it is itself a commit, so "for the current tip" could never hold. A record is *current* when every commit since
-  its SHA is **bookkeeping**:
+  **Current records.** A holistic-accept is pinned to the SHA it evaluated, and recording it is itself a commit, so
+  "for the current tip" could never hold. A holistic-accept is *current* when every commit since its SHA is
+  **bookkeeping** (a final-approval pass follows its own rule, the effective record below):
   - a commit that touches only `review-notes.md` (verdict lines, failed-attempt lines, final-approval records,
     PR triage notes) or only `inputs.md`;
   - the validated archive commit, whose content `openspec archive` determines (see Who commits, who pushes);
@@ -479,13 +479,15 @@ silently dropped — comes from two rules together, not from the scan alone:
   that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until
   a person records a new pass.
 
-  **The content tip** is the branch's latest non-bookkeeping commit. Checks are judged on the current tip, since
-  GitHub runs them on every push, but awaited reviews are judged on the content tip: a review of it, or of any
-  later commit, counts. Otherwise review couldn't converge, because recording a review's classification is itself a
-  push that the automated reviewer reviews again, which would need classifying in turn. Reviews of later
-  bookkeeping-only tips don't block anything; a thread they open is still an open thread (that needs no model to
-  see), but a finding only in such a review's summary isn't waited for, an accepted trade-off since it reviews the
-  same content.
+  **The content tip** is the branch's latest non-bookkeeping commit, except that the archive commit always counts as
+  content here: it's bookkeeping for keeping the holistic-accept current, but its generated spec changes still need an
+  awaited reviewer to see them, so after the archive the content tip is the archive commit (or a later non-bookkeeping
+  one). Checks are judged on the current tip, since GitHub runs them on every push, but awaited reviews are judged on
+  the content tip: a review of it, or of any later commit, counts. Otherwise review couldn't converge, because recording
+  a review's classification is itself a push that the automated reviewer reviews again, which would need classifying in
+  turn. Reviews of later bookkeeping-only tips don't block anything; a thread they open is still an open thread (that
+  needs no model to see), but a finding only in such a review's summary isn't waited for, an accepted trade-off since it
+  reviews the same content.
 
   **Failing checks before the archive.** In states 6–8, a required check that failed on the current tip comes
   first: the next action is a `triage` unit, which turns the failure into a fix task under "(added for CI)",

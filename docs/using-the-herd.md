@@ -89,7 +89,7 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
 - a task was rejected in review too many times;
 - the change kept growing tasks past the cap, so the proposal itself needs revisiting;
 - a step kept failing (the worker crashed, timed out or couldn't get the gate green) past the allowed attempts;
-- CI kept failing after the herd merged the default branch in;
+- a required CI check kept failing before the archive, after the herd merged the default branch in or otherwise;
 - merging the default branch into the change conflicts;
 - the holistic review raised something that doesn't map to a task;
 - PR review didn't come clean within the allowed rounds, or a reviewer asked for a change of scope;
@@ -123,9 +123,10 @@ commit you tested:
 ## Review
 
 After final approval, the herd marks the PR ready for review. Automated reviewers (Copilot, for example) review it
-again after every push, and the herd waits for their review of the latest commit. Each finding is either fixed, as
-a new task that goes through implementation and review like any other, or answered with a reason for not
-changing anything. The herd posts the reply and resolves the thread.
+again after every push. Checks have to pass on the latest commit, but the herd waits for their review of the latest
+commit that changes content: its own notes don't restart the wait. Each finding is either fixed, as a new task that
+goes through implementation and review like any other, or answered with a reason for not changing anything. The herd
+posts the reply and resolves the thread.
 
 You can review too: your comments are handled the same way. A request to change the change's *scope*, rather than
 its implementation, comes back to you as a `needs-human` stop, because scope is the proposer's call.
