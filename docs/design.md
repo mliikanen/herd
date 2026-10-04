@@ -17,8 +17,8 @@ the pipeline can't finish on its own stops in a `needs-human` state (see Escalat
 - **Implementer**: an LLM run non-interactively, one task at a time. Which model is host config per worker slot,
   local (Ollama or similar) or a cloud API, and one host can mix them (see Models).
 - **Reviewer**: an LLM run non-interactively, by default cloud SOTA (Claude Code, `claude -p`), configured per worker
-  slot like the implementer; a task review never runs on the model that wrote the commit (see Models). It reviews
-  each task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
+  slot like the implementer; a task review never runs on the model that wrote the commit (see Models). It reviews each
+  task's commit and, once every task is accepted, the whole change holistically. Also triages the PR's review feedback
   into tasks (see Following up on PR review), and runs the archive step once final approval passes and review is done,
   since syncing spec deltas can need judgment.
 - **Orchestrator**: plain code (no LLM, no LLM API key), owns the queue and git/GitHub plumbing — assigns work,
