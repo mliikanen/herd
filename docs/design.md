@@ -892,7 +892,10 @@ those projects' units. Slots that share a GPU share it in turn: the model server
   and when a project's slots offer only one implementer model (so the stronger-attempt rule can't apply).
 
 Switching a slot between local, rented and cloud backends, or adding a slot, is a config change: the scan re-reads host
-config, and a running unit finishes on the backend it started with.
+config, and a running unit finishes on the backend it started with. The exception is a project that becomes
+`locality: host`: a policy that let code leave the host after it loaded would promise nothing, so the scan that loads it
+stops the project's running units on non-local backends (their work is discarded like any crashed attempt, an `infra`
+failure that doesn't count), and the project reports itself host-local only once none is left.
 
 ## Containers
 
@@ -1115,7 +1118,10 @@ its hourly `price` and its `idle_alert`. A backend of `kind: openai` that names 
 `machine` field is what marks it; there's no separate flag), and gives its model, revision and context; several backends
 may share a machine (two models served by one server), and the machine is still billed once. Validation rejects two
 machines with the same `instance` or the same endpoint, since that would bill one machine twice, and a machine's
-endpoint must reach that machine alone (the operator's assertion, like the model revision below).
+endpoint must reach that machine alone (the operator's assertion, like the model revision below). Endpoints are unique
+across retained definitions too: a replacement instance that reuses its predecessor's endpoint isn't activated (no
+health checks, accrual or units; the status pane says why) until the retained snapshot holding that endpoint is
+confirmed stopped and retired, since until then both would answer at the same URL.
 
 - **Model identity.** The backend names the model and its exact `revision` (the weights' commit, for a Hugging Face
   model). The OpenAI-compatible API reports only a served model ID, not a revision, so the revision is attested by
@@ -1335,12 +1341,12 @@ instance*: the orchestrator, the active worker containers, and the herdr workspa
   unit for an untriaged failure.
 - **One workspace per registered project**, opened in the operator's checkout of it (`--cwd`), holding:
   - **The planner pane**: the operator's interactive agent (host config `planner.agent`, default `claude`; a
-    `locality: host` project gets a plain shell instead unless it names a local agent, see Models) running in that
-    checkout. This is where `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get written. It's
-    created with the workspace, by default, and it belongs to the person: the herd never prompts it, closes it or
-    restarts it. herdr's integration for that agent (`herdr integration install claude`, done by the install script)
-    tells herdr which session the agent is in, so herdr resumes it after a restart. herdr reads the agent's
-    working/blocked/idle state from its screen; Claude Code's integration doesn't report it.
+    `locality: host` project gets a plain shell instead, see Models) running in that checkout. This is where
+    `herd-propose`, `herd-ready` and `herd-resolve` run and where proposals get written. It's created with the
+    workspace, by default, and it belongs to the person: the herd never prompts it, closes it or restarts it. herdr's
+    integration for that agent (`herdr integration install claude`, done by the install script) tells herdr which
+    session the agent is in, so herdr resumes it after a restart. herdr reads the agent's working/blocked/idle state
+    from its screen; Claude Code's integration doesn't report it.
   - **One pane per running unit**, following that unit's log (read-only; workers are non-interactive). The bridge
     reports it to herdr as `working` (`pane.report_agent`) and sets its title to
     `<change> · <role> · task <n> · round <r>`, with the proposal's state as a named token
