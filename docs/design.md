@@ -548,13 +548,13 @@ silently dropped — comes from two rules together, not from the scan alone:
 
   **The effective final-approval record** is kept per **phase**: each final-approval record names its phase, `container`
   (written by an `e2e` unit) or `human` (written through `herd-resolve`), and a phase's effective record is its latest
-  record in git order: a `pass`, a `fail`, or a `rerun` (a `rerun` applies to every phase the change requires). A
-  project requires the `human` phase with `kind: human`, the `container` phase with `kind: container`, and both,
-  container first, with `kind: container` and `human_after: true`; *awaiting-approval* holds until every required
-  phase's effective record is a pass, and states 7 and 8's "the effective final-approval record a pass" means every
-  required phase. History is additive, so an old pass stays in `review-notes.md`, but only a pass that's newer than any
-  `rerun` or `fail` counts; after a `rerun`, the change goes back to *awaiting-approval* until each required phase has a
-  new pass.
+  record in git order: a `pass`, a `fail`, or a `rerun` (the one exception is `final-approval: rerun`, which names no
+  phase: it applies to every phase the change requires). A project requires the `human` phase with `kind: human`, the
+  `container` phase with `kind: container`, and both, container first, with `kind: container` and `human_after: true`;
+  *awaiting-approval* holds until every required phase's effective record is a pass, and states 7 and 8's "the effective
+  final-approval record a pass" means every required phase. History is additive, so an old pass stays in
+  `review-notes.md`, but only a pass that's newer than any `rerun` or `fail` counts; after a `rerun`, the change goes
+  back to *awaiting-approval* until each required phase has a new pass.
 
   **The content tip** is the branch's latest non-bookkeeping commit, except that the archive commit always counts as
   content here: it's bookkeeping for keeping the holistic-accept current, but its generated spec changes still need an
@@ -684,20 +684,23 @@ The commands' contract, so the orchestrator can handle ids and results determini
   installed build.
 - **`select <base sha>`** compares the base commit with the **working tree**, committed or not, so the implementer can
   run it before its commit exists, and a reviewer runs it on a checkout of the commit under review. It prints the
-  relevant test ids on stdout, one per line; an id is non-empty, printable, and contains no whitespace. A deterministic
-  script, so selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails the
-  unit.
+  relevant test ids on stdout, one per line; ids are unique, and each is a safe single path component (only letters,
+  digits, `.`, `_` and `-`, and never `.` or `..`), since it also names the test's evidence directory. Output that
+  breaks this is a failed attempt with reason `e2e-contract`. A deterministic script, so selection is reviewable and
+  repeatable and an agent can't quietly skip a test. Any non-zero exit fails the unit.
 - **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
   deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
   (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
 - **`run`** reads test ids from stdin, one per line, so no id needs shell escaping. It writes
   `$HERD_E2E_ARTIFACTS/results.jsonl`, one line per id (`{"id": ..., "status": "pass" | "fail", "detail": ...}`), and
-  per-test evidence (reports, screenshots, view hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. It exits 0
-  if every test passed, 1 if any failed, anything else on an error that isn't a test result. The herd validates the
-  results before believing them: valid JSON, exactly one record for every requested id and none for any other, and
-  statuses that agree with the exit code (0 means all pass, 1 means at least one fail). A violation means the script is
-  broken, not the test: it's a failed attempt with reason `e2e-contract`, so a script that keeps breaking escalates
-  instead of passing a change by accident.
+  per-test evidence (reports, screenshots, view hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. Each id
+  runs from clean app and device state (app data cleared, device settings and media as `prepare` left them), so results
+  don't depend on order or on what ran before; the herd relies on that when it reruns one failed id alone to tell a
+  flake from a failure, and in red/green runs. It exits 0 if every test passed, 1 if any failed, anything else on an
+  error that isn't a test result. The herd validates the results before believing them: valid JSON, exactly one record
+  for every requested id and none for any other, and statuses that agree with the exit code (0 means all pass, 1 means
+  at least one fail). A violation means the script is broken, not the test: it's a failed attempt with reason
+  `e2e-contract`, so a script that keeps breaking escalates instead of passing a change by accident.
 
 **The commands come from the default branch, never the change branch.** They are what decides whether the loop can go
 red at all, so an implementer that rewrote `select` to print nothing, or `run` to report success, would switch the
@@ -726,9 +729,10 @@ The layers:
 4. **Final e2e: `final_approval.kind: container`.** In *awaiting-approval*, an `e2e` unit (a reviewer unit kind) runs
    every test `select` picks for the whole change (from where it branched off the default branch to its content tip) on
    one fresh emulator. A pass is recorded as a `container`-phase final-approval pass, a bookkeeping line in
-   `review-notes.md` (see The effective final-approval record); a failure goes through the test-or-implementation rule
-   below. `final_approval.human_after: true` adds a person's pass after the unit's, for checks only a real device can
-   do.
+   `review-notes.md` (see The effective final-approval record); a failure is recorded as a `container`-phase `fail` with
+   the run's results, and a separate `triage` unit then applies the test-or-implementation rule below (see Final
+   approval). The `e2e` unit itself only runs the tests and records the verdict. `final_approval.human_after: true` adds
+   a person's pass after the unit's, for checks only a real device can do.
 5. **CI: the full suite.** The project's CI runs every end-to-end test as a required check, independent of the herd's
    selection and of its emulator setup. A failure goes through Failing checks before the archive like any other, with
    the job's artifacts handed to the triage unit (see below).
@@ -895,9 +899,10 @@ projects:
 A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer has
 five that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release notes),
 `triage` (PR review findings and final-approval failures into tasks), `archive` (mostly running `openspec archive`) and
-`e2e` (the final end-to-end run and its triage, see End-to-end tests: the red/green loop). A slot that doesn't list a
-role or kind never runs it, and a slot with `projects` runs only those projects' units. Slots that share a GPU share it
-in turn: the model server queues their requests.
+`e2e` (the final end-to-end run, which only records pass or fail with its results; a failure is then handed to a
+`triage` unit, see End-to-end tests: the red/green loop). A slot that doesn't list a role or kind never runs it, and a
+slot with `projects` runs only those projects' units. Slots that share a GPU share it in turn: the model server queues
+their requests.
 
 - **The slots are the capacity.** The scheduler gives each unit to a free slot that can run its kind for its project,
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
