@@ -423,8 +423,8 @@ bare mirror, derives each proposal's state, and dispatches work to free worker s
 fix that appeared since the last pass is picked up by the next one with no restart, because no proposal state is
 remembered between passes to go stale. Crash recovery (below) is just the first scan. The only things the orchestrator
 keeps across passes are operational stores that decide nothing about any proposal: the budget counter and usage ledger,
-the alert queue (see Monitoring), and retained snapshots of removed or changed rented machines (see Rented GPU
-backends). It reads them back on start.
+the alert queue (see Monitoring), and the rented-machine definitions, current and retained (see Rented GPU backends). It
+reads them back on start.
 
 **Crash recovery** (orchestrator container restart or a full host reboot look identical from here, given its systemd
 unit's `Restart=always` and lingering, see Containers): on start, the orchestrator, for every registered project, (1)
@@ -433,10 +433,11 @@ compute its exact next action from scratch — no assumption carried over from b
 running containers (kill any orphaned worker or model pull rather than adopt it — its state is suspect — and wait for a
 pull to exit before local dispatch resumes; the model server alone is adopted) and `gh pr list` (don't open a second PR
 for a branch that already has one), (4) reads back the operational stores (budget counter, usage ledger, alert queue,
-retained rented-machine snapshots) and starts a new proxy epoch (see Network and secrets), (5) re-enqueues and resumes.
-The cost of a crash is bounded to whatever unpushed work was sitting in a worker's ephemeral clone — redone from the
-last pushed commit (and, per the rule above, that redo never reuses the discarded partial work) — which is cheap
-specifically because workers are stateless and task granularity is small (one `tasks.md` item at a time).
+rented-machine definitions, current and retained) and starts a new proxy epoch (see Network and secrets), (5)
+re-enqueues and resumes. The cost of a crash is bounded to whatever unpushed work was sitting in a worker's ephemeral
+clone — redone from the last pushed commit (and, per the rule above, that redo never reuses the discarded partial work)
+— which is cheap specifically because workers are stateless and task granularity is small (one `tasks.md` item at a
+time).
 
 **The proposal states at a glance.** A summary of the state list below, which is the authority: the diagram leaves out
 *closed* (a closed PR is dormant until it's reopened) and most of the ways a change can stop at *needs-human*.
@@ -1237,12 +1238,12 @@ deliberately doesn't, so that the `herd` account can read it but never write it:
 Secrets live in the `herd` user's own files and reach only their containers: the GitHub App key the orchestrator, the
 model keys the proxy. They're kept in `~herd/secrets/`, owned by `herd` with mode `0700`, one file per key at `0600`, so
 no other host user (the operator included) and no group can read them whatever the umask was when they were created;
-each container mounts only its own key file, read-only. The one exception is the proxy's store of retained
-rented-machine credentials, a separate volume only the proxy mounts, read-write (see Rented GPU backends). The install
-script, which runs with root, creates the directory with those modes and checks every key file. Neither half of
-`herd doctor` can see inside it (the operator isn't `herd`, and the orchestrator mounts only its own key), so `doctor`
-checks the owner and modes through `sudo -u herd` when the operator has sudo, and otherwise reports the check as skipped
-rather than passed.
+each container mounts only its own key file, read-only. The one exception is the proxy's rented-machine credential
+store, which holds the copies used by every current and retained machine definition, a separate volume only the proxy
+mounts, read-write (see Rented GPU backends). The install script, which runs with root, creates the directory with those
+modes and checks every key file. Neither half of `herd doctor` can see inside it (the operator isn't `herd`, and the
+orchestrator mounts only its own key), so `doctor` checks the owner and modes through `sudo -u herd` when the operator
+has sudo, and otherwise reports the check as skipped rather than passed.
 
 ## Outside content
 
@@ -1462,7 +1463,7 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   boundary can't move spend between months. Besides the counter, the orchestrator keeps a usage ledger, totals per
   project and change, so the status snapshot's spend per proposal survives a restart. Counter and ledger are the
   budget's control state, kept in the herd's own files and allowed as recovery input; with the alert queue (below) and
-  the retained snapshots of removed or changed rented machines (see Rented GPU backends), they're the only state the
+  the persisted rented-machine definitions, current and retained (see Rented GPU backends), they're the only state the
   orchestrator reads back besides git. They decide only whether calls to paid backends go out, never a change's state. A
   reservation refused because it would cross the budget pauses paid dispatch the same way, so units aren't dispatched
   only to have their first call refused; the refused unit ends with a `budget` reason, which counts neither as a failed
