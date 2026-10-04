@@ -48,9 +48,11 @@ checks these rules, and the project's workflow doc adds its own:
   them is up to your final approval if the project has one (`final_approval.kind: human`), or to CI alone if it has
   none. If it has end-to-end tests the herd knows about (an `e2e` block; the project's workflow doc says), a task that
   changes behavior a test can see **always** includes or updates that test. Whether the herd runs it while implementing,
-  shown failing before the task and passing after, depends on whether the herd's host runs end-to-end tests yet. Until
-  it does, a project whose final approval is yours carries on with CI running them, while a project whose final approval
-  the herd runs (`container`) waits until the host can.
+  shown failing before the task and passing after, depends on whether the herd's host runs end-to-end tests yet. That's
+  decided once per change, when its first task starts, and holds for the change's life: a change started while the host
+  couldn't run them carries on with CI (and your final approval, if the project has one) even after the host can, only
+  changes started afterwards get the herd's loop, and a change whose final approval the herd runs (`container`) waits to
+  start until the host can.
 - **Outside content is committed with the proposal** (test fixtures, sample files) where it can be, so the herd
   doesn't stop and ask for it.
 - **No task needs a secret.**
@@ -104,9 +106,10 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
 - PR review didn't come clean within the allowed rounds, or a reviewer asked for a change of scope;
 - a task needs something the pipeline doesn't have (a device, a credential, a missing capability, or a change to
   the project's CI workflows or the local actions they use, which the herd isn't allowed to make);
-- an end-to-end test is flaky past the allowed retries (you fix it on the default branch, or, if this change added or
-  changed the test, add a task to stabilize it here), fails on the default branch too (you fix it there or waive it for
-  this change), or fails in a way the spec doesn't settle as an outdated test or a regression;
+- an end-to-end test is flaky past the allowed retries (it flakes on the default branch too, so you fix it there, or, if
+  this change added or changed the test, add a task to stabilize it here; a test this change made flaky is fixed in the
+  change without asking you), fails on the default branch too (you fix it there or waive it for this change), or fails
+  in a way the spec doesn't settle as an outdated test or a regression;
 - something went wrong after the change was archived (a failed check, a review finding, or a new commit that
   needs review), when fixing it would mean un-archiving;
 - a task needs a file from outside the project.

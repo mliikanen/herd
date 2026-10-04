@@ -86,9 +86,11 @@ e2e:                                          # end-to-end tests the herd runs i
   harness: e2e/                               # the whole harness, always run from the default branch
   tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
   boot: ./e2e/boot.sh                         # starts the unit's emulator, once; the herd keeps it running
-  prepare: ./e2e/prepare.sh                   # (re)builds and installs the app on it
+  prepare: ./e2e/prepare.sh                   # (re)builds the app, with no emulator access
+  app: app/build/outputs/apk/debug/app-debug.apk   # what prepare builds; run installs it
   select: ./e2e/select.sh                     # changed paths on stdin; relevant tests as JSON lines {id, files}
-  run: ./e2e/run.sh                           # test ids on stdin; results in $HERD_E2E_ARTIFACTS
+  run: ./e2e/run.sh                           # installs $HERD_E2E_APP, runs the ids on stdin;
+                                              # results in $HERD_E2E_ARTIFACTS
   ci_artifacts:                               # what triage may see from CI; the jobs must be secret-free
     - { job: maestro-full, artifact: maestro-results }
                                               # (the scripts always run from the default branch: see the section)
@@ -762,9 +764,11 @@ The commands' contract, so the orchestrator can handle ids and results determini
 - **`boot`** takes no arguments: it starts the unit's emulator and exits 0 once the emulator accepts installs. It's
   part of the pinned harness, and the herd runs it once per unit, before the first `prepare`, in a cgroup of its own
   that `prepare`'s clean-up (below) never touches, and stops that cgroup, emulator and all, when the unit ends.
-- **`prepare`** takes no arguments and is idempotent: it rebuilds the app from the working tree and installs it on the
-  unit's emulator, and exits 0 once tests can run; any other exit fails the unit. The herd runs it before every `run`,
-  so a rerun after an edit always tests the edited code, never the previously installed build.
+- **`prepare`** takes no arguments and is idempotent: it rebuilds the app from the working tree, leaving it at the path
+  `e2e.app` names (relative to the repository root), and exits 0 once it's built; any other exit fails the unit. It has
+  no access to the emulator: the herd copies the built app out of the tree, checking it's a regular file inside the
+  repository, into the sandbox as `$HERD_E2E_APP`, and the pinned `run` installs it. The herd runs `prepare` before
+  every `run`, so a rerun after an edit always tests the edited code, never the previously installed build.
 - **`select`** takes no arguments. It reads, on stdin, the paths that differ between a base commit and the working tree,
   committed or not, one JSON string per line (a Git path may contain a newline, so a raw path per line would be
   ambiguous), which the herd computes itself (so the implementer can run it before its commit exists, and a reviewer
@@ -782,16 +786,17 @@ The commands' contract, so the orchestrator can handle ids and results determini
 - **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
   deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
   (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
-- **`run`** reads test ids from stdin, one per line, so no id needs shell escaping. It writes
-  `$HERD_E2E_ARTIFACTS/results.jsonl`, one line per id (`{"id": ..., "status": "pass" | "fail", "detail": ...}`), and
-  per-test evidence (reports, screenshots, view hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. Each id
-  runs from clean app and device state (app data cleared, device settings and media as `prepare` left them), so results
-  don't depend on order or on what ran before; the herd relies on that when it reruns one failed id alone to tell a
-  flake from a failure, and in red/green runs. It exits 0 if every test passed, 1 if any failed, anything else on an
-  error that isn't a test result. The herd validates the results before believing them: valid JSON, exactly one record
-  for every requested id and none for any other, and statuses that agree with the exit code (0 means all pass, 1 means
-  at least one fail). A violation means the script is broken, not the test: it's a failed attempt with reason
-  `e2e-contract`, so a script that keeps breaking escalates instead of passing a change by accident.
+- **`run`** reads test ids from stdin, one per line, so no id needs shell escaping. It first installs `$HERD_E2E_APP` on
+  the unit's emulator, then runs the ids, writing `$HERD_E2E_ARTIFACTS/results.jsonl`, one line per id
+  (`{"id": ..., "status": "pass" | "fail", "detail": ...}`), and per-test evidence (reports, screenshots, view
+  hierarchies, device logs) under `$HERD_E2E_ARTIFACTS/<id>/`. Each id runs from clean app and device state (app data
+  cleared, device settings and media as `boot` left them), so results don't depend on order or on what ran before; the
+  herd relies on that when it reruns one failed id alone to tell a flake from a failure, and in red/green runs. It exits
+  0 if every test passed, 1 if any failed, anything else on an error that isn't a test result. The herd validates the
+  results before believing them: valid JSON, exactly one record for every requested id and none for any other, and
+  statuses that agree with the exit code (0 means all pass, 1 means at least one fail). A violation means the script is
+  broken, not the test: it's a failed attempt with reason `e2e-contract`, so a script that keeps breaking escalates
+  instead of passing a change by accident.
 
 **The harness comes from the default branch, never the change branch.** It decides whether the loop can go red at all,
 so an implementer that rewrote `select` to print nothing, or `run` (or any helper either loads) to report success, would
@@ -807,21 +812,24 @@ switch the safety net off. So:
 - **The boundary is enforced, not just checked.** `boot`, `select` and `run` run in a sandbox whose filesystem holds
   only the harness copy, the toolchain image (built from the default branch too), a read-only copy of the working tree's
   `e2e.tests` files, taken before `prepare` runs (so the build, which runs the change's own code, can't change what's
-  tested), the test definitions under test, and, for `run`, `$HERD_E2E_ARTIFACTS`; `boot` and `run` also get the unit's
+  tested), in which every entry must be a regular file whose path stays under an `e2e.tests` root (a symlink or a
+  gitlink there fails the unit, since following it would test content the guard never sees), the test definitions under
+  test, and, for `run`, `$HERD_E2E_ARTIFACTS` and the copied `$HERD_E2E_APP`; `boot` and `run` also get the unit's
   emulator. Nothing else of the change is readable to them, so they can't source a helper or load configuration from a
   branch-controlled path. `select` doesn't need the tree: the orchestrator computes the changed paths itself and passes
   them on stdin. `herd doctor` confirms the sandbox by having a probe in it fail to read outside those mounts. `prepare`
   is the exception by nature: building the app means running the working tree's own build (`./gradlew`, its wrapper and
   build scripts), which is the change's code, so it runs with the whole working tree, in the unit's container but
-  outside that sandbox; its build inputs are guarded paths (see Who commits, who pushes). So it can't touch what's
-  trusted later, it runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results directory in
-  existence; when it exits, the herd kills everything left in that cgroup (a background process it started included; the
-  emulator isn't among them, since `boot` started it in its own), and only then creates the artifacts directory for
-  `run`, a new one for every run, so no earlier run's evidence is lying around either, mounted into the sandbox alone,
-  which runs as a different user that the build's user can't write as. After `prepare`, the herd also compares the
-  working tree's `e2e.tests` files with the copy it took before: a build that changed them fails the unit, so a test
-  can't be weakened for one run without a commit that shows it. The change contributes the app being tested and its
-  tests, nothing that decides selection or reads results.
+  outside that sandbox and with no access to the unit's emulator, so it can't tamper with the device the trusted `run`
+  tests on; its build inputs are guarded paths (see Who commits, who pushes). So it can't touch what's trusted later, it
+  runs as its own user in its own cgroup, with `$HERD_E2E_ARTIFACTS` unset and no results directory in existence; when
+  it exits, the herd kills everything left in that cgroup (a background process it started included; the emulator isn't
+  among them, since `boot` started it in its own), and only then creates the artifacts directory for `run`, a new one
+  for every run, so no earlier run's evidence is lying around either, mounted into the sandbox alone, which runs as a
+  different user that the build's user can't write as. After `prepare`, the herd also compares the working tree's
+  `e2e.tests` files with the copy it took before: a build that changed them fails the unit, so a test can't be weakened
+  for one run without a commit that shows it. The change contributes the app being tested and its tests, nothing that
+  decides selection or reads results.
 
 - **`e2e.tests` and `e2e.harness` may not overlap**, or copying the harness would replace a changed test with its
   default-branch version; manifest validation rejects a manifest where they do.
@@ -893,7 +901,11 @@ The layers:
 `triage` unit after the final e2e, a person's final-approval failure, or CI) follows the same order, so the answer comes
 from evidence rather than taste:
 
-1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Each flake leaves a fixed
+1. **Rerun it.** If it passes on a rerun, it's intermittent, but that alone doesn't say whose: for a test this change
+   didn't add or change, the triager also runs it on the merge-base build (step 2's) `caps.flaky_retries` + 1 times. If
+   it fails there at least once, the flakiness predates the change: it's flaky, so record it, retry, change nothing. If
+   it's stable there, this change made it intermittent, which is a regression like any other failure the change caused:
+   go on to 3. A change-local test that passes on a rerun is flaky and the change's own. Each flake leaves a fixed
    record, written by whoever saw it, since reruns happen inside disposable units: the implementer lists it in its
    `E2E:` section (`- <test id> flaky xN`), a task review or `triage` unit adds `e2e-flaky <test id> <sha> xN` to its
    verdict commit, N counting every flaky outcome in the unit, not just whether there was one, and CI triage records
@@ -1175,9 +1187,12 @@ session that displays it runs on the host (see Launching and watching the herd).
 orchestrator starts one container per unit of work (it has to, to mount that unit's clone), through the Podman API,
 from a per-project, per-role image:
 
-- **Toolchain image** — built from the project's `.herd/toolchain.Dockerfile` (read from the default branch),
-  tagged with the hash of that file, rebuilt when it changes. Contains the language runtimes and SDKs the gate
-  needs. Must be Debian/Ubuntu-based so the role layer can install onto it.
+- **Toolchain image** — built from the project's `.herd/toolchain.Dockerfile` and its build context at a default-branch
+  commit, tagged with a hash of that whole context plus the base image's digest, and rebuilt only when that hash
+  changes. Workers normally use the image for the default branch's tip; a change with end-to-end tests uses the one for
+  its pinned commit (see End-to-end tests), built on first need, and an image is kept while any open change pins it.
+  Contains the language runtimes and SDKs the gate needs. Must be Debian/Ubuntu-based so the role layer can install onto
+  it.
 - **Role layer** — generic, from the herd repo, applied with `FROM <toolchain image>`:
   - *implementer*: the implementer harness, `git`, the `openspec` CLI (gates typically run `openspec validate`),
     and the generic `SYSTEM_PROMPT.md` plus the project's optional addition. Gets its clone as a volume; reads its
