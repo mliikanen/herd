@@ -1199,9 +1199,10 @@ one.
   never returns to dispatch, it also withdraws the confirmation, so retiring the snapshot needs a fresh
   `herd machines stopped <snapshot id>` once it really has stopped, since it may well have been billing all along
   (health checks keep running through the confirmation, so the herd knows the endpoint was up the whole time), while
-  dispatch stays off until the operator either stops it or runs `herd machines started`. Since unhealthy may still mean
-  billing, an active machine whose health checks fail for longer than `alerts.infra_after` opens a "machine unhealthy,
-  not confirmed stopped" alert episode, cleared when its health returns or the operator confirms it stopped.
+  dispatch stays off until the operator runs `herd machines started` (stopping the machine for real leaves the
+  confirmation in place, now simply true). Since unhealthy may still mean billing, an active machine whose health checks
+  fail for longer than `alerts.infra_after` opens a "machine unhealthy, not confirmed stopped" alert episode, cleared
+  when its health returns or the operator confirms it stopped.
 - **Idle machines.** So that a machine left running for nothing doesn't burn money unnoticed, an idle machine raises an
   alert: up and healthy with no call in flight for its `idle_alert` (default 30 minutes), counted from the end of the
   last call, or, for a machine that hasn't served one since it became healthy, from the start of that healthy interval,
@@ -1268,20 +1269,20 @@ one.
   total for the billing month up to that cutoff) minus everything already counted for the source up to the cutoff, the
   herd's own settled accrual (from the ledger's timestamped entries) and any earlier adjustment alike, so the source's
   total up to the cutoff becomes the billed amount, and a later reconciliation corrects it rather than adding to it. A
-  cutoff earlier than the source's last one is refused. Nothing is deleted: the detailed entries keep their project,
-  change and idle attribution, so spend per proposal is still what the herd measured, and the adjustment is attributed
-  to the source alone, shown separately as reconciliation. Every other source's spend is left alone, and every accrual
-  and reservation after the cutoff stays, along with every reservation still unresolved, whatever its timestamp: a call
-  in flight at the cutoff may or may not be on the bill, so its reservation stays in the counter until it settles and is
-  replaced by the reported usage as usual, dated at the call's start. That can count such a call twice (once in the
-  bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the next
-  reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new one, the
-  cutoff and the reason go to the event log. Restoring a lost counter works the same way, one source at a time, so a
-  later reconciliation never double-counts an unscoped total: the operator gives each source's month-to-date bill with
-  the cutoff at now, and paid dispatch, paused anyway, resumes once every source that may have spend this period has
-  one: every source the config names (every cloud billing account and every rented machine, current or retained), plus
-  every source in the period's source list, a small record kept with the persisted machine definitions, apart from the
-  counter, of every source that has accrued anything this billing period, so an account removed or a machine retired
+  cutoff earlier than the source's last one, or in the future, is refused. Nothing is deleted: the detailed entries keep
+  their project, change and idle attribution, so spend per proposal is still what the herd measured, and the adjustment
+  is attributed to the source alone, shown separately as reconciliation. Every other source's spend is left alone, and
+  every accrual and reservation after the cutoff stays, along with every reservation still unresolved, whatever its
+  timestamp: a call in flight at the cutoff may or may not be on the bill, so its reservation stays in the counter until
+  it settles and is replaced by the reported usage as usual, dated at the call's start. That can count such a call twice
+  (once in the bill, once settled), never zero times, the same direction the counter errs in everywhere else, and the
+  next reconciliation, with its later cutoff, replaces the settled entry along with the rest. The old total, the new
+  one, the cutoff and the reason go to the event log. Restoring a lost counter works the same way, one source at a time,
+  so a later reconciliation never double-counts an unscoped total: the operator gives each source's month-to-date bill
+  with the cutoff at now, and paid dispatch, paused anyway, resumes once every source that may have spend this period
+  has one: every source the config names (every cloud billing account and every rented machine, current or retained),
+  plus every source in the period's source list, a small record kept with the persisted machine definitions, apart from
+  the counter, of every source that has accrued anything this billing period, so an account removed or a machine retired
   earlier in the month is still asked for. Hours are attributed for the usage ledger by time, not tokens: while units
   are calling the machine, through any of its backends, its time is split evenly among them, and their share goes to
   their change; time with no call in flight goes to the machine's own idle bucket, never to a change. Hours are what the
