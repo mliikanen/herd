@@ -80,7 +80,7 @@ final_approval:
   kind: human                                 # or: none, or container (see End-to-end tests: the red/green loop)
   instructions: |                             # shown in the herd's status pane and in the draft PR body
     Run the end-to-end suite for the areas this change touches; record pass/fail in review-notes.md.
-  human_after: false                          # container only: also require a person's pass afterwards
+  # human_after: true                        # with kind: container only: also require a person's pass afterwards
 e2e:                                          # end-to-end tests the herd runs itself; required by kind: container
   harness: e2e/                               # the whole harness, always run from the default branch
   tests: [maestro/**]                         # the e2e test files: built-in guarded, carried into red runs
@@ -92,7 +92,7 @@ e2e:                                          # end-to-end tests the herd runs i
                                               # (the scripts always run from the default branch: see the section)
 missing_capabilities:                         # a task that needs one of these escalates instead of being attempted
   - macOS / Xcode
-caps: { review_rounds: 3, added_tasks: 3, failed_attempts: 3, gate_fixes: 3, pr_review_rounds: 5 }
+caps: { review_rounds: 3, added_tasks: 3, failed_attempts: 3, gate_fixes: 3, flaky_retries: 2, pr_review_rounds: 5 }
 prompts:                                      # optional, appended to the generic role prompts
   implementer: .herd/implementer.md
   reviewer: .herd/reviewer.md
@@ -103,11 +103,11 @@ pr_review:                                    # see Following up on PR review
   checks_timeout: 60m                         # a required check with no result by then escalates
 ```
 
-**Defaults** for what a manifest leaves out: `caps` as in the example (3, 3, 3, 3 and 5), `pr_review.timeout: 15m` and
-`pr_review.checks_timeout: 60m`.
-They come from the first project's PRs before the herd existed: one PR took five Copilot rounds to come clean,
-which sets `pr_review_rounds`, and Copilot re-reviewed about 2 to 4 minutes after each push, which a 15-minute
-timeout covers with room for a slow round. The other caps are still guesses (see Open questions).
+**Defaults** for what a manifest leaves out: `caps` as in the example (3, 3, 3, 3, 2 and 5), `pr_review.timeout: 15m`
+and `pr_review.checks_timeout: 60m`. They come from the first project's PRs before the herd existed: one PR took five
+Copilot rounds to come clean, which sets `pr_review_rounds`, and Copilot re-reviewed about 2 to 4 minutes after each
+push, which a 15-minute timeout covers with room for a slow round. The other caps are still guesses (see Open
+questions).
 
 Project knowledge the agents need (conventions, where things live, test strategy) comes from the project's own
 `CLAUDE.md`/`AGENTS.md` and `openspec/config.yaml`, which the harness reads like any interactive session would — the
@@ -380,13 +380,14 @@ push-capable credential in the system.
 by a model, and touching only the file each names. The complete list:
 - **a failed attempt's record** in `review-notes.md` (below);
 - **a mechanical `needs-human` marker** in `review-notes.md`, for the escalations that need no judgment: a cap reached
-  (`caps.review_rounds`, `caps.failed_attempts`, `caps.gate_fixes`, `caps.added_tasks`, `caps.pr_review_rounds`), an
-  update-branch conflict, a required check past `pr_review.checks_timeout`, and the three post-archive cases in
-  *archived-pending* (a failed check, an open review finding, a non-bookkeeping commit). Escalations that need judgment
-  (a request for outside content, holistic feedback that maps to no task, a finding the reviewer can't map to a task)
-  are written by the reviewer in its verdict commit;
+  (`caps.review_rounds`, `caps.failed_attempts`, `caps.gate_fixes`, `caps.flaky_retries`, `caps.added_tasks`,
+  `caps.pr_review_rounds`), an update-branch conflict, a required check past `pr_review.checks_timeout`, and the three
+  post-archive cases in *archived-pending* (a failed check, an open review finding, a non-bookkeeping commit).
+  Escalations that need judgment (a request for outside content, holistic feedback that maps to no task, a finding the
+  reviewer can't map to a task) are written by the reviewer in its verdict commit;
 - **an `inputs.md` entry** for content provided through `herd provide` (see Outside content);
-- **the `e2e-mode on|off` line** that fixes a change's end-to-end mode at its first dispatch (see End-to-end tests).
+- **the `e2e-mode` line** that fixes a change's end-to-end mode and final-approval kind at its first dispatch (see
+  End-to-end tests).
 
 Everything else on a change branch is a worker's commit, a person's, or an update-branch merge.
 
@@ -557,7 +558,8 @@ silently dropped — comes from two rules together, not from the scan alone:
   **The effective final-approval record** is kept per **phase**: each final-approval record names its phase, `container`
   (written by an `e2e` unit) or `human` (written through `herd-resolve`), and a phase's effective record is its latest
   record in git order: a `pass`, a `fail`, or a `rerun` (the one exception is `final-approval rerun: <reason>`, which
-  names no phase: it applies to every phase the change requires). A project requires the `human` phase with
+  names no phase: it applies to every phase the change requires). A change requires the phases of the approval kind
+  fixed at its first dispatch (see Emulators in workers), not whatever the manifest says now: the `human` phase with
   `kind: human`, the `container` phase with `kind: container`, and both, container first, with `kind: container` and
   `human_after: true`; *awaiting-approval* holds until every required phase's effective record is a pass, and states 7
   and 8's "the effective final-approval record a pass" means every required phase. History is additive, so an old pass
@@ -707,18 +709,19 @@ The commands' contract, so the orchestrator can handle ids and results determini
   The herd runs it before every `run`, so a rerun after an edit always tests the edited code, never the previously
   installed build.
 - **`select`** takes no arguments. It reads, on stdin, the paths that differ between a base commit and the working tree,
-  committed or not, one per line, which the herd computes itself (so the implementer can run it before its commit
-  exists, and a reviewer runs it for the commit under review); it can read the `e2e.tests` files, but nothing else of
-  the change (see below). It prints the relevant tests on stdout as JSON lines, one per test:
-  `{"id": ..., "files": [...]}`, where `files` lists the repository paths that define the test (all under `e2e.tests`).
-  That's how the herd knows which selected tests a change adds or changes: a test is change-local if any of its files is
-  among the changed paths, which decides both the required red run and whether step 2 below compares with the default
-  branch. Every added or modified path under `e2e.tests` among the changed paths must appear in at least one selected
-  test's `files` (a deleted one is the tamper guard's business), so a selector that doesn't recognize a new test or
-  helper can't make its red/green proof disappear by selecting nothing. Ids are unique, and each is a safe single path
-  component (only letters, digits, `.`, `_` and `-`, and never `.` or `..`), since it also names the test's evidence
-  directory; output that breaks this is a failed attempt with reason `e2e-contract`. A deterministic script, so
-  selection is reviewable and repeatable and an agent can't quietly skip a test. Any non-zero exit fails the unit.
+  committed or not, one JSON string per line (a Git path may contain a newline, so a raw path per line would be
+  ambiguous), which the herd computes itself (so the implementer can run it before its commit exists, and a reviewer
+  runs it for the commit under review); it can read the `e2e.tests` files, but nothing else of the change (see below).
+  It prints the relevant tests on stdout as JSON lines, one per test: `{"id": ..., "files": [...]}`, where `files` lists
+  the repository paths that define the test (all under `e2e.tests`). That's how the herd knows which selected tests a
+  change adds or changes: a test is change-local if any of its files is among the changed paths, which decides both the
+  required red run and whether step 2 below compares with the default branch. Every added or modified path under
+  `e2e.tests` among the changed paths must appear in at least one selected test's `files` (a deleted one is the tamper
+  guard's business), so a selector that doesn't recognize a new test or helper can't make its red/green proof disappear
+  by selecting nothing. Ids are unique, and each is a safe single path component (only letters, digits, `.`, `_` and
+  `-`, and never `.` or `..`), since it also names the test's evidence directory; output that breaks this is a failed
+  attempt with reason `e2e-contract`. A deterministic script, so selection is reviewable and repeatable and an agent
+  can't quietly skip a test. Any non-zero exit fails the unit.
 - **`tests`** names the end-to-end test files. They're built-in guarded paths: changing one in any way, not only
   deleting it or adding a skip marker, needs a `change` declaration under `Guarded:` and the task review's acceptance
   (see Who commits, who pushes). And they're what a red run carries over (see layer 2).
@@ -806,7 +809,10 @@ The layers:
 **Test or implementation?** When a test fails, whoever triages it (the implementer in its own loop, the reviewer, or a
 `triage` unit after the final e2e or CI) follows the same order, so the answer comes from evidence rather than taste:
 
-1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing.
+1. **Rerun it.** If it passes on a rerun, it's flaky: record it, retry, change nothing. Flaky outcomes are counted per
+   test (or CI check) per change, and when the count reaches `caps.flaky_retries` the change escalates to `needs-human`
+   ("flaky test") instead of retrying again, so an intermittently failing test can't cycle forever; the person fixes the
+   test or its environment in a separate change, or waives it like a pre-existing failure.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, the same one
    the harness is pinned to), but only if the same test definition exists unchanged there. Not the default branch's
    current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like this
@@ -864,7 +870,10 @@ it only once the emulator probe in Build plan step 2's reality check passes on t
 without KVM, where it must stay 0), no e2e layer runs at all, whatever a project's `e2e` block says: no per-task loop,
 no red/green proof, no `e2e` units. Capacity is re-read every scan, but a change can't switch mode halfway: whether its
 e2e layers apply is decided once, when its first unit is dispatched, and recorded by the orchestrator as a bookkeeping
-line in `review-notes.md` (`e2e-mode on` or `e2e-mode off`), which holds for the change's life. A change started with
+line in `review-notes.md`, which holds for the change's life. The line fixes the final-approval kind at the same moment,
+since the two must agree (an "off" change can't take a container pass):
+`e2e-mode <on|off> approval <none|human|container|container+human>`. A later change to the manifest's `final_approval`
+applies to new changes only, so a change in flight never finds itself owing a phase it can't run. A change started with
 e2e on keeps owing its red/green proofs and its reviews' reruns: if capacity later drops to 0, its units that need an
 emulator wait (the status pane says so, and it alerts once the wait passes `alerts.infra_after`) rather than skip. A
 change started with e2e off stays off, with CI covering it, even if capacity appears midway, so no accepted task is left
