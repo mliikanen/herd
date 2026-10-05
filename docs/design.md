@@ -862,7 +862,9 @@ rather than taste:
 1. **Rerun it.** A test that passes on a rerun is intermittent. For a test the change didn't touch, a few more runs on
    the change's merge-base say whose that is: flaky there too means it was already flaky, so it's recorded and retried;
    stable there means this change made it intermittent, a regression (go to 3). Flakes are counted per test, and at
-   `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying forever.
+   `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying forever. Only an
+   attributed flake counts: for a test the change didn't touch, the merge-base runs come first, so a change that made a
+   test intermittent gets a fix task rather than hitting the cap as "flaky test".
 2. **Run it on the merge-base build** (the default-branch commit the change is based on, not the moving tip, which may
    carry an unrelated fix), for a test the change didn't add or change. Passing there means this change broke it (go to
    3). Failing there too means it was already broken, which isn't this change's job: the change escalates to
@@ -1645,7 +1647,8 @@ The values above are placeholders, tuned after the smoke test like the caps (see
 
 The orchestrator keeps the change's PR body to a generic template (opening the PR first if nobody did): summary, test
 coverage, review-round count per task, flagged human-review-worth items from the holistic review, the person's check and
-its instructions (once ready, when the change owes one), the final e2e's result, and — when `release_notes: true` — a
+its instructions (once ready, when the change owes one), any manual check approved as a known default-branch failure,
+with the reason the approving review gave, the final e2e's result, and — when `release_notes: true` — a
 `## Release notes` section the reviewer writes in its holistic pass, for the project's own release automation to lift if
 it wants to.
 
