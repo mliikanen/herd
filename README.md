@@ -19,8 +19,9 @@ review and merge the result.
 - **Agents are untrusted.** Workers run in disposable containers with no credentials. They can't push, can't reach the
   default branch, and can't change the herd's configuration or the files that decide what's tested. A proxy holds every
   API key and meters every paid call against a monthly budget.
-- **A red/green loop around the agents.** For projects with end-to-end tests, each task has to show that its tests
-  fail before the change and pass after it. CI runs the full suite as a second net.
+- **A red/green loop around the agents.** For projects with end-to-end tests that can run on an emulator, and once the
+  host has emulator capacity, the herd runs the tests relevant to each task while implementing it, and a test the task
+  adds or changes has to fail before the change and pass after it. CI runs the full suite as a second net.
 - **Simple, recoverable state.** The orchestrator is plain code with no model. It works out every change's state from
   git and GitHub on each pass, so a crash or a reboot loses at most a task's unpushed work.
 - **Any project, any model.** Project specifics live in the project's `.herd/` manifest. Each worker slot can run a
