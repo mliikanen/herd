@@ -202,15 +202,16 @@ answer comes from evidence rather than taste:
    non-test failure, `"-"`, in one check never shares a count with another check's), and when the count reaches
    `caps.flaky_retries` the change escalates to `needs-human` ("flaky test") instead of retrying again, so an
    intermittently failing test can't cycle forever. Units enforce the cap as they go, since reruns happen inside one
-   unit: the change's recorded count plus the unit's own flakes so far must stay below the cap before another rerun, and
-   when it doesn't, the unit stops retrying (an implementer commits what it has with an `escalate` request, "flaky
-   test"; a reviewer or triage unit records its flakes and escalates); for a test the change didn't add or change, the
-   person fixes the test or its environment in a separate change and resolves the stop once that's merged (update-branch
-   comes first, as for a "fails on the default branch too" stop); for a change-local test, the flakiness is this
-   change's own, so the person resolves the stop by adding a task to stabilize it to this change's `tasks.md`
-   (`herd-resolve` helps), or fixes the environment if that's the cause. Either way the test's flake count starts over
-   from that resolution. A flaky test can't be waived: a waiver needs a failure on the merge-base to point at, and a
-   flake may not have one.
+   unit (for a test the change didn't add or change, only once the merge-base runs have attributed the flake as
+   pre-existing; until then nothing counts toward the cap): the change's recorded count plus the unit's own flakes so
+   far must stay below the cap before another rerun, and when it doesn't, the unit stops retrying (an implementer
+   commits what it has with an `escalate` request, "flaky test"; a reviewer or triage unit records its flakes and
+   escalates); for a test the change didn't add or change, the person fixes the test or its environment in a separate
+   change and resolves the stop once that's merged (update-branch comes first, as for a "fails on the default branch
+   too" stop); for a change-local test, the flakiness is this change's own, so the person resolves the stop by adding a
+   task to stabilize it to this change's `tasks.md` (`herd-resolve` helps), or fixes the environment if that's the
+   cause. Either way the test's flake count starts over from that resolution. A flaky test can't be waived: a waiver
+   needs a failure on the merge-base to point at, and a flake may not have one.
 2. **Run it on the build of the change's merge-base** (the default-branch commit the change is based on, normally also
    the one the harness is pinned to), but only if the same test definition exists unchanged there. Not the default
    branch's current tip: it may have picked up an unrelated fix since, which would make a pre-existing failure look like
