@@ -16,9 +16,10 @@ review and merge the result.
   task, fixing review feedback, testing and archiving run unattended.
 - **Stuck work stops instead of looping.** A change the herd can't finish on its own stops at `needs-human`, with the
   reason and a way to resolve it.
-- **Agents are untrusted.** Workers run in disposable containers with no credentials. They can't push, can't reach the
-  default branch, and can't change the herd's configuration or the files that decide what's tested. A proxy holds every
-  API key and meters every paid call against a monthly budget.
+- **Agents are untrusted.** Workers run in disposable containers holding no API key or long-lived secret, only a
+  short-lived token for their own unit. They can't push, can't reach the default branch, and can't change the herd's
+  configuration or the project's CI workflows; changes to tests and build configuration have to be declared and accepted
+  in review. A proxy holds every API key and meters every paid call against a monthly budget.
 - **A red/green loop around the agents.** For projects with end-to-end tests that can run on an emulator, and once the
   host has emulator capacity, the herd runs the tests relevant to each task while implementing it, and a test the task
   adds or changes has to fail before the change and pass after it. CI runs the full suite as a second net.
