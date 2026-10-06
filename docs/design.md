@@ -1104,11 +1104,14 @@ What an agent can use inside a unit comes from three layers, and it gets only wh
   unit gets read-only evidence on top. No role ever gets `gh` or any GitHub credential, `podman`, `ssh`- or `curl`-style
   network tools, or a credential for any service: those stay with the orchestrator and the proxy.
 - **The project declares what it needs**, in `.herd/`, without naming a harness: command-line tools go in its toolchain
-  image (an Android SDK, say), and MCP servers in its manifest, each with the command that starts it and the unit kinds
-  that get it (`mcp:` in The project manifest). The herd wires each server into whichever harness the unit runs, so a
-  project never writes harness-specific configuration. A declared server runs inside the unit's own container, under the
-  same sandbox, mounts and egress allow-list as the agent, and gets no credential; `herd doctor` starts each one in a
-  real worker and checks it answers.
+  image (an Android SDK, say), and MCP servers in its manifest, each with the command that starts it (`mcp:` in The
+  project manifest). The herd wires each server into whichever harness the unit runs, so a project never writes
+  harness-specific configuration. A server's `kinds` only chooses which units it's wired into, to keep agents' tool
+  lists short; it isn't an access boundary, since the server's command is in the shared toolchain and any unit could run
+  it. The boundary is the container: what the toolchain installs and what the sandbox, mounts and egress allow, the same
+  for every unit kind of the project. A declared server runs inside the unit's own container, under the same sandbox,
+  mounts and egress allow-list as the agent, and gets no credential; `herd doctor` starts each one in a real worker and
+  checks it answers.
 - **Host config holds what can't live in a repo**: extra egress beyond a project's own list, and the credentials the
   herd itself uses. A service that needs a credential (a hosted issue tracker's API, say) isn't available to workers at
   all: beyond the model gateway, the proxy only tunnels TLS it can't see into, so it couldn't inject a credential, and a
