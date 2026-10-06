@@ -35,7 +35,7 @@ One herd instance runs per host and serves every **registered project**. The spl
 |---|---|
 | Orchestrator, state machine, queue, crash recovery | Toolchain image: what a worker needs to build and test (`toolchain.Dockerfile`) |
 | Role layers (implementer harness, `claude`, `git`, `openspec`) and each role's tool ceiling | Gate: the commands that must pass before a commit is accepted, and what the tamper guard protects |
-| MCP wiring per harness; proxy-injected credentials | Tools in the toolchain image; MCP servers (see Tools and access) |
+| MCP server wiring for each harness | Tools in the toolchain image; MCP servers (see Tools and access) |
 | Role system prompts | Optional prompt additions per role (appended, never replacing) |
 | Planner skills (`herd-propose`, `herd-ready`, `herd-resolve`), installed by `herd init` | A short workflow doc for the project's people: what's specific to them (see What a project knows) |
 | Commit validation, push, PR lifecycle, update-branch | Network egress beyond the model endpoint (package registries) |
@@ -141,8 +141,9 @@ could widen its own egress or weaken its own gate. Commit validation also reject
   `missing_capabilities` entry.
 - The default branch is **PR-only for everyone**, with no bypass. Nothing needs one: a proposal lives on its own branch
   from its first commit and reaches the default branch only as the one merge of its PR (see The hand-off). Changes to
-  `.herd/` and `.github/` also need a code owner's review: a `CODEOWNERS` entry naming people for those paths, and
-  code-owner review required by the default branch's protection (see Tools and access).
+  `.herd/` and `.github/` also need a code owner's review: a `CODEOWNERS` entry naming people for those paths, and both
+  code-owner review and approval of the most recent reviewable push required by the default branch's protection (see
+  Tools and access).
 
 ## What a project knows about the herd
 
@@ -198,8 +199,8 @@ These are the generic rules `herd-ready` checks. A project's workflow doc adds i
    skills. Review the files and land them by PR.
 2. Add a CI workflow that runs the gate on every PR. Make it a required status check.
 3. **(manual, repo admin)** Branch protection on the default branch: PRs required for everyone (no bypass), the CI check
-   required, branches up to date before merging, and code-owner review required, with a `CODEOWNERS` entry naming people
-   for `.herd/` and `.github/`.
+   required, branches up to date before merging, code-owner review and approval of the most recent reviewable push
+   required, and a `CODEOWNERS` entry naming people for `.herd/` and `.github/`.
 4. **Move proposals already on the default branch onto change branches**: one commit removes them from the
    default branch, and each gets `<branch_prefix><change>`, branched from that commit, holding only its own
    proposal. After that, the default branch's `openspec/changes/` holds only `archive/`.
@@ -1108,10 +1109,12 @@ What an agent can use inside a unit comes from three layers, and it gets only wh
   project never writes harness-specific configuration. A declared server runs inside the unit's own container, under the
   same sandbox, mounts and egress allow-list as the agent, and gets no credential; `herd doctor` starts each one in a
   real worker and checks it answers.
-- **Host config holds what can't live in a repo**: credentials, extra egress beyond a project's own list, and any remote
-  service. A service that needs a credential (a hosted issue tracker's API, say) is reached only through the proxy,
-  which injects the credential on the way out the way it does for model keys (see Network and secrets), so the
-  credential never enters a worker. Only the operator adds these; a project can only ask.
+- **Host config holds what can't live in a repo**: extra egress beyond a project's own list, and the credentials the
+  herd itself uses. A service that needs a credential (a hosted issue tracker's API, say) isn't available to workers at
+  all: beyond the model gateway, the proxy only tunnels TLS it can't see into, so it couldn't inject a credential, and a
+  worker must never hold one. Work that needs such a service stops for a person, like any missing capability; a
+  proxy-side gateway for it is a later decision (see Open questions). Only the operator changes host config; a project
+  can only ask.
 
 **Widening access.** An agent that needs something its unit doesn't have (a tool, a server, a host it can't reach) asks
 with a `capability` request in its commit (see Who commits, who pushes). The task review checks that the need is real,
@@ -1124,7 +1127,9 @@ own access, because `.herd/` and CI configuration are read from the default bran
 PR. The herd's own App can open PRs, so a bug or a compromised orchestrator could propose one, and with branch
 protection requiring no approvals, nothing would stop its merge but the person merging. So a project also requires
 **code-owner review** for those paths: a `CODEOWNERS` entry naming people (never the herd's App) for `.herd/` and
-`.github/`, and "require review from code owners" in the default branch's protection (see Requirements on a project).
+`.github/`, "require review from code owners" in the default branch's protection, and "require approval of the most
+recent reviewable push", so an approval can't be reused for contents pushed after it (see Requirements on a project).
+For a herd PR touching those paths, that means the person approves its final state, after the herd's last push.
 `herd doctor` checks both.
 
 ## Containers
@@ -1570,8 +1575,8 @@ log, the orchestrator never reads it back.
   - **In the orchestrator**, as a request (see The herd's own account): it builds the project's worker images, runs the
     gate on the default branch inside a worker container with the real mount/egress limits (proving the toolchain is
     sufficient and the egress list complete), starts each declared MCP server in a worker and checks it answers, checks
-    branch protection, required checks and code-owner review for `.herd/` and `.github/` through the GitHub App, and
-    checks that every model backend answers (see Models).
+    branch protection, required checks and code-owner review for `.herd/` and `.github/` with approval of the most
+    recent push through the GitHub App, and checks that every model backend answers (see Models).
   - **In the CLI, on the host**, as the operator: that `herdr` is installed with the planner agent's integration and
     `[ui.toast] delivery = "system"`, that the `herd` user has lingering on (`loginctl show-user herd`) and
     subordinate UID/GID ranges, and that the orchestrator's heartbeat is fresh.
@@ -1800,6 +1805,8 @@ Each waits for the point where it can be answered with evidence rather than gues
     gateway is the herd's own component.
 - **At Build plan step 5** (the herdr bridge): the exact command for attaching a client. herdr's docs (read
   2026-10-04) give the rest: `pane.report_agent`, `pane.report_metadata`, `herdr notification show`.
+- **When a project first needs a credentialed service in a worker** (an issue tracker's API, say): a gateway in the
+  proxy for it, like the model gateway, which would terminate TLS for that service only and inject its credential.
 - **After the smoke test** (Onboarding a project, step 7):
   - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each), and `flaky_retries` (2).
     Projects can override them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see
