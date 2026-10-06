@@ -42,7 +42,8 @@ review and merge the result.
 **Each project**
 - Uses OpenSpec, with changes in `openspec/changes/`.
 - Is hosted on GitHub, with a **PR-only default branch** for everyone (no bypass), up-to-date branches before merging,
-  and required CI checks that run the project's gate on every push to a PR.
+  required CI checks that run the project's gate on every push to a PR, and code-owner review required for `.herd/` and
+  `.github/`, so changes to the herd's configuration or CI always need a person's approval.
 - Has a gate (build, lint, unit tests) that runs headless in a Linux container. Anything that can't run there is
   either the herd's own emulator run, a person's check in PR review, or a capability the project declares as missing.
 
@@ -66,8 +67,8 @@ Once the herd is built, setting it up on a host is:
    with defaults (the gate, a toolchain image, guarded paths, review settings), installs the planner skills
    (`/herd-propose`, `/herd-ready`, `/herd-resolve`) and registers the project with the herd. Review the files and land
    them by PR.
-2. **Set up CI and branch protection.** CI runs the gate on every PR as a required check, and the default branch is
-   PR-only with no bypass.
+2. **Set up CI and branch protection.** CI runs the gate on every PR as a required check, the default branch is PR-only
+   with no bypass, and a `CODEOWNERS` entry names people for `.herd/` and `.github/`, with code-owner review required.
 3. **Install the herd's GitHub App** on the repository. Until then the project shows as inactive with
    "App not installed".
 4. **Move existing proposals onto change branches.** Each change lives on its own `change/<name>` branch from its
