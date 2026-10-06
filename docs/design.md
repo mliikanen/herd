@@ -1112,12 +1112,13 @@ What an agent can use inside a unit comes from three layers, and it gets only wh
   for every unit kind of the project. A declared server runs inside the unit's own container, under the same sandbox,
   mounts and egress allow-list as the agent, and gets no credential; `herd doctor` starts each one in a real worker and
   checks it answers.
-- **Host config holds what can't live in a repo**: extra egress beyond a project's own list, and the credentials the
-  herd itself uses. A service that needs a credential (a hosted issue tracker's API, say) isn't available to workers at
-  all: beyond the model gateway, the proxy only tunnels TLS it can't see into, so it couldn't inject a credential, and a
-  worker must never hold one. Work that needs such a service stops for a person, like any missing capability; a
-  proxy-side gateway for it is a later decision (see Open questions). Only the operator changes host config; a project
-  can only ask.
+- **Host config holds what can't live in a repo**: the operator's approval of egress a project lists but can't grant
+  itself (a private address range, see Network and secrets), never destinations the project didn't list, and the
+  credentials the herd itself uses. A service that needs a credential (a hosted issue tracker's API, say) isn't
+  available to workers at all: beyond the model gateway, the proxy only tunnels TLS it can't see into, so it couldn't
+  inject a credential, and a worker must never hold one. Work that needs such a service stops for a person, like any
+  missing capability; a proxy-side gateway for it is a later decision (see Open questions). Only the operator changes
+  host config; a project can only ask.
 
 **Widening access.** An agent that needs something its unit doesn't have (a tool, a server, a host it can't reach) asks
 with a `capability` request in its commit (see Who commits, who pushes). The task review checks that the need is real,
