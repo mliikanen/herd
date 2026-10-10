@@ -411,8 +411,8 @@ by a model, and touching only the file each names. The complete list:
   implementation?), `caps.added_tasks`, `caps.pr_review_rounds`), an update-branch conflict, a required check past
   `pr_review.checks_timeout`, and the three post-archive cases in *archived-pending* (a failed check, an open review
   finding, a non-bookkeeping commit). Escalations that need judgment (a request for outside content, a capability the
-  reviewer itself lacks, holistic feedback that maps to no task, a finding the reviewer can't map to a task) are written
-  by the reviewer in its verdict commit;
+  reviewer or `triage` unit itself lacks, holistic feedback that maps to no task, a finding the reviewer can't map to a
+  task) are written by the reviewer or `triage` unit that found them, in its verdict commit;
 - **an `inputs.md` entry** for content provided through `herd provide` (see Outside content);
 - **the `e2e-mode` line** that fixes a change's end-to-end mode and final-approval kind at its first dispatch (see
   End-to-end tests);

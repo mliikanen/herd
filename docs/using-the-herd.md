@@ -151,11 +151,12 @@ The herd stops at `needs-human` instead of looping when it can't continue on its
   needs review), when fixing it would mean un-archiving;
 - a task needs a file from outside the project.
 
-Fix it on the branch (edit `tasks.md`, resolve the conflict, revise the proposal) and mark the stop resolved. A stop for
-a missing capability is the exception: grant it first where it lives, in the project's `.herd/` by a PR you merge or in
-the host config, and resolve the stop once it's in place, or resolve it with a reason if you decline.
-`/herd-resolve <name>` shows the reason, helps with the fix and commits the resolution. The herd picks the change back
-up on its next pass.
+When the remedy belongs to this change, fix it on the branch (edit `tasks.md`, resolve the conflict, revise the
+proposal) and mark the stop resolved. When it lives elsewhere, put it in place there first and then resolve the stop: a
+fix on the default branch for a test that's broken there too, or, for a missing capability, the access granted where it
+lives, in the project's `.herd/` by a PR you merge or in the host config (if you decline, resolve the stop with a
+reason). `/herd-resolve <name>` shows the reason, helps with the fix and commits the resolution. The herd picks the
+change back up on its next pass.
 
 **A requested file** is best committed to the branch, at a path inside the project, with a line in the change's
 `inputs.md` saying where it came from. If it can't live in the repo (too large, licensed, not to be published), run
