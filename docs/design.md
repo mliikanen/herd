@@ -410,8 +410,9 @@ by a model, and touching only the file each names. The complete list:
   triage unit in its verdict, an implementer through an `escalate` request its reviewer confirms; see Test or
   implementation?), `caps.added_tasks`, `caps.pr_review_rounds`), an update-branch conflict, a required check past
   `pr_review.checks_timeout`, and the three post-archive cases in *archived-pending* (a failed check, an open review
-  finding, a non-bookkeeping commit). Escalations that need judgment (a request for outside content, holistic feedback
-  that maps to no task, a finding the reviewer can't map to a task) are written by the reviewer in its verdict commit;
+  finding, a non-bookkeeping commit). Escalations that need judgment (a request for outside content, a capability the
+  reviewer or `triage` unit itself lacks, holistic feedback that maps to no task, a finding the reviewer can't map to a
+  task) are written by the reviewer or `triage` unit that found them, in its verdict commit;
 - **an `inputs.md` entry** for content provided through `herd provide` (see Outside content);
 - **the `e2e-mode` line** that fixes a change's end-to-end mode and final-approval kind at its first dispatch (see
   End-to-end tests);
@@ -1120,11 +1121,13 @@ What an agent can use inside a unit comes from three layers, and it gets only wh
   missing capability; a proxy-side gateway for it is a later decision (see Open questions). Only the operator changes
   host config; a project can only ask.
 
-**Widening access.** An agent that needs something its unit doesn't have (a tool, a server, a host it can't reach) asks
-with a `capability` request in its commit (see Who commits, who pushes). The task review checks that the need is real,
-and the change stops at `needs-human`. The person decides: add it to the project's `.herd/` by PR (it applies once
-merged), add it to host config, or decline and resolve the stop with a reason. Nothing an agent commits can widen its
-own access, because `.herd/` and CI configuration are read from the default branch and are off-limits to worker commits.
+**Widening access.** An agent that needs something its unit doesn't have (a tool, a server, a host it can't reach) says
+so in the commit it can make: an implementer with a `capability` request (see Who commits, who pushes), which its task
+review checks is real, and a reviewer or `triage` unit, which writes its own verdict, with a `needs-human` marker naming
+the missing capability directly. Either way the change stops at `needs-human`. The person decides: add it to the
+project's `.herd/` by PR (it applies once merged), add it to host config, or decline and resolve the stop with a reason.
+Nothing an agent commits can widen its own access, because `.herd/` and CI configuration are read from the default
+branch and are off-limits to worker commits.
 
 **Protecting `.herd/` and CI.** Commit validation rejects any worker commit touching `.herd/`, `.github/workflows/` or
 `.github/actions/`, and workers hold no GitHub credential, so the only way such a change reaches the default branch is a
