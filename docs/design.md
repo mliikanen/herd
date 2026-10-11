@@ -1737,13 +1737,17 @@ slots:
   retried. A sampled baseline that hasn't started by the time the change ends (its PR merged or closed) is dropped and
   reported as "not run" too, so cleanup never waits for it.
 - **Comparing like with like.** Both sides are counted up to the point where the herd marks the PR ready. What happens
-  after (PR review rounds, the person's check, CI fixes) only has a herd side, so it's reported separately. A change
-  that stopped at `needs-human`, or got inputs from a person, is marked as such: the baseline had no human help, so the
-  two results aren't directly comparable.
+  after (PR review rounds, the person's check, CI fixes) only has a herd side, so it's reported separately. The
+  comparison is between independent, unattended implementations, as on a small project, so a change with any human
+  involvement between hand-off and ready (a `needs-human` stop, inputs provided, a person's own commits) is left out of
+  it and its totals (and, since that's known when the PR is marked ready, gets no baseline run), without accounting for
+  what kind of help it got. That's a limit of the measurement only: people can still revise and push to a change as
+  usual.
 - **The report.** `herd report` lists, per change and in total:
   - the herd's cost, split by unit kind and model;
   - its wall time to ready and its number of gate runs;
-  - the person's interventions: `needs-human` stops, inputs provided, and rounds of the person's check;
+  - whether the change counts toward the comparison (no human involvement before ready), and the rounds of the person's
+    check after it;
   - the baseline's cost, wall time and outcome: whether the gate passed, the holistic review's verdict and number of
     findings, and the final e2e result.
 
