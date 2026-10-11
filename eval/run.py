@@ -298,31 +298,34 @@ class Run:
                (f"-r{env['EVAL_ROUND']}" if env.get("EVAL_ROUND") else "")
         (self.dir / "sessions" / f"{name}.prompt.md").write_text(text)
         started = time.time()
-        env = {"EVAL_ROLE": role, **{k: str(v) for k, v in env.items()}}
+        env = {"EVAL_ROLE": role, "EVAL_CHANGE": self.change, **{k: str(v) for k, v in env.items()}}
         for key in ("STUB_REVISE", "STUB_GATE", "STUB_TAMPER"):
             if os.environ.get(key):
                 env[key] = os.environ[key]
-        command = f"cd /work/repo && timeout {TIMEOUT[role]} claude -p --model {model} --output-format json " \
+        # TERM at the wall timeout, KILL 30 s later if the CLI ignores it: inside the outer 60 s margin, so nothing of
+        # the session outlives it. timeout exits 124 after TERM, 137 after KILL.
+        command = f"cd /work/repo && timeout --kill-after=30 {TIMEOUT[role]} claude -p --model {model} --output-format json " \
                   "--dangerously-skip-permissions"
         try:
             result = self.exec(command, env=env, input=text, timeout=TIMEOUT[role] + 60, check=False)
             stdout, code = result.stdout, result.returncode
             (self.dir / "sessions" / f"{name}.stderr").write_text(result.stderr)
-        except subprocess.TimeoutExpired:
-            stdout, code = "", 124
+        except subprocess.TimeoutExpired:  # past the kill deadline too: make sure nothing of the session survives
+            self.exec("pkill -KILL -f 'claude -p' || true", check=False)
+            stdout, code = "", 137
         (self.dir / "sessions" / f"{name}.json").write_text(stdout)
         try:
             output = json.loads(stdout)
         except json.JSONDecodeError:
             output = {}
         summary = {"session": name, "role": role, "model": model, "exit": code,
-                   "timed_out": code == 124, "seconds": round(time.time() - started),
+                   "timed_out": code in (124, 137), "seconds": round(time.time() - started),
                    "cost_usd": output.get("total_cost_usd", 0.0), "usage": output.get("usage", {}),
                    "is_error": output.get("is_error", not output), "num_turns": output.get("num_turns")}
         self.sessions.append(summary)
         self.cost += summary["cost_usd"] or 0.0
         print(f"  {name}: {model}, {summary['seconds']} s, ${summary['cost_usd']:.4f}"
-              + (" TIMED OUT" if summary["timed_out"] else "") + (" ERROR" if summary["is_error"] else ""))
+              + (" TIMED OUT" + (" (killed)" if code == 137 else "") if summary["timed_out"] else "") + (" ERROR" if summary["is_error"] else ""))
         if self.args.max_cost and self.cost > self.args.max_cost:
             raise Budget()
         return output.get("result", "")

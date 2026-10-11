@@ -20,7 +20,7 @@ case "$EVAL_ROLE" in
     [ "$STUB_TAMPER" = 1 ] && [ -f "shared/src/commonTest/eval-guard/$EVAL_TASK.txt" ] && echo tampered >> "shared/src/commonTest/eval-guard/$EVAL_TASK.txt"
     echo "$EVAL_ROLE ${EVAL_TASK:-all} round ${EVAL_ROUND:-1} by $model (prompt ${#prompt} chars)" >> STUB.md
     if [ -n "$EVAL_TASK" ]; then
-      sed -i "s/^\(\s*- \)\[ \] $EVAL_TASK /\1[x] $EVAL_TASK /" openspec/changes/*/tasks.md 2>/dev/null
+      sed -i "s/^\(\s*- \)\[ \] $EVAL_TASK /\1[x] $EVAL_TASK /" "openspec/changes/$EVAL_CHANGE/tasks.md" 2>/dev/null
     fi
     git add -A && git commit -qm "${EVAL_TASK:+$EVAL_TASK: }stub $EVAL_ROLE"
     [ "$STUB_GATE" = 1 ] && /eval/gate > /dev/null
