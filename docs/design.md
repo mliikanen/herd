@@ -1034,13 +1034,13 @@ projects:
     slots: [gpu, gpu-private]           # optional: the slots this project may use
 ```
 
-A role maps to one backend, or to one per **unit kind**. The implementer has one kind (`implement`). The reviewer has
-five that need very different judgment: `task` (one task's commit), `holistic` (the whole change, plus release notes),
-`triage` (PR review findings and final-approval failures into tasks), `archive` (mostly running `openspec archive`) and
-`e2e` (the final end-to-end run, which only records pass or fail with its results; a failure is then handed to a
-`triage` unit, see End-to-end tests: the red/green loop). A slot that doesn't list a role or kind never runs it, and a
-slot with `projects` runs only those projects' units. Slots that share a GPU share it in turn: the model server queues
-their requests.
+A role maps to one backend, or to one per **unit kind**. The implementer has `implement`, and `baseline` for cost
+comparison only (see Measuring what the herd saves). The reviewer has five that need very different judgment: `task`
+(one task's commit), `holistic` (the whole change, plus release notes), `triage` (PR review findings and final-approval
+failures into tasks), `archive` (mostly running `openspec archive`) and `e2e` (the final end-to-end run, which only
+records pass or fail with its results; a failure is then handed to a `triage` unit, see End-to-end tests: the red/green
+loop). A slot that doesn't list a role or kind never runs it, and a slot with `projects` runs only those projects'
+units. Slots that share a GPU share it in turn: the model server queues their requests.
 
 - **The slots are the capacity.** The scheduler gives each unit to a free slot that can run its kind for its project,
   round-robin across projects. A local slot is one unit at a time on the host's GPU; cloud slots bound spend.
@@ -1056,20 +1056,21 @@ their requests.
   split one. A holistic review spans commits that may come from several models, so excluding all of them could leave no
   reviewer; it prefers a model that wrote none of the change, when a capable slot has one.
 - **Config is checked when it's loaded, not mid-change.** For each project, the slots it may use must cover `implement`
-  and every reviewer kind the project can dispatch (`e2e` only when its manifest has `final_approval.kind: container`,
-  or when an open change's pinned approval kind, recorded in its `e2e-mode` line or, before first dispatch, read from
-  the manifest at its merge-base, still requires a container pass, since a change keeps the approval kind it started
-  with), and for each implementer backend among them, some slot must offer a `task` review on a different model. A
-  project with `locality: host` may use only slots whose every backend is local, and local means the herd's own model
-  server: an `ollama` backend's `endpoint` must be that server's address on the internal network, which validation
-  enforces on every reload for every backend, so repointing one at a remote server is rejected rather than quietly
-  exporting code, for every role and unit kind; a config that maps one of its slots to a cloud or rented backend,
-  including by repointing a backend later, fails this check, so its code can't leave the host through a config change.
-  The policy covers what the herd sends: its workers' model traffic. The planner pane is the person's own session,
-  outside the herd's control, so for a `locality: host` project the herd doesn't start a cloud planner there by default:
-  the pane opens a plain shell, with a note saying why, and the person can start whatever local agent they like in it. A
-  project that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its
-  changes start, rather than stalling one after its first task.
+  (and `baseline` while `compare.sample` is above 0) and every reviewer kind the project can dispatch (`e2e` only when
+  its manifest has `final_approval.kind: container`, or when an open change's pinned approval kind, recorded in its
+  `e2e-mode` line or, before first dispatch, read from the manifest at its merge-base, still requires a container pass,
+  since a change keeps the approval kind it started with), and for each backend among them that runs `implement` (not
+  `baseline`, which has no task review), some slot must offer a `task` review on a different model. A project with
+  `locality: host` may use only slots whose every backend is local, and local means the herd's own model server: an
+  `ollama` backend's `endpoint` must be that server's address on the internal network, which validation enforces on
+  every reload for every backend, so repointing one at a remote server is rejected rather than quietly exporting code,
+  for every role and unit kind; a config that maps one of its slots to a cloud or rented backend, including by
+  repointing a backend later, fails this check, so its code can't leave the host through a config change. The policy
+  covers what the herd sends: its workers' model traffic. The planner pane is the person's own session, outside the
+  herd's control, so for a `locality: host` project the herd doesn't start a cloud planner there by default: the pane
+  opens a plain shell, with a note saying why, and the person can start whatever local agent they like in it. A project
+  that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes
+  start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -1590,6 +1591,8 @@ log, the orchestrator never reads it back.
 
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
+- `herd report [<project>] [--since <date>]`: what each change cost, with and without the herd (see Measuring what
+  the herd saves).
 - `herd provide <project> <change> <file>...`: see Outside content.
 - `herd budget set --spent <amount> --as-of <time> --source <source>`: reconciles one source's spend up to the cutoff
   with what its bill says (other sources, and anything after the cutoff, stay as counted), after the counter was lost or
@@ -1614,6 +1617,7 @@ timeouts:                              # per unit kind; a unit past either is ki
   holistic:  { wall: 30m, quiet: 10m }
   triage:    { wall: 20m, quiet: 10m }
   archive:   { wall: 10m, quiet: 5m }
+  baseline:  { wall: 4h,  quiet: 10m }   # a whole change in one session (see Measuring what the herd saves)
   e2e:       { wall: 60m, quiet: 15m }   # emulator boot and a full selection; waiting for one doesn't count;
                                        # a running prepare or run counts as activity
 budget:
@@ -1695,6 +1699,61 @@ The values above are placeholders, tuned after the smoke test like the caps (see
 - **Disk.** Each scan checks free space where the herd's volumes live (images, caches, mirrors, per-unit clones),
   warns in the status pane and alerts below `disk.warn_below`, and stops starting units well before it runs out,
   so a full disk shows up as a warning instead of a string of `infra` failures.
+
+## Measuring what the herd saves
+
+The herd is only worth running if it does a change for less than doing it without the herd would, with the same
+quality. So it measures that itself, on real changes, instead of leaving it to a one-off experiment. "Without the
+herd" means what a person would otherwise do: hand the proposal to one capable agent and let it apply the whole change
+in one session, as `/opsx:apply` does. Host config:
+
+```yaml
+compare:
+  sample: 0.25                         # share of changes that also get a baseline run; 0 (the default) turns it off
+backends:
+  local-coder: { kind: ollama, model: <coder model>, endpoint: http://ollama:11434,
+                 report_price: { per_hour: <rate> } }   # optional: for reports only, never the budget
+slots:
+  - name: cloud-2
+    implementer: { implement: sonnet, baseline: opus }  # the baseline's model is the slot's choice, like any kind
+```
+
+- **The baseline run.** For a sampled change (chosen from a hash of its name, so a restart doesn't pick again), once its
+  PR is marked ready, a `baseline` unit starts from the proposal as it stood in the last commit that set `ready: true`,
+  on the merge-base the change's first task started from. It gets the same container, toolchain, gate, tools and egress
+  as an implementer, and works through every task in one session, without a guard, per-task review or the herd's loops.
+  Its commits never reach GitHub: they stay in the herd's mirror under `refs/herd/baseline/<change>`, removed with the
+  change's logs. Baseline units run only when no herd work is waiting for the slot, and only while spend is below
+  `budget.warn_at`. Their spend is real and is counted in the budget, under the change, as kind `baseline`.
+- **Judging it the same way.** The baseline's result goes through the gate (rerun by the herd on a fresh clone, not
+  taken from the unit), a holistic review (the same kind and prompt as the herd's own, preferring a model that wrote
+  none of it, as there) and, where the project has one, the final e2e. The tamper guard applies to its whole diff
+  against the merge-base: the orchestrator computes the guarded items as for a task (see Who commits, who pushes), the
+  holistic review answers each, and a baseline with a rejected one fails, so it can't pass by weakening the tests or the
+  gate. Each result is recorded as a commit on the baseline ref, so the report reads git and the ledger, like everything
+  else. None of it affects the change, which carries on as if the baseline never ran. A baseline unit runs at most once
+  per change: a crash or timeout is recorded as its outcome ("didn't finish"), and an `infra` failure as "not run", left
+  out of the totals. Neither is a failed attempt of the change, counts toward its caps or can stop it, and neither is
+  retried. A sampled baseline that hasn't started by the time the change ends (its PR merged or closed) is dropped and
+  reported as "not run" too, so cleanup never waits for it.
+- **Comparing like with like.** Both sides are counted up to the point where the herd marks the PR ready. What happens
+  after (PR review rounds, the person's check, CI fixes) only has a herd side, so it's reported separately. A change
+  that stopped at `needs-human`, or got inputs from a person, is marked as such: the baseline had no human help, so the
+  two results aren't directly comparable.
+- **The report.** `herd report` lists, per change and in total:
+  - the herd's cost, split by unit kind and model;
+  - its wall time to ready and its number of gate runs;
+  - the person's interventions: `needs-human` stops, inputs provided, and rounds of the person's check;
+  - the baseline's cost, wall time and outcome: whether the gate passed, the holistic review's verdict and number of
+    findings, and the final e2e result.
+
+  Cloud and rented spend comes from the usage ledger, which already books spend per change and now also per unit kind
+  and model. Local work costs nothing in the budget; it's priced only in the report, by GPU time at the backend's
+  `report_price` when one is set, and shown as unpriced otherwise.
+
+The same mechanism compares the herd with itself: pointing `baseline` at a cheaper model, or changing which backend runs
+which kind, shows whether a configuration earns its keep. That's the question the Build plan's reality check asks of a
+local backend, answered on live changes rather than replays only.
 
 ## PR body
 
@@ -1778,16 +1837,17 @@ Steps marked **(manual)** need a human.
    the orchestrator), log retention and the disk check; rented GPU backends (see Rented GPU backends): the persisted
    machine definitions, current and retained, and their confirmations, the proxy's credential store and userspace
    WireGuard, per-backend readiness, hourly accrual and the time-split ledger, budget reconciliation with a cutoff, the
-   idle, unhealthy and retained-machine alerts, and `herd machines stopped` and `started`.
+   idle, unhealthy and retained-machine alerts, and `herd machines stopped` and `started`; the `baseline` unit and its
+   judging (see Measuring what the herd saves).
 6. The orchestrator's Quadlet unit and the `herd` CLI: launch (check the heartbeat, then the `herd` workspace), `init`,
-   `doctor`, `provide`; an install script that creates the `herd` user (with subordinate UID/GID ranges in `/etc/subuid`
-   and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group, `/etc/herd/`
-   (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/` (`shared/` setgid `2750`
-   and `requests/` setgid `2770`, both owned by `herd` with group `herd-ops`, and `herd` itself a member of `herd-ops`),
-   creates `~herd/secrets/` and `~herd/secrets/machines/` (`0700`) and the proxy's credential-store volume, puts `herd`
-   on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its `[Install]` section), enables
-   lingering and the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's integration for
-   the planner agent, and adds the operator's login unit for `herdr server`.
+   `doctor`, `provide`, `report`; an install script that creates the `herd` user (with subordinate UID/GID ranges in
+   `/etc/subuid` and `/etc/subgid`, which rootless Podman needs and system accounts often lack) and `herd-ops` group,
+   `/etc/herd/` (owned by the operator, group `herd`, setgid `2750` with `0640` files) and `/var/lib/herd/` (`shared/`
+   setgid `2750` and `requests/` setgid `2770`, both owned by `herd` with group `herd-ops`, and `herd` itself a member
+   of `herd-ops`), creates `~herd/secrets/` and `~herd/secrets/machines/` (`0700`) and the proxy's credential-store
+   volume, puts `herd` on `PATH`, installs the Quadlet units (orchestrator, network proxy, each with its `[Install]`
+   section), enables lingering and the Podman API socket for `herd`, checks that `herdr` is installed, installs herdr's
+   integration for the planner agent, and adds the operator's login unit for `herdr server`.
 7. **(manual)** Host secrets, in `~herd/secrets/` (`0700`, files `0600`, see The herd's own account):
    `ANTHROPIC_API_KEY` (for every `anthropic` backend, read by the network proxy only; a worker's own
    `ANTHROPIC_API_KEY` holds its unit token, never this key); a GitHub App for the herd, installed on the registered
@@ -1815,6 +1875,9 @@ Each waits for the point where it can be answered with evidence rather than gues
 - **When a project first needs a credentialed service in a worker** (an issue tracker's API, say): a gateway in the
   proxy for it, like the model gateway, which would terminate TLS for that service only and inject its credential.
 - **After the smoke test** (Onboarding a project, step 7):
+  - Whether the herd pays: the smoke test runs with `compare.sample: 1`, so every change gets a baseline run (see
+    Measuring what the herd saves), and `herd report` decides whether to keep going, change the configuration, or stop.
+    The sample rate after that is set from how much the baseline runs cost.
   - The `review_rounds`, `added_tasks`, `failed_attempts` and `gate_fixes` defaults (3 each), and `flaky_retries` (2).
     Projects can override them. `pr_review_rounds` and the review timeout already rest on observed Copilot behavior (see
     The project manifest). The unit timeouts, budget and log retention in Monitoring are placeholders tuned the same
