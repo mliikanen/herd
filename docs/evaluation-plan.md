@@ -154,17 +154,23 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
    base snapshots, as bare repositories under `eval/work/` (not committed, since they hold Driving Log's code).
 2. **The runner** (`eval/run.py <setup> <change> [--rep n]`). It runs one setup on one change in a fresh container,
    records every session's JSON output and the gate log, and leaves the result as a branch in a local results
-   repository (`eval/work/results.git`). The container keeps the worker contract: read-only root, per-run scratch
-   volumes, the caches as overlays that no run writes back to, the memory, CPU and pid limits, and egress only through
-   a proxy allowing Driving Log's hosts and the model API. `--warm` fills the caches by running the gate at every base,
+   repository (`eval/work/results.git`). The container keeps most of the worker contract: read-only root, per-run
+   scratch volumes, the caches as overlays that no run writes back to, the memory, CPU and pid limits, its own internal
+   network holding only it and the proxy, and egress only through that proxy, which allows Driving Log's hosts and the
+   model API. Two parts are missing, since the evaluation's agents are the models under test, not untrusted code:
+   - **No storage limits.** The host keeps containers on btrfs, and Podman's volume and overlay size limits need XFS
+     project quotas. A run that fills its disk fills the host's.
+   - **No metering gateway.** The worker gets the API key itself, so an agent's shell could call the API directly,
+     past both the recorded cost and `--max-cost`. `--real` therefore needs `--max-cost` and a key made for the
+     evaluation with its own spend limit at the provider, which is the hard cap. `--warm` fills the caches by running the gate at every base,
    which also checks each base passes it. Without `--real`, a stub stands in for `claude`, so the harness can be tested
    without spending. Where the herd's behavior isn't fixed by the setups' table, the runner does what the design does:
    - a commit that fails the gate goes back to the implementer with the gate's output, without a review, and uses up
      a round;
    - a task still not accepted after its last round stops the run, as the herd would park the change;
    - a holistic review asking for changes gets one fix session from the last round's implementer;
-   - anything a reviewer commits or leaves changed is discarded and counted, and a guard test an implementer changes is
-     restored and counted;
+   - anything a reviewer commits or leaves changed in the repository is discarded and counted, and a guard test an
+     implementer changes is restored and counted;
    - sessions have the design's `wall` timeouts; the `quiet` timeout isn't enforced.
 3. **The judge** (`eval/judge.py`): steps 1–4 above, written to `eval/results/<run>.json`.
 4. **Pilot.** Run all five setups once each on the two pilot changes. Fix the harness, then estimate the full run's cost
@@ -175,7 +181,9 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
 7. **Phase 2.** Run Cheap herd and Guarded herd with the local implementer, once the B70 passes the reality check's
    hardware items.
 
-Set a spending cap before each of steps 4, 5 and 7, and stop at it.
+Set a spending cap before each of steps 4, 5 and 7, and stop at it. After each of those steps, compare the runs'
+recorded cost with the key's usage at the provider: a gap means calls the records missed, and the cost per accepted
+change can't be trusted until it's explained.
 
 ## Deciding
 

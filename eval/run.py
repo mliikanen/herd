@@ -51,7 +51,7 @@ EGRESS = ["repo.maven.apache.org", "maven.google.com", "dl.google.com", "plugins
           "release-assets.githubusercontent.com", "api.anthropic.com"]
 LIMITS = ["--memory", "8g", "--cpus", "4", "--pids-limit", "4096"]
 CACHES = {"eval-gradle": "/home/agent/.gradle", "eval-konan": "/home/agent/.konan"}
-NETWORK, OUTSIDE, PROXY = "eval-int", "eval-ext", "eval-proxy"
+OUTSIDE, PROXY = "eval-ext", "eval-proxy"
 PROXY_URL = f"http://{PROXY}:3128"
 
 TASK = re.compile(r"^(\s*)- \[( |x)\] (\d+(?:\.\d+)*)\.?\s+(.*)$")
@@ -82,8 +82,10 @@ def verdict(text):
         if line.strip().startswith("VERDICT:"):
             try:
                 found = json.loads(line.split("VERDICT:", 1)[1])
-                if found.get("verdict") in ("accept", "revise"):
-                    return found
+                findings = found.get("findings", [])
+                if found.get("verdict") in ("accept", "revise") and isinstance(findings, list) \
+                        and all(isinstance(f, dict) for f in findings):
+                    return {"verdict": found["verdict"], "findings": findings}
             except (json.JSONDecodeError, AttributeError):
                 pass
             break
@@ -126,6 +128,8 @@ class Run:
         self.id = f"{args.setup}-{self.change}-{args.rep}"
         self.dir = WORK / "runs" / self.id
         self.container = f"eval-{self.id}"
+        self.network = f"{self.container}-net"
+        self.gate_calls = 0
         self.volumes = {f"{self.container}-{name}": path
                         for name, path in (("work", "/work"), ("home", "/home/agent"), ("tmp", "/tmp"))}
         self.sessions, self.cost, self.started = [], 0.0, time.time()
@@ -189,18 +193,20 @@ class Run:
         return config
 
     def proxy(self):
+        """The shared egress proxy, plus this run's own internal network holding only the worker and the proxy, so
+        runs can't reach each other. Restarting the proxy (a changed allow-list) cuts off runs in progress."""
         allow = ",".join(EGRESS)
-        for network, internal in ((NETWORK, True), (OUTSIDE, False)):
-            if sh("podman", "network", "exists", network, check=False).returncode != 0:
-                sh("podman", "network", "create", *(["--internal"] if internal else []), network)
+        if sh("podman", "network", "exists", OUTSIDE, check=False).returncode != 0:
+            sh("podman", "network", "create", OUTSIDE)
+        sh("podman", "network", "create", "--internal", self.network)
         running = sh("podman", "inspect", PROXY, "--format", "{{.State.Running}} {{range .Config.Env}}{{.}} {{end}}",
                      check=False)
-        if running.returncode == 0 and running.stdout.startswith("true") and f"ALLOW={allow} " in running.stdout:
-            return
-        sh("podman", "rm", "-f", PROXY, check=False)
-        sh("podman", "run", "-d", "--name", PROXY, "--network", OUTSIDE, "--network", NETWORK, "-e", f"ALLOW={allow}",
-           "-v", f"{EVAL / 'proxy.py'}:/proxy.py:ro,Z", "docker.io/library/python:3.13-slim", "python", "-u",
-           "/proxy.py")
+        if not (running.returncode == 0 and running.stdout.startswith("true") and f"ALLOW={allow} " in running.stdout):
+            sh("podman", "rm", "-f", PROXY, check=False)
+            sh("podman", "run", "-d", "--name", PROXY, "--network", OUTSIDE, "-e", f"ALLOW={allow}",
+               "-v", f"{EVAL / 'proxy.py'}:/proxy.py:ro,Z", "docker.io/library/python:3.13-slim", "python", "-u",
+               "/proxy.py")
+        sh("podman", "network", "connect", self.network, PROXY)
 
     def start(self):
         self.dir.mkdir(parents=True)
@@ -237,7 +243,7 @@ class Run:
         env_args = [arg for key, value in env.items() for arg in ("-e", f"{key}={value}")]
         if self.args.real:
             env_args += ["-e", "ANTHROPIC_API_KEY"]  # passed from the runner's environment, never on the command line
-        sh("podman", "run", "-d", "--name", self.container, "--network", NETWORK, "--read-only",
+        sh("podman", "run", "-d", "--name", self.container, "--network", self.network, "--read-only",
            "--read-only-tmpfs=false", *LIMITS, "--cap-drop=all", *mounts, *caches, *stub,
            "-v", f"{EVAL / 'container' / 'gate'}:/eval/gate:ro,z", "-v", f"{config}:/eval-run:ro,z",
            "-v", f"{self.dir / 'log'}:/eval-log:z", "-v", f"{source}:/source:ro,z", *env_args, "-w", "/work",
@@ -272,6 +278,8 @@ class Run:
     def stop(self):
         """Remove the container and the run's volumes. Safe to call on a run that only partly started."""
         sh("podman", "rm", "-f", "-t", "0", self.container, check=False)
+        sh("podman", "network", "disconnect", "-f", self.network, PROXY, check=False)
+        sh("podman", "network", "rm", "-f", self.network, check=False)
         for volume in self.volumes:
             sh("podman", "volume", "rm", "-f", volume, check=False)
 
@@ -314,12 +322,14 @@ class Run:
         return output.get("result", "")
 
     def gate(self):
+        self.gate_calls += 1
         result = self.exec("/eval/gate", env={"GATE_CALLER": "runner"}, timeout=GATE_TIMEOUT + 60, check=False)
         print(f"  gate: {'passed' if result.returncode == 0 else 'failed'}")
         return result.returncode == 0, (result.stdout + result.stderr)[-6000:]
 
     def review(self, text, **env):
-        """A review session. Reviewers don't change files: anything one commits or leaves changed is discarded."""
+        """A review session. Reviewers don't change files: anything one commits or leaves changed in the repository is
+        discarded. Their home, /tmp and cache overlay persist into later sessions, like every session's."""
         head = self.git("rev-parse", "HEAD")
         found = verdict(self.session(env.pop("role", "review"), REVIEWER, text, **env))
         if self.git("rev-parse", "HEAD") != head or self.git("status", "--porcelain"):
@@ -445,7 +455,14 @@ class Run:
 
     def finish(self, outcome):
         gate_log = self.dir / "log" / "gate.jsonl"
-        gate_runs = [json.loads(line) for line in gate_log.read_text().splitlines()] if gate_log.exists() else []
+        # The agent can write this log, so only its own calls are read from it, and a malformed line is skipped. The
+        # runner counts its calls itself.
+        agent_calls = 0
+        for line in (gate_log.read_text(errors="replace").splitlines() if gate_log.exists() else []):
+            try:
+                agent_calls += json.loads(line).get("caller") == "agent"
+            except (json.JSONDecodeError, AttributeError):
+                pass
         proxy = sh("podman", "logs", "--since", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.started)),
                    PROXY, check=False)
         (self.dir / "proxy.log").write_text(proxy.stdout + proxy.stderr)
@@ -457,7 +474,8 @@ class Run:
         self.record.update({
             "outcome": outcome, "wall_seconds": round(time.time() - self.started),
             "cost_usd": round(self.cost, 6), "tokens": tokens, "sessions": self.sessions,
-            "gate_runs": {"total": len(gate_runs), "by_agent": sum(r["caller"] == "agent" for r in gate_runs)},
+            "gate_runs": {"total": self.gate_calls + agent_calls, "by_runner": self.gate_calls,
+                          "by_agent_reported": agent_calls},
             "denied_hosts": sorted(set(re.findall(r"^DENY (\S+)", proxy.stdout, re.MULTILINE))),
         })
         (self.dir / "run.json").write_text(json.dumps(self.record, indent=2) + "\n")
@@ -520,6 +538,10 @@ def main():
         parser.error("give a setup and a change, or --warm")
     if args.real and not os.environ.get("ANTHROPIC_API_KEY"):
         parser.error("--real needs ANTHROPIC_API_KEY in the environment")
+    if args.real and not args.max_cost:
+        # Agent shells can see the key, so calls they make themselves escape both the record and this limit. The hard
+        # cap is the key's own spend limit at the provider (docs/evaluation-plan.md, Running it).
+        parser.error("--real needs --max-cost, and a key with its own spend limit")
     corpus = json.loads((EVAL / "corpus.json").read_text())
     entry = next((e for e in corpus["changes"] if e["change"] == args.change), None)
     if not entry:
