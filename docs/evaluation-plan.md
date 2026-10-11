@@ -25,7 +25,9 @@ judging.
 Driving Log has 40 archived changes. Their history comes in three shapes:
 
 - **Changes proposed and implemented directly on `main`** (most of September). The base is the commit that added
-  `openspec/changes/<name>/`, and the reference result is the parent of the commit that archived it.
+  `openspec/changes/<name>/`, and the reference result is the commit that archived it. Archiving only moves the
+  proposal and syncs specs under `openspec/`, which every comparison leaves out, so the archive commit also serves for
+  `clean-up-lint-baselines`, which was applied and archived in one commit.
 - **Proposed and implemented in one commit**, or with other changes' work interleaved. These have no clean base, so
   they're left out unless the interleaved commits only add other proposals.
 - **Squash-merged PRs** (from October). The base is the merge commit's first parent, and the proposal comes from the
@@ -48,14 +50,18 @@ The first corpus, smallest first:
 | `odometer-leading-zero-prefix` | ~570 | input model edge case |
 | `add-landing-screen` | ~640 | new screen |
 | `petroleum-color-theme` | ~820 | theme, checked by `ThemeColorsTest` |
-| `add-direct-logging` | ~1,300 | feature across layers |
+| `add-direct-logging` | ~700 | feature across layers |
 | `add-vehicle-color` | ~2,800 | feature plus migration |
 | `add-distance-logging` | ~4,400 | large feature |
 | `clean-up-lint-baselines` | ~1,900 (mostly deletions) | chore, checked by lint |
 
 The sizes come from `git diff --shortstat <base> <reference>` and include tests. The pilot uses the first two changes.
 The corpus script (below) checks each base and reference again before use, and drops a change whose span holds another
-change's implementation.
+change's implementation. `add-direct-logging` was proposed in the same commit as `add-landing-screen`, which was
+implemented first, so its base is `add-landing-screen`'s archive commit and its proposal still comes from the commit
+that added it. Commits in a span that touch code but belong to no change stay in the reference and are listed in the
+record: a test for `odometer-leading-zero-prefix`, a Maestro rework with a color test during `add-vehicle-color`, and a
+moved document during `add-distance-logging`.
 
 **Which proposal.** Every run gets the proposal as it was first written, before any implementation: the version in the
 base commit, or in a squash-merged PR's first commit. The archived version also carries what was learned while
@@ -87,7 +93,14 @@ Phase 2 adds a local implementer on the B70 in Cheap herd and Guarded herd, thro
 Phase 2 also doubles as the local backend's reality check (Build plan step 2).
 
 Each run gets the change's gate as of its base: the final regression run in that base's `CLAUDE.md`. Early bases have no
-`codeQuality`. The three herd setups also run the gate before each commit, as the herd would. Every run gets the same
+`codeQuality`, and the five earliest don't name a final regression run at all: their gate is the two Gradle tasks their `CLAUDE.md` lists
+for building and testing, plus `openspec validate --all --strict`. Two adjustments keep the gate fair at old bases:
+
+- **Known OpenSpec failures.** Another in-flight proposal can fail today's strict validation at a base (at
+  `confirm-lower-odometer`'s, `add-event-pictures` does). The corpus records these, and the gate passes when the
+  validation fails only on them. The change's own proposal failing at its base drops the change.
+- **Supplied files.** `clean-up-lint-baselines`' base applies the Google Services plugin, whose `google-services.json` is
+  gitignored. The run gets the placeholder CI uses today, from outside the snapshot, as CI does. The three herd setups also run the gate before each commit, as the herd would. Every run gets the same
 timeout: 4 hours for Baseline and Thin spec, and per-task limits for the herd setups matching the design's unit
 timeouts.
 
@@ -136,8 +149,9 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
    names it, so this is onboarding work done early. Check that the gate passes inside it at the oldest and newest base
    in the corpus.
 1. **The corpus script** (`eval/corpus.py`). For each change in the table, it records the base, the reference, the
-   original proposal, the edits made to it before archiving, the gate command and the size, all in `eval/corpus.json`.
-   It also writes the base snapshots.
+   original proposal, the edits made to it before archiving (ticked task boxes left out), the gate commands, the known
+   OpenSpec failures, the supplied files, the size and the reference tests, all in `eval/corpus.json`. It also writes the
+   base snapshots, as bare repositories under `eval/work/` (not committed, since they hold Driving Log's code).
 2. **The runner** (`eval/run.py <setup> <change> [--rep n]`). It runs one setup on one change in a fresh container,
    records every session's JSON output and the gate log, and leaves the result as a branch in a local results
    repository.
