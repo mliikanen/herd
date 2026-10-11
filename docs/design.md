@@ -1027,9 +1027,11 @@ slots:                                 # each slot runs one unit at a time
     implementer: sonnet
     reviewer: opus                      # one backend for every reviewer unit kind
 planner: { agent: claude }              # the interactive agent in each project's planner pane (see herdr)
+worker_uid: 1000                       # the worker user's UID inside every container (see Containers)
 projects:
   some-project:
     checkout: ~/src/some-project        # the operator's checkout, for its herdr workspace (herd init fills it in)
+    worker_uid: 1001                    # optional: when this project's toolchain image already uses worker_uid
     locality: host                      # optional: the herd's agents send its code to no cloud or rented backend
     slots: [gpu, gpu-private]           # optional: the slots this project may use
 ```
@@ -1204,10 +1206,15 @@ It also means nothing changes if workers ever run on more than one machine — t
 network instead.
 
 **Least privilege for worker containers** (implementer and reviewer):
-- **One fixed user.** Every worker runs as `agent`, UID 1000 inside the container (rootless Podman maps it to one of the
-  `herd` user's subordinate UIDs on the host), with `HOME=/home/agent`. The role layer creates the user; a toolchain
-  image must not need root at run time. Cache paths in the manifest are therefore under `/home/agent`, and the herd
-  creates each volume owned by `agent`, once, when it creates the volume.
+- **One fixed user.** Every worker runs as `agent`, with `HOME=/home/agent`, under the UID host config gives it
+  (`worker_uid`, 1000 by default, overridable per project, since a conflict belongs to one project's image); rootless
+  Podman maps it to one of the `herd` user's subordinate UIDs on the host. The role layer creates `agent` with that UID
+  and fails, saying which user holds it, if the toolchain image already uses it; it never renames or removes a user in
+  the project's image, which stays the project's to change. A toolchain image must not need root at run time. Cache
+  paths in the manifest are therefore under `/home/agent`, and the herd creates each volume owned by `agent`, once, when
+  it creates the volume. If a project's UID changes, the herd stops assigning that project's units, waits for its
+  running ones to end, and only then re-owns or recreates its cache volumes, so no unit is writing to a cache while its
+  ownership changes.
 - Each image contains **exactly** what the role needs: the project's toolchain plus the role layer, nothing else. No
   `gh`, no `podman`, no `ssh`/`curl`-style network tools, no package managers at runtime, no general-purpose extras
   "just in case". Adding a tool is a reviewed change to the project's `.herd/` or the herd's role layer (see Tools and
@@ -1617,7 +1624,12 @@ log, the orchestrator never reads it back.
     fuse-overlayfs), which the cache overlays need. Every failed check, in either half, prints the command that fixes
     it; rerunning the install script, which is idempotent, fixes any of the host ones.
 
-  The gate runs in two stages, so a maintainer doesn't have to know their build's habits in advance:
+  Before building the worker images, `doctor` reads `/etc/passwd` in every toolchain image the project can dispatch to
+  (the default branch's, and any an open change pins). If another user already holds the project's worker UID in any of
+  them (Ubuntu 24.04 images ship `ubuntu` as 1000), it stops and reports the conflict with two fixes: set
+  `projects.<name>.worker_uid` in host config to a UID it suggests, the first one free in all of those images, or remove
+  that user in the project's `toolchain.Dockerfile` by PR. Then the gate runs in two stages, so a maintainer doesn't
+  have to know their build's habits in advance:
   - **Discovery run:** the gate with an overlay over the root filesystem, run as root inside the container (still
     unprivileged on the host, where rootless Podman maps it), so an on-demand install into a root-owned system path
     succeeds instead of failing on permissions, and lands in the overlay, where it's recorded. It reports what the
@@ -1627,8 +1639,10 @@ log, the orchestrator never reads it back.
     trusted, but its dependencies' install scripts run too.
   - **Proof run:** the gate under the real worker conditions (as `agent`, read-only root filesystem, enforced egress,
     the declared caches), twice, the second time with warm caches to show what they save. It also checks the worker
-    contract: the gate runs as `agent` (UID 1000), `HOME` and `/tmp` are writable, each cache is mounted and owned by
-    `agent`, and the root filesystem is read-only.
+    contract: the gate runs as `agent` with the configured UID, where the image has Java, its `user.home` resolves to
+    `/home/agent` (Java reads it from `/etc/passwd`, not `$HOME`, so a mismatch would send Gradle and the Android tools
+    to write outside the scratch volume and the caches), `HOME` and `/tmp` are writable, each cache is mounted and owned
+    by `agent`, and the root filesystem is read-only.
 
   The findings come out as suggested edits to `.herd/` for the maintainer (or their planner agent) to apply and land by
   PR; `doctor` never edits `.herd/` itself, since what to install and which versions to pin are judgment calls. A tool
