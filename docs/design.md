@@ -1731,7 +1731,10 @@ slots:
   against the merge-base: the orchestrator computes the guarded items as for a task (see Who commits, who pushes), the
   holistic review answers each, and a baseline with a rejected one fails, so it can't pass by weakening the tests or the
   gate. Each result is recorded as a commit on the baseline ref, so the report reads git and the ledger, like everything
-  else. None of it affects the change, which carries on as if the baseline never ran.
+  else. None of it affects the change, which carries on as if the baseline never ran. A baseline unit runs at most once
+  per change: a crash or timeout is recorded as its outcome ("didn't finish"), and an `infra` failure as "not run", left
+  out of the totals. Neither is a failed attempt of the change, counts toward its caps or can stop it, and neither is
+  retried.
 - **Comparing like with like.** Both sides are counted up to the point where the herd marks the PR ready. What happens
   after (PR review rounds, the person's check, CI fixes) only has a herd side, so it's reported separately. A change
   that stopped at `needs-human`, or got inputs from a person, is marked as such: the baseline had no human help, so the
