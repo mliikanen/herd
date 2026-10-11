@@ -1,0 +1,41 @@
+#!/bin/bash
+# The change's gate as of its base (eval/corpus.json), run in /work/repo. The runner and the agent both call it, and
+# each call is logged to /eval-log/gate.jsonl for the gate-run count.
+#
+# OpenSpec validation passes when it fails only on items that already failed when the run started
+# (/eval-run/known-failures): another in-flight proposal can fail today's strict validation at an old base.
+cd /work/repo || exit 2
+start=$(date +%s)
+caller=${GATE_CALLER:-agent}
+log() {
+  printf '{"caller":"%s","start":%s,"seconds":%s,"exit":%s,"head":"%s"}\n' \
+    "$caller" "$start" "$(( $(date +%s) - start ))" "$1" "$(git rev-parse --short HEAD 2>/dev/null)" >> /eval-log/gate.jsonl
+  exit "$1"
+}
+
+if [ -e /eval-run/fake-gate ]; then
+  echo "GATE PASSED (fake gate: plumbing test)"
+  log 0
+fi
+
+while IFS= read -r command; do
+  [ -n "$command" ] || continue
+  echo "\$ $command"
+  case "$command" in
+    "openspec validate"*)
+      output=$(bash -c "$command --no-interactive" 2>&1); status=$?
+      echo "$output" | grep -v 'ℹ \[INFO\]'
+      failed=$(echo "$output" | sed -n 's/^✗ \([^ ]*\)$/\1/p')
+      if [ "$status" -ne 0 ] && [ -z "$failed" ]; then echo "GATE FAILED: openspec validate failed"; log 1; fi
+      for item in $failed; do
+        if ! grep -qxF "$item" /eval-run/known-failures; then echo "GATE FAILED: $item fails validation"; log 1; fi
+        echo "(known failure at the base, ignored: $item)"
+      done
+      ;;
+    *)
+      bash -c "$command" || { echo "GATE FAILED: $command"; log 1; }
+      ;;
+  esac
+done < /eval-run/gate-commands
+echo "GATE PASSED"
+log 0

@@ -154,7 +154,18 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
    base snapshots, as bare repositories under `eval/work/` (not committed, since they hold Driving Log's code).
 2. **The runner** (`eval/run.py <setup> <change> [--rep n]`). It runs one setup on one change in a fresh container,
    records every session's JSON output and the gate log, and leaves the result as a branch in a local results
-   repository.
+   repository (`eval/work/results.git`). The container keeps the worker contract: read-only root, per-run scratch
+   volumes, the caches as overlays that no run writes back to, the memory, CPU and pid limits, and egress only through
+   a proxy allowing Driving Log's hosts and the model API. `--warm` fills the caches by running the gate at every base,
+   which also checks each base passes it. Without `--real`, a stub stands in for `claude`, so the harness can be tested
+   without spending. Where the herd's behavior isn't fixed by the setups' table, the runner does what the design does:
+   - a commit that fails the gate goes back to the implementer with the gate's output, without a review, and uses up
+     a round;
+   - a task still not accepted after its last round stops the run, as the herd would park the change;
+   - a holistic review asking for changes gets one fix session from the last round's implementer;
+   - anything a reviewer commits or leaves changed is discarded and counted, and a guard test an implementer changes is
+     restored and counted;
+   - sessions have the design's `wall` timeouts; the `quiet` timeout isn't enforced.
 3. **The judge** (`eval/judge.py`): steps 1–4 above, written to `eval/results/<run>.json`.
 4. **Pilot.** Run all five setups once each on the two pilot changes. Fix the harness, then estimate the full run's cost
    from the pilot before going on.

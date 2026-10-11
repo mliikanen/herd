@@ -1,0 +1,52 @@
+#!/bin/bash
+# Stand-in for `claude -p ... --output-format json`, for testing the runner without model calls. It reads the prompt
+# from stdin and acts by EVAL_ROLE, which the runner sets on every session:
+#   apply, thin, implement, fix   append a line to STUB.md, tick EVAL_TASK in tasks.md if set, commit
+#   guard                   commit a placeholder guard file for EVAL_TASK
+#   review, holistic        answer with a verdict: accept, or revise on round 1 when STUB_REVISE=first
+# STUB_GATE=1 makes the working roles run /eval/gate as an agent would; STUB_TAMPER=1 makes implementers edit the
+# guard's tests and reviewers edit files, both of which the runner must undo. Costs are made up, per model.
+model=unknown
+while [ $# -gt 0 ]; do
+  case "$1" in --model) model=$2; shift 2 ;; *) shift ;; esac
+done
+prompt=$(cat)
+started=$(date +%s%3N)
+result="stub $EVAL_ROLE done"
+cd /work/repo || exit 2
+
+case "$EVAL_ROLE" in
+  apply|thin|implement|fix)
+    [ "$STUB_TAMPER" = 1 ] && [ -f "eval-guard/$EVAL_TASK.txt" ] && echo tampered >> "eval-guard/$EVAL_TASK.txt"
+    echo "$EVAL_ROLE ${EVAL_TASK:-all} round ${EVAL_ROUND:-1} by $model (prompt ${#prompt} chars)" >> STUB.md
+    if [ -n "$EVAL_TASK" ]; then
+      sed -i "s/^\(\s*- \)\[ \] $EVAL_TASK /\1[x] $EVAL_TASK /" openspec/changes/*/tasks.md 2>/dev/null
+    fi
+    git add -A && git commit -qm "${EVAL_TASK:+$EVAL_TASK: }stub $EVAL_ROLE"
+    [ "$STUB_GATE" = 1 ] && /eval/gate > /dev/null
+    ;;
+  guard)
+    mkdir -p eval-guard && echo "guard for $EVAL_TASK" > "eval-guard/$EVAL_TASK.txt"
+    git add -A && git commit -qm "guard $EVAL_TASK: stub tests"
+    ;;
+  review|holistic)
+    [ "$STUB_TAMPER" = 1 ] && echo "reviewer edit" >> STUB.md
+    if [ "$STUB_REVISE" = first ] && [ "${EVAL_ROUND:-1}" = 1 ]; then
+      result='Stub review.
+VERDICT: {"verdict": "revise", "findings": [{"severity": "Medium", "text": "stub finding"}]}'
+    else
+      result='Stub review.
+VERDICT: {"verdict": "accept", "findings": []}'
+    fi
+    ;;
+esac
+
+case "$model" in *opus*) price=0.05 ;; *sonnet*) price=0.02 ;; *haiku*) price=0.005 ;; *) price=0.01 ;; esac
+RESULT=$result MODEL=$model PRICE=$price STARTED=$started node -e '
+  const e = process.env;
+  console.log(JSON.stringify({
+    type: "result", subtype: "success", is_error: false, result: e.RESULT,
+    total_cost_usd: Number(e.PRICE), duration_ms: Date.now() - Number(e.STARTED), num_turns: 1,
+    session_id: "stub-" + Date.now(), model: e.MODEL,
+    usage: {input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0},
+  }));'

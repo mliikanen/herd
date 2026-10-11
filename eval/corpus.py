@@ -160,14 +160,14 @@ def snapshot(repo, base, proposal, change, dest):
     return tree, commit
 
 
-def validate_snapshot(dest):
+def validate_snapshot(dest, openspec):
     """The items the strict OpenSpec validation fails on the snapshot, before any work, and the full report.
 
-    Other in-flight proposals at a base can fail it (a later CLI is stricter than the one they were written with). The
+    Other in-flight proposals at a base can fail it (a later CLI may be stricter than the one they were written with). The
     gate counts those as known failures; only the change's own item failing at the base breaks the corpus entry."""
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["git", "clone", "-q", str(dest), tmp], check=True)
-        result = subprocess.run(["openspec", "validate", "--all", "--strict", "--no-interactive"], cwd=tmp,
+        result = subprocess.run([*openspec, "validate", "--all", "--strict", "--no-interactive"], cwd=tmp,
                                 capture_output=True, text=True)
         report = (result.stdout + result.stderr).strip()
         failures = re.findall(r"^✗ (\S+)$", report, re.MULTILINE)
@@ -196,7 +196,7 @@ def proposal_edits(repo, original, archived):
             "added": added, "deleted": deleted}
 
 
-def build_entry(repo, main, spec, out):
+def build_entry(repo, main, spec, out, openspec):
     change = spec["change"]
     proposal, archive = find_commits(repo, main, change)
     base = repo.sha(spec.get("base", proposal))
@@ -223,7 +223,7 @@ def build_entry(repo, main, spec, out):
         supply.append({"path": GOOGLE_SERVICES, "from": f"{repo.sha(main)[:12]}:{PLACEHOLDER}"})
 
     tree, commit = snapshot(repo, base, proposal, change, out / "snapshots" / f"{change}.git")
-    failures, report = validate_snapshot(out / "snapshots" / f"{change}.git")
+    failures, report = validate_snapshot(out / "snapshots" / f"{change}.git", openspec)
     (work / "validate.txt").write_text(report + "\n")
 
     return {
@@ -251,14 +251,23 @@ def main():
     parser.add_argument("--main", default="origin/main", help="the branch the history is read from")
     parser.add_argument("--out", default=str(Path(__file__).parent / "work"),
                         help="where snapshots and per-change files go (default: eval/work, not committed)")
+    parser.add_argument("--openspec", default="openspec", help="the OpenSpec CLI command to validate with")
     parser.add_argument("--record", default=str(Path(__file__).parent / "corpus.json"))
     args = parser.parse_args()
+
+    # Validation results can differ between CLI versions, so the corpus uses the one the worker image pins.
+    pinned = re.search(r"^ARG OPENSPEC=(\S+)$", (Path(__file__).parent / "image.Dockerfile").read_text(), re.MULTILINE)[1]
+    openspec = args.openspec.split()
+    version = subprocess.run([*openspec, "--version"], capture_output=True, text=True).stdout.strip()
+    if version != pinned:
+        parser.error(f"{args.openspec} is version {version or '?'}, the worker image pins {pinned}: "
+                     f"try --openspec 'npx -y @fission-ai/openspec@{pinned}'")
 
     repo = Repo(os.path.expanduser(args.repo))
     out = Path(args.out)
     entries, dropped = [], []  # Dropped entries are kept apart, so a runner reading "changes" never picks one up.
     for spec in CORPUS:
-        entry = build_entry(repo, args.main, spec, out)
+        entry = build_entry(repo, args.main, spec, out, openspec)
         problems = []
         if entry["foreign_commits"]:
             problems.append("the span holds another change's work")
