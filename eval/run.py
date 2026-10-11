@@ -14,6 +14,7 @@ the cache volumes by running the gate at every base, which also checks that each
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -201,14 +202,17 @@ class Run:
         """The shared egress proxy, plus this run's own internal network holding only the worker and the proxy, so
         runs can't reach each other. Restarting the proxy (a changed allow-list) cuts off runs in progress."""
         allow = ",".join(EGRESS)
+        version = hashlib.sha256((EVAL / "proxy.py").read_bytes()).hexdigest()[:12]  # a changed proxy restarts it
         if sh("podman", "network", "exists", OUTSIDE, check=False).returncode != 0:
             sh("podman", "network", "create", OUTSIDE)
         sh("podman", "network", "create", "--internal", self.network)
         running = sh("podman", "inspect", PROXY, "--format", "{{.State.Running}} {{range .Config.Env}}{{.}} {{end}}",
                      check=False)
-        if not (running.returncode == 0 and running.stdout.startswith("true") and f"ALLOW={allow} " in running.stdout):
+        if not (running.returncode == 0 and running.stdout.startswith("true") and f"ALLOW={allow} " in running.stdout
+                and f"PROXY_VERSION={version} " in running.stdout):
             sh("podman", "rm", "-f", PROXY, check=False)
             sh("podman", "run", "-d", "--name", PROXY, "--network", OUTSIDE, "-e", f"ALLOW={allow}",
+               "-e", f"PROXY_VERSION={version}",
                "-v", f"{EVAL / 'proxy.py'}:/proxy.py:ro,Z", "docker.io/library/python:3.13-slim", "python", "-u",
                "/proxy.py")
         sh("podman", "network", "connect", self.network, PROXY)
@@ -337,8 +341,9 @@ class Run:
         return result.returncode == 0, (result.stdout + result.stderr)[-6000:]
 
     def review(self, text, **env):
-        """A review session. Reviewers don't change files: anything one commits or leaves changed in the repository is
-        discarded. Their home, /tmp and cache overlay persist into later sessions, like every session's."""
+        """A review session. Reviewers don't change files: anything one commits, or leaves changed or added among the
+        repository's tracked and untracked (not ignored) files, is discarded, and the supplied files are copied in again.
+        Other ignored files, their home, /tmp and the cache overlay persist into later sessions, like every session's."""
         head = self.git("rev-parse", "HEAD")
         try:
             return verdict(self.session(env.pop("role", "review"), REVIEWER, text, **env))
@@ -486,9 +491,14 @@ class Run:
                 agent_calls += json.loads(line).get("caller") == "agent"
             except (json.JSONDecodeError, AttributeError):
                 pass
+        # The proxy is shared: keep only lines from this run's worker, by its address on the run's own network.
+        address = sh("podman", "inspect", self.container, "--format",
+                     f"{{{{(index .NetworkSettings.Networks \"{self.network}\").IPAddress}}}}", check=False).stdout.strip()
         proxy = sh("podman", "logs", "--since", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.started)),
                    PROXY, check=False)
-        (self.dir / "proxy.log").write_text(proxy.stdout + proxy.stderr)
+        lines = [line for line in (proxy.stdout + proxy.stderr).splitlines()
+                 if address and len(line.split()) > 1 and line.split()[1] == address]
+        (self.dir / "proxy.log").write_text("".join(f"{line}\n" for line in lines))
         tokens = {}
         for session in self.sessions:
             for key, value in (session["usage"] or {}).items():
@@ -499,7 +509,7 @@ class Run:
             "cost_usd": round(self.cost, 6), "tokens": tokens, "sessions": self.sessions,
             "gate_runs": {"total": self.gate_calls + agent_calls, "by_runner": self.gate_calls,
                           "by_agent_reported": agent_calls},
-            "denied_hosts": sorted(set(re.findall(r"^DENY (\S+)", proxy.stdout, re.MULTILINE))),
+            "denied_hosts": sorted({line.split()[2] for line in lines if line.startswith("DENY")}),
         })
         (self.dir / "run.json").write_text(json.dumps(self.record, indent=2) + "\n")
         if not self.args.keep:

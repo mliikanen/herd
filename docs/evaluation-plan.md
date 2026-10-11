@@ -156,8 +156,8 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
    records every session's JSON output and the gate log, and leaves the result as a branch in a local results
    repository (`eval/work/results.git`). The container keeps most of the worker contract: read-only root, per-run
    scratch volumes, the caches as overlays that no run writes back to, the memory, CPU and pid limits, its own internal
-   network holding only it and the proxy, and egress only through that proxy, which allows Driving Log's hosts and the
-   model API. Two parts are missing, since the evaluation's agents are the models under test, not untrusted code:
+   network holding only it and the proxy, and egress only through that proxy: TLS to port 443 of Driving Log's hosts
+   and the model API, with the TLS server name matching the host. Two parts are missing, since the evaluation's agents are the models under test, not untrusted code:
    - **No storage limits.** The host keeps containers on btrfs, and Podman's volume and overlay size limits need XFS
      project quotas. A run that fills its disk fills the host's.
    - **No metering gateway.** The worker gets the API key itself, so an agent's shell could call the API directly,
@@ -169,8 +169,9 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
      a round;
    - a task still not accepted after its last round stops the run, as the herd would park the change;
    - a holistic review asking for changes gets one fix session from the last round's implementer;
-   - anything a reviewer commits or leaves changed in the repository is discarded and counted, and a guard test an
-     implementer changes is restored and counted;
+   - anything a reviewer commits, or leaves changed or added among the repository's tracked and untracked (not
+     ignored) files, is discarded and counted, and the supplied files are copied in again; a guard test an implementer
+     changes is restored and counted;
    - sessions have the design's `wall` timeouts; the `quiet` timeout isn't enforced.
 3. **The judge** (`eval/judge.py`): steps 1–4 above, written to `eval/results/<run>.json`.
 4. **Pilot.** Run all five setups once each on the two pilot changes. Fix the harness, then estimate the full run's cost
