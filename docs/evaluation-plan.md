@@ -1,11 +1,12 @@
 # Evaluation plan: replaying Driving Log's archived changes
 
-The herd rests on one bet: a change done by cheap models working task by task behind strong-model guardrails costs
-less than one capable agent applying the whole change, with the same quality. Nothing is built yet, so this plan tests
-the bet offline, before the orchestrator exists. It replays changes Driving Log has already archived, under several
-setups ("arms"), and compares cost, time and quality. Once the herd runs, the same comparison continues on live changes
-(see Measuring what the herd saves in `docs/design.md`); this plan uses the same arms and metrics so the two sets of
-numbers line up.
+The herd rests on one bet: a change done by cheap models working task by task behind strong-model guardrails costs less
+than one capable agent applying the whole change, with the same quality. Nothing is built yet, so this plan tests the
+bet offline, before the orchestrator exists. It replays changes Driving Log has already archived, under several setups
+("arms"), and compares cost, time and quality. Once the herd runs, a narrower comparison continues on live changes (see
+Measuring what the herd saves in `docs/design.md`): the configured pipeline against one single-agent baseline, which
+corresponds to arm A here. The thin-spec arm and the fixed per-task setups exist only in this replay. The metrics (cost
+per accepted change, wall time, gate runs) are defined the same way, so those numbers line up.
 
 The comparison is between independent, unattended implementations. No person touches a run between its start and its
 judging.
@@ -98,12 +99,14 @@ stripped.
 4. **Holistic review** by Opus 5.5, from the proposal, the specs and the result's diff. It gives an accept or revise
    verdict and lists findings by severity. For arm A, Opus is judging its own model's work, so treat A's review results
    with that bias in mind and lean on steps 1–3 and 5.
-5. **The person's spot check.** For each change, you review the two cheapest accepted results blind, about 15 minutes
-   each. For the finalists, you also run the area's Maestro flows on an emulator. This is the only human time the
-   evaluation needs.
+5. **The person's spot check**, a sample that checks the automated judging. For each change, you review two results
+   blind, picked at random from those that passed steps 1–4, in about 15 minutes each. For each arm's best result on a
+   change, you also run the area's Maestro flows on an emulator. This is the only human time the evaluation needs.
 
-A run is **accepted** when it passes the gate and the tamper check, gets an accept with no High findings in the
-holistic review, and isn't rejected in the spot check.
+A run is **accepted** when it passes the gate and the tamper check and gets an accept with no High findings in the
+holistic review. A run you reject in the spot check, or whose Maestro flows fail, becomes not accepted. If you reject
+more than one in five of the runs you check, the holistic judging isn't trusted: the spot check widens to every
+accepted run of the arms the decision depends on before anything is decided.
 
 ## Metrics
 
