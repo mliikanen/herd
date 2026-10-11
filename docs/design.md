@@ -1156,8 +1156,10 @@ from a per-project, per-role image:
   commit, tagged with a hash of that whole context plus the base image's digest, and rebuilt only when that hash
   changes. Workers normally use the image for the default branch's tip; a change with end-to-end tests uses the one for
   its pinned commit (see End-to-end tests), built on first need, and an image is kept while any open change pins it.
-  Contains the language runtimes and SDKs the gate needs. Must be Debian/Ubuntu-based so the role layer can install onto
-  it.
+  Contains the language runtimes and SDKs the gate needs, installed system-wide at build time: system paths are
+  read-only in a worker, so anything the build would otherwise install on demand (an SDK platform, a JDK the build tool
+  provisions itself) must already be in the image. `herd doctor` finds what's missing (see The `herd` CLI). Must be
+  Debian/Ubuntu-based so the role layer can install onto it.
 - **Role layer** — generic, from the herd repo, applied with `FROM <toolchain image>`:
   - *implementer*: the implementer harness, `git`, the `openspec` CLI (gates typically run `openspec validate`),
     and the generic `SYSTEM_PROMPT.md` plus the project's optional addition. Gets its clone as a volume; reads its
@@ -1202,6 +1204,10 @@ It also means nothing changes if workers ever run on more than one machine — t
 network instead.
 
 **Least privilege for worker containers** (implementer and reviewer):
+- **One fixed user.** Every worker runs as `agent`, UID 1000 inside the container (rootless Podman maps it to one of the
+  `herd` user's subordinate UIDs on the host), with `HOME=/home/agent`. The role layer creates the user; a toolchain
+  image must not need root at run time. Cache paths in the manifest are therefore under `/home/agent`, and the herd
+  creates each volume owned by `agent`, once, when it creates the volume.
 - Each image contains **exactly** what the role needs: the project's toolchain plus the role layer, nothing else. No
   `gh`, no `podman`, no `ssh`/`curl`-style network tools, no package managers at runtime, no general-purpose extras
   "just in case". Adding a tool is a reviewed change to the project's `.herd/` or the herd's role layer (see Tools and
@@ -1213,12 +1219,23 @@ network instead.
   size-limited artifacts directory, and the unit's emulator (`/dev/kvm`), each visible only to the commands that need
   it. No host bind mounts (not the host checkout, not `$HOME`, not the Podman socket), no access to other units' clones,
   other projects' volumes or the bare mirrors. The container's root filesystem is read-only apart from those mounts and
-  a scratch `tmpfs`. No provider key or other long-lived secret reaches a worker. Its only credential is its unit's
+  a **scratch volume**, created with the unit and deleted when it ends, which holds `HOME` and `/tmp`. Builds write
+  there freely (a debug keystore, a tool's downloads), and nothing survives the unit unless it's under a declared cache.
+  The scratch volume is on disk rather than a `tmpfs`, since a memory-backed one would count against the worker's memory
+  limit (see Monitoring). No provider key or other long-lived secret reaches a worker. Its only credential is its unit's
   token, which is still a secret: a short-lived bearer credential for model and proxy access, valid only until its
   unit's revocation or expiry. The orchestrator redacts it from the unit's log, and commit validation rejects a commit
   that contains it.
-- **Caches** are per project *and* per role, so one project's worker can never read or poison another's. A project
-  that declares none gets the strict per-clone behavior (slower, nothing shared).
+- **Caches** are per project *and* per role, so one project's worker can never read or poison another's. Within a role,
+  units share them, and a unit runs code it didn't write (a reviewer's gate runs the implementer's tests), so a shared
+  writable cache would let one unit plant an entry that a later unit trusts: a forged build-cache hit, or a swapped
+  dependency the build tool doesn't re-verify. So only `implement` units write to their role's caches directly. Every
+  other unit (reviewer kinds, `e2e`) mounts each cache as an overlay (Podman's `:O`): it reads the shared copy, and its
+  own writes are discarded when it ends. The reviewer role's shared copy is written only by a **cache refresh**, the
+  gate run with no model on the default branch's tip, after each toolchain image rebuild and at most daily, the way CI
+  keeps pull requests to reading a cache that only the default branch writes. A poisoned implementer cache can at worst
+  make a later implementer's gate falsely green, which the reviewer's gate on its clean copy catches. A project that
+  declares none gets the strict per-clone behavior (slower, nothing shared).
 - Network egress is the unit's model backend plus the manifest's `egress` list — not open internet (see Network
   and secrets).
 
@@ -1575,19 +1592,38 @@ log, the orchestrator never reads it back.
 - `herd [<project>]`: launch or attach, optionally focusing a project's workspace (above).
 - `herd init`: run in a project's checkout. **The one command that onboards a project.** It detects what it can
   (OpenSpec present; build tool from wrapper/lock files; gate candidates from `CLAUDE.md`/CI workflows), writes
-  `.herd/project.yaml` and `.herd/toolchain.Dockerfile` with those defaults for the human to review and land
-  via PR, installs or updates the planner skills, and registers the repo (see Registering projects). It's idempotent:
-  re-running it on an onboarded project updates the skills and only reports where `.herd/` differs from the
-  detected defaults.
+  `.herd/project.yaml` and `.herd/toolchain.Dockerfile` with those defaults, refined by a discovery run (see
+  `herd doctor`) once the herd can build the image, for the human to review and land via PR, installs or updates the
+  planner skills, and registers the repo (see Registering projects). It's idempotent: re-running it on an onboarded
+  project updates the skills and only reports where `.herd/` differs from the detected defaults.
 - `herd doctor [<project>]`: proves a project is ready. It runs in two halves, each where its checks can see:
   - **In the orchestrator**, as a request (see The herd's own account): it builds the project's worker images, runs the
-    gate on the default branch inside a worker container with the real mount/egress limits (proving the toolchain is
-    sufficient and the egress list complete), starts each declared MCP server in a worker and checks it answers, checks
-    branch protection, required checks and code-owner review for `.herd/` and `.github/` with approval of the most
-    recent push through the GitHub App, and checks that every model backend answers (see Models).
+    gate on the default branch in worker containers (the discovery and proof runs below), starts each declared MCP
+    server in a worker and checks it answers, checks branch protection, required checks and code-owner review for
+    `.herd/` and `.github/` with approval of the most recent push through the GitHub App, and checks that every model
+    backend answers (see Models).
   - **In the CLI, on the host**, as the operator: that `herdr` is installed with the planner agent's integration and
-    `[ui.toast] delivery = "system"`, that the `herd` user has lingering on (`loginctl show-user herd`) and
-    subordinate UID/GID ranges, and that the orchestrator's heartbeat is fresh.
+    `[ui.toast] delivery = "system"`, that the `herd` user has lingering on (`loginctl show-user herd`) and subordinate
+    UID/GID ranges, and that the orchestrator's heartbeat is fresh; and everything the install script creates or needs:
+    the `herd` user and `herd-ops` group, `/etc/herd/`, `/var/lib/herd/` and `~herd/secrets/` with their owners and
+    modes, the Quadlet units enabled, the Podman API socket, and rootless overlay mounts (kernel 5.11 or later, or
+    fuse-overlayfs), which the cache overlays need. Every failed check, in either half, prints the command that fixes
+    it; rerunning the install script, which is idempotent, fixes any of the host ones.
+
+  The gate runs in two stages, so a maintainer doesn't have to know their build's habits in advance:
+  - **Discovery run:** the gate with an overlay over the root filesystem, so writes to system paths succeed but are
+    recorded, and with egress enforced. It reports what the toolchain image is missing (paths installed at run time,
+    such as an SDK platform), directories under `HOME` big enough to be worth declaring as `caches` (with their sizes),
+    and every host the proxy refused, which may take a few rounds, since a build stops at its first refused host. Egress
+    stays enforced even here: the project's own code is trusted, but its dependencies' install scripts run too.
+  - **Proof run:** the gate under the real worker conditions (read-only root filesystem, enforced egress, the declared
+    caches), twice, the second time with warm caches to show what they save. It also checks the worker contract: the
+    gate runs as `agent` (UID 1000), `HOME` and `/tmp` are writable, each cache is mounted and owned by `agent`, and the
+    root filesystem is read-only.
+
+  The findings come out as suggested edits to `.herd/` for the maintainer (or their planner agent) to apply and land by
+  PR; `doctor` never edits `.herd/` itself, since what to install and which versions to pin are judgment calls. A tool
+  that only downloads on a path the gate doesn't take stays invisible to it.
 
   Run it before trusting a project; it doesn't switch anything on (see Registering projects).
 - `herd add <repo-url>`, `herd pause|resume|remove <project>`: see Registering projects.
@@ -1634,6 +1670,10 @@ logs:
   event_log_keep: 90d                  # the event log, rotated daily
 disk:
   warn_below: 50GB
+limits:                                # per worker container; projects: { <name>: { limits: ... } } overrides them
+  memory: 8g                           # a Gradle build with its daemons uses 4 to 6 GB
+  cpus: 4
+  pids: 4096
 e2e:
   max_emulators: 0                     # emulators at once across all units; 0 (the default) turns e2e off
                                        # until the emulator probe passes (see End-to-end tests)
@@ -1696,6 +1736,12 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   project is removed, or when its PR is closed without merging; a closed PR that's reopened starts the clock again when
   it next ends. The status pane links a stopped change to its recent units' logs. They're never fed back to a worker: a
   retried unit starts clean (see Concurrency model).
+- **Worker limits.** Every worker container runs under `limits` (memory, CPUs, processes), set by the operator like
+  the slots, since together they decide what the host can run at once. A worker killed for running out of memory is a
+  failed attempt (reason `oom`, see Failed attempts), so a build that doesn't fit its limit ends at `needs-human` rather
+  than looping. `herd doctor` records the gate's peak memory and warns when the limit leaves less than about half again
+  as much headroom, and loading host config warns when the slots that can run at once would together exceed the host's
+  memory.
 - **Disk.** Each scan checks free space where the herd's volumes live (images, caches, mirrors, per-unit clones),
   warns in the status pane and alerts below `disk.warn_below`, and stops starting units well before it runs out,
   so a full disk shows up as a warning instead of a string of `infra` failures.
@@ -1831,11 +1877,11 @@ Steps marked **(manual)** need a human.
    If any fails, the herd stays cloud only, and the result goes in Open questions.
 3. Role layers and generic `SYSTEM_PROMPT.md` per role; the toolchain-image + role-layer build; wiring declared MCP
    servers into each harness.
-4. The orchestrator: per-project bare mirror and per-unit clone lifecycle, worker container lifecycle, intake from
-   `ready: true`, round-robin assignment to worker slots, the state derivation above, commit validation and push,
-   escalation markers, draft PR, update-branch, mark-ready, PR body template, watching PRs for review and posting the
-   reviewer's replies, deleting merged change branches, and the local model server's lifecycle and model requests (see
-   The local model server).
+4. The orchestrator: per-project bare mirror and per-unit clone lifecycle, worker container lifecycle (the `agent` user,
+   the scratch volume, cache overlays and the cache refresh, worker limits), intake from `ready: true`, round-robin
+   assignment to worker slots, the state derivation above, commit validation and push, escalation markers, draft PR,
+   update-branch, mark-ready, PR body template, watching PRs for review and posting the reviewer's replies, deleting
+   merged change branches, and the local model server's lifecycle and model requests (see The local model server).
 5. The event log and the herdr bridge (`herd watch`, `herd status`, the planner and attention panes); monitoring: unit
    timeouts, metering and the budget in the network proxy and orchestrator, alerts (including the systemd watchdog for
    the orchestrator), log retention and the disk check; rented GPU backends (see Rented GPU backends): the persisted
