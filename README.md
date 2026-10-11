@@ -96,6 +96,8 @@ herd, and `/herd-resolve` answers a stop. See [Using the herd](docs/using-the-he
   security and monitoring.
 - [Implementation notes](docs/implementation-notes.md): detail worked out during design review, kept as a starting
   point for the code.
+- [Evaluation plan](docs/evaluation-plan.md): replaying Driving Log's archived changes to test whether the herd's
+  split of the work pays, before it's built.
 
 ## License
 
