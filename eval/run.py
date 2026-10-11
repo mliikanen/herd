@@ -54,6 +54,7 @@ CACHES = {"eval-gradle": "/home/agent/.gradle", "eval-konan": "/home/agent/.kona
 OUTSIDE, PROXY = "eval-ext", "eval-proxy"
 PROXY_URL = f"http://{PROXY}:3128"
 
+TEST_PATH = re.compile(r"/src/\w*[Tt]est\w*/")  # test source sets: commonTest, androidHostTest, androidTest...
 TASK = re.compile(r"^(\s*)- \[( |x)\] (\d+(?:\.\d+)*)\.?\s+(.*)$")
 
 
@@ -85,6 +86,10 @@ def verdict(text):
                 findings = found.get("findings", [])
                 if found.get("verdict") in ("accept", "revise") and isinstance(findings, list) \
                         and all(isinstance(f, dict) for f in findings):
+                    # An accept that lists blocking findings contradicts itself: the prompt makes them a revise.
+                    blocking = any(str(f.get("severity", "")).lower() in ("high", "medium") for f in findings)
+                    if found["verdict"] == "accept" and blocking:
+                        return {"verdict": "revise", "findings": findings, "contradictory_accept": True}
                     return {"verdict": found["verdict"], "findings": findings}
             except (json.JSONDecodeError, AttributeError):
                 pass
@@ -251,7 +256,8 @@ class Run:
         self.exec("git config --global user.name agent && git config --global user.email agent@herd.invalid"
                   " && git config --global --add safe.directory '*' && git clone -q /source /work/repo"
                   " && cd /work/repo && git remote remove origin"
-                  " && (cd /eval-run/supply && find . -type f -exec cp --parents {} /work/repo/ \\;)")
+                  )
+        self.supply()
         self.base = self.git("rev-parse", "HEAD")
         # Known failures: what the strict validation fails on before any work. For every setup but Thin spec that's
         # the corpus record; Thin spec's cut-down change fails it too.
@@ -331,11 +337,17 @@ class Run:
         """A review session. Reviewers don't change files: anything one commits or leaves changed in the repository is
         discarded. Their home, /tmp and cache overlay persist into later sessions, like every session's."""
         head = self.git("rev-parse", "HEAD")
-        found = verdict(self.session(env.pop("role", "review"), REVIEWER, text, **env))
-        if self.git("rev-parse", "HEAD") != head or self.git("status", "--porcelain"):
-            self.exec(f"cd /work/repo && git reset -q --hard {head} && git clean -qfd")
-            self.record["reviewer_edits_discarded"] = self.record.get("reviewer_edits_discarded", 0) + 1
-        return found
+        try:
+            return verdict(self.session(env.pop("role", "review"), REVIEWER, text, **env))
+        finally:  # also when the session crosses --max-cost
+            if self.git("rev-parse", "HEAD") != head or self.git("status", "--porcelain"):
+                self.exec(f"cd /work/repo && git reset -q --hard {head} && git clean -qfd")
+                self.record["reviewer_edits_discarded"] = self.record.get("reviewer_edits_discarded", 0) + 1
+            self.supply()  # gitignored, so the checks above don't see an edit to a supplied file
+
+    def supply(self):
+        """Copy the supplied files (gitignored inputs such as google-services.json) into the repository."""
+        self.exec("cd /eval-run/supply && find . -type f -exec cp --parents {} /work/repo/ \\;")
 
     def commit_leftovers(self, message):
         """Commit what a session left uncommitted, so every change is in the result."""
@@ -380,6 +392,14 @@ class Run:
                          EVAL_TASK=task_id)
             self.commit_leftovers(f"guard {task_id}: uncommitted tests")
             guard_commit = self.git("rev-parse", "HEAD")
+            changed = self.git("diff", "--name-only", before, guard_commit).splitlines()
+            other = [path for path in changed if not TEST_PATH.search("/" + path)]
+            if other:  # the guard writes tests only: anything else would be implementation nobody reviews
+                paths = " ".join(f"'{p}'" for p in other)
+                self.exec(f"cd /work/repo && git restore --source={before} --staged --worktree -- {paths}"
+                          f" && git commit -qm 'guard {task_id}: revert changes outside test sources'")
+                outcome["guard_non_test_reverted"] = other
+                guard_commit = self.git("rev-parse", "HEAD")
             if guard_commit != before:
                 outcome["guard_files"] = self.git("diff", "--name-only", before, guard_commit).splitlines()
                 guard_note = (f"\nTests for this task were written ahead of you in commit {guard_commit[:12]}: "
