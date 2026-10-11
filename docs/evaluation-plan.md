@@ -93,7 +93,7 @@ Phase 2 adds a local implementer on the B70 in Cheap herd and Guarded herd, thro
 Phase 2 also doubles as the local backend's reality check (Build plan step 2).
 
 Each run gets the change's gate as of its base: the final regression run in that base's `CLAUDE.md`. Early bases have no
-`codeQuality`, and the earliest name no final regression run: their gate is the two Gradle tasks their `CLAUDE.md` lists
+`codeQuality`, and the five earliest don't name a final regression run at all: their gate is the two Gradle tasks their `CLAUDE.md` lists
 for building and testing, plus `openspec validate --all --strict`. Two adjustments keep the gate fair at old bases:
 
 - **Known OpenSpec failures.** Another in-flight proposal can fail today's strict validation at a base (at

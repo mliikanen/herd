@@ -170,7 +170,10 @@ def validate_snapshot(dest):
         result = subprocess.run(["openspec", "validate", "--all", "--strict", "--no-interactive"], cwd=tmp,
                                 capture_output=True, text=True)
         report = (result.stdout + result.stderr).strip()
-        return re.findall(r"^✗ (\S+)$", report, re.MULTILINE), report
+        failures = re.findall(r"^✗ (\S+)$", report, re.MULTILINE)
+        if result.returncode != 0 and not failures:
+            raise RuntimeError(f"openspec validate failed without naming an item:\n{report}")
+        return failures, report
 
 
 def proposal_edits(repo, original, archived):
@@ -253,7 +256,7 @@ def main():
 
     repo = Repo(os.path.expanduser(args.repo))
     out = Path(args.out)
-    entries, dropped = [], []
+    entries, dropped = [], []  # Dropped entries are kept apart, so a runner reading "changes" never picks one up.
     for spec in CORPUS:
         entry = build_entry(repo, args.main, spec, out)
         problems = []
@@ -263,15 +266,15 @@ def main():
             problems.append(f"its proposal fails openspec validation (see {out}/corpus/{entry['change']}/validate.txt)")
         if problems:
             entry["dropped"] = problems
-            dropped.append(entry["change"])
-        entries.append(entry)
+        (dropped if problems else entries).append(entry)
         size = entry["size"]
         print(f"{entry['change']:30} base {entry['base'][:7]} ref {entry['reference'][:7]} "
               f"+{size['added']} -{size['deleted']}  edits +{entry['proposal_edits']['added']} "
               f"-{entry['proposal_edits']['deleted']}  tests {len(entry['reference_tests'])}"
               + (f"  DROPPED: {'; '.join(problems)}" if problems else ""))
 
-    record = {"repository": "mliikanen/driving-log", "main": repo.sha(args.main)[:12], "changes": entries}
+    record = {"repository": "mliikanen/driving-log", "main": repo.sha(args.main)[:12], "changes": entries,
+              "dropped": dropped}
     Path(args.record).write_text(json.dumps(record, indent=2) + "\n")
     print(f"wrote {args.record}; snapshots in {out}/snapshots")
     return 1 if dropped else 0
