@@ -1059,17 +1059,18 @@ units. Slots that share a GPU share it in turn: the model server queues their re
   (and `baseline` while `compare.sample` is above 0) and every reviewer kind the project can dispatch (`e2e` only when
   its manifest has `final_approval.kind: container`, or when an open change's pinned approval kind, recorded in its
   `e2e-mode` line or, before first dispatch, read from the manifest at its merge-base, still requires a container pass,
-  since a change keeps the approval kind it started with), and for each implementer backend among them, some slot must
-  offer a `task` review on a different model. A project with `locality: host` may use only slots whose every backend is
-  local, and local means the herd's own model server: an `ollama` backend's `endpoint` must be that server's address on
-  the internal network, which validation enforces on every reload for every backend, so repointing one at a remote
-  server is rejected rather than quietly exporting code, for every role and unit kind; a config that maps one of its
-  slots to a cloud or rented backend, including by repointing a backend later, fails this check, so its code can't leave
-  the host through a config change. The policy covers what the herd sends: its workers' model traffic. The planner pane
-  is the person's own session, outside the herd's control, so for a `locality: host` project the herd doesn't start a
-  cloud planner there by default: the pane opens a plain shell, with a note saying why, and the person can start
-  whatever local agent they like in it. A project that fails is shown *inactive* with the reason ("no slot can review
-  local-coder's work"), before any of its changes start, rather than stalling one after its first task.
+  since a change keeps the approval kind it started with), and for each backend among them that runs `implement` (not
+  `baseline`, which has no task review), some slot must offer a `task` review on a different model. A project with
+  `locality: host` may use only slots whose every backend is local, and local means the herd's own model server: an
+  `ollama` backend's `endpoint` must be that server's address on the internal network, which validation enforces on
+  every reload for every backend, so repointing one at a remote server is rejected rather than quietly exporting code,
+  for every role and unit kind; a config that maps one of its slots to a cloud or rented backend, including by
+  repointing a backend later, fails this check, so its code can't leave the host through a config change. The policy
+  covers what the herd sends: its workers' model traffic. The planner pane is the person's own session, outside the
+  herd's control, so for a `locality: host` project the herd doesn't start a cloud planner there by default: the pane
+  opens a plain shell, with a note saying why, and the person can start whatever local agent they like in it. A project
+  that fails is shown *inactive* with the reason ("no slot can review local-coder's work"), before any of its changes
+  start, rather than stalling one after its first task.
 - **A stronger attempt before a human.** A task's last allowed round under `caps.review_rounds` goes to a slot with
   an implementer on a different model, when one exists, before the task escalates.
 - **Each worker commit records its model, backend and unit kind** in trailers
@@ -1724,10 +1725,13 @@ slots:
   Its commits never reach GitHub: they stay in the herd's mirror under `refs/herd/baseline/<change>`, removed with the
   change's logs. Baseline units run only when no herd work is waiting for the slot, and only while spend is below
   `budget.warn_at`. Their spend is real and is counted in the budget, under the change, as kind `baseline`.
-- **Judging it the same way.** The baseline's result goes through the gate, a holistic review (the same kind and prompt
-  as the herd's own, preferring a model that wrote none of it, as there) and, where the project has one, the final e2e.
-  Each result is recorded as a commit on the baseline ref, so the report reads git and the ledger, like everything else.
-  None of it affects the change, which carries on as if the baseline never ran.
+- **Judging it the same way.** The baseline's result goes through the gate (rerun by the herd on a fresh clone, not
+  taken from the unit), a holistic review (the same kind and prompt as the herd's own, preferring a model that wrote
+  none of it, as there) and, where the project has one, the final e2e. The tamper guard applies to its whole diff
+  against the merge-base: the orchestrator computes the guarded items as for a task (see Who commits, who pushes), the
+  holistic review answers each, and a baseline with a rejected one fails, so it can't pass by weakening the tests or the
+  gate. Each result is recorded as a commit on the baseline ref, so the report reads git and the ledger, like everything
+  else. None of it affects the change, which carries on as if the baseline never ran.
 - **Comparing like with like.** Both sides are counted up to the point where the herd marks the PR ready. What happens
   after (PR review rounds, the person's check, CI fixes) only has a herd side, so it's reported separately. A change
   that stopped at `needs-human`, or got inputs from a person, is marked as such: the baseline had no human help, so the
