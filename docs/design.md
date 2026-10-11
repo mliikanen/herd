@@ -1222,20 +1222,27 @@ network instead.
   a **scratch volume**, created with the unit and deleted when it ends, which holds `HOME` and `/tmp`. Builds write
   there freely (a debug keystore, a tool's downloads), and nothing survives the unit unless it's under a declared cache.
   The scratch volume is on disk rather than a `tmpfs`, since a memory-backed one would count against the worker's memory
-  limit (see Monitoring). No provider key or other long-lived secret reaches a worker. Its only credential is its unit's
-  token, which is still a secret: a short-lived bearer credential for model and proxy access, valid only until its
-  unit's revocation or expiry. The orchestrator redacts it from the unit's log, and commit validation rejects a commit
-  that contains it.
+  limit (see Monitoring). Disk is bounded too: every volume a unit can write (its clone, its scratch volume, the upper
+  layers of its overlays, and for an `implement` unit the caches it writes) has a size limit enforced by the storage
+  itself (`limits.disk` per unit volume, `limits.cache` per cache volume), not noticed later by the free-space scan, so
+  a runaway or hostile build fills its own volume and fails the attempt (reason `disk`) instead of the disk every
+  project shares. How the limit is enforced (filesystem quotas, or file-backed volumes where the storage has none) is
+  settled at Build plan step 4. No provider key or other long-lived secret reaches a worker. Its only credential is its
+  unit's token, which is still a secret: a short-lived bearer credential for model and proxy access, valid only until
+  its unit's revocation or expiry. The orchestrator redacts it from the unit's log, and commit validation rejects a
+  commit that contains it.
 - **Caches** are per project *and* per role, so one project's worker can never read or poison another's. Within a role,
   units share them, and a unit runs code it didn't write (a reviewer's gate runs the implementer's tests), so a shared
   writable cache would let one unit plant an entry that a later unit trusts: a forged build-cache hit, or a swapped
   dependency the build tool doesn't re-verify. So only `implement` units write to their role's caches directly. Every
   other unit (reviewer kinds, `e2e`) mounts each cache as an overlay (Podman's `:O`): it reads the shared copy, and its
   own writes are discarded when it ends. The reviewer role's shared copy is written only by a **cache refresh**, the
-  gate run with no model on the default branch's tip, after each toolchain image rebuild and at most daily, the way CI
-  keeps pull requests to reading a cache that only the default branch writes. A poisoned implementer cache can at worst
-  make a later implementer's gate falsely green, which the reviewer's gate on its clean copy catches. A project that
-  declares none gets the strict per-clone behavior (slower, nothing shared).
+  gate run with no model on the default branch's tip, after each toolchain image rebuild and at most daily. A refresh
+  fills a new volume rather than the one in use (an overlay reads its lower layer live, so changing it under a running
+  unit would change that unit's gate), only units started afterwards get the new one, and the old one is removed once no
+  unit uses it; the way CI keeps pull requests to reading a cache that only the default branch writes. A poisoned
+  implementer cache can at worst make a later implementer's gate falsely green, which the reviewer's gate on its clean
+  copy catches. A project that declares none gets the strict per-clone behavior (slower, nothing shared).
 - Network egress is the unit's model backend plus the manifest's `egress` list — not open internet (see Network
   and secrets).
 
@@ -1611,15 +1618,17 @@ log, the orchestrator never reads it back.
     it; rerunning the install script, which is idempotent, fixes any of the host ones.
 
   The gate runs in two stages, so a maintainer doesn't have to know their build's habits in advance:
-  - **Discovery run:** the gate with an overlay over the root filesystem, so writes to system paths succeed but are
-    recorded, and with egress enforced. It reports what the toolchain image is missing (paths installed at run time,
-    such as an SDK platform), directories under `HOME` big enough to be worth declaring as `caches` (with their sizes),
-    and every host the proxy refused, which may take a few rounds, since a build stops at its first refused host. Egress
-    stays enforced even here: the project's own code is trusted, but its dependencies' install scripts run too.
-  - **Proof run:** the gate under the real worker conditions (read-only root filesystem, enforced egress, the declared
-    caches), twice, the second time with warm caches to show what they save. It also checks the worker contract: the
-    gate runs as `agent` (UID 1000), `HOME` and `/tmp` are writable, each cache is mounted and owned by `agent`, and the
-    root filesystem is read-only.
+  - **Discovery run:** the gate with an overlay over the root filesystem, run as root inside the container (still
+    unprivileged on the host, where rootless Podman maps it), so an on-demand install into a root-owned system path
+    succeeds instead of failing on permissions, and lands in the overlay, where it's recorded. It reports what the
+    toolchain image is missing (paths installed at run time, such as an SDK platform), directories under `HOME` big
+    enough to be worth declaring as `caches` (with their sizes), and every host the proxy refused, which may take a few
+    rounds, since a build stops at its first refused host. Egress stays enforced even here: the project's own code is
+    trusted, but its dependencies' install scripts run too.
+  - **Proof run:** the gate under the real worker conditions (as `agent`, read-only root filesystem, enforced egress,
+    the declared caches), twice, the second time with warm caches to show what they save. It also checks the worker
+    contract: the gate runs as `agent` (UID 1000), `HOME` and `/tmp` are writable, each cache is mounted and owned by
+    `agent`, and the root filesystem is read-only.
 
   The findings come out as suggested edits to `.herd/` for the maintainer (or their planner agent) to apply and land by
   PR; `doctor` never edits `.herd/` itself, since what to install and which versions to pin are judgment calls. A tool
@@ -1674,6 +1683,8 @@ limits:                                # per worker container; projects: { <name
   memory: 8g                           # a Gradle build with its daemons uses 4 to 6 GB
   cpus: 4
   pids: 4096
+  disk: 20g                            # each volume a unit writes: its clone, scratch, overlay upper layers
+  cache: 30g                           # each cache volume
 e2e:
   max_emulators: 0                     # emulators at once across all units; 0 (the default) turns e2e off
                                        # until the emulator probe passes (see End-to-end tests)
@@ -1736,12 +1747,12 @@ The values above are placeholders, tuned after the smoke test like the caps (see
   project is removed, or when its PR is closed without merging; a closed PR that's reopened starts the clock again when
   it next ends. The status pane links a stopped change to its recent units' logs. They're never fed back to a worker: a
   retried unit starts clean (see Concurrency model).
-- **Worker limits.** Every worker container runs under `limits` (memory, CPUs, processes), set by the operator like
-  the slots, since together they decide what the host can run at once. A worker killed for running out of memory is a
-  failed attempt (reason `oom`, see Failed attempts), so a build that doesn't fit its limit ends at `needs-human` rather
-  than looping. `herd doctor` records the gate's peak memory and warns when the limit leaves less than about half again
-  as much headroom, and loading host config warns when the slots that can run at once would together exceed the host's
-  memory.
+- **Worker limits.** Every worker container runs under `limits` (memory, CPUs, processes, and the size of each volume it
+  writes), set by the operator like the slots, since together they decide what the host can run at once. A worker killed
+  for running out of memory is a failed attempt (reason `oom`, see Failed attempts), so a build that doesn't fit its
+  limit ends at `needs-human` rather than looping. `herd doctor` records the gate's peak memory and warns when the limit
+  leaves less than about half again as much headroom, and loading host config warns when the slots that can run at once
+  would together exceed the host's memory.
 - **Disk.** Each scan checks free space where the herd's volumes live (images, caches, mirrors, per-unit clones),
   warns in the status pane and alerts below `disk.warn_below`, and stops starting units well before it runs out,
   so a full disk shows up as a warning instead of a string of `infra` failures.
