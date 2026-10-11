@@ -1,0 +1,535 @@
+{
+  "repository": "mliikanen/driving-log",
+  "main": "ec9d1aa09a82",
+  "changes": [
+    {
+      "change": "change-picture-badge-icon",
+      "proposal_commit": "8840aa456294",
+      "base": "8840aa456294",
+      "reference": "c89d8ad16879",
+      "archive_dir": "openspec/changes/archive/2026-09-21-change-picture-badge-icon",
+      "size": {
+        "files": 7,
+        "added": 71,
+        "deleted": 6
+      },
+      "proposal_edits": {
+        "files": 3,
+        "added": 7,
+        "deleted": 7
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md's build and test commands (no final regression run yet)",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/ui/PhotoIconsTest.kt",
+          "status": "added"
+        }
+      ],
+      "unattributed_commits": [],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "1daf633df424",
+        "tree": "99d25d291f68"
+      },
+      "openspec_known_failures": []
+    },
+    {
+      "change": "confirm-lower-odometer",
+      "proposal_commit": "49e79df34cb1",
+      "base": "49e79df34cb1",
+      "reference": "6e7532f19d02",
+      "archive_dir": "openspec/changes/archive/2026-09-27-confirm-lower-odometer",
+      "size": {
+        "files": 8,
+        "added": 256,
+        "deleted": 13
+      },
+      "proposal_edits": {
+        "files": 4,
+        "added": 109,
+        "deleted": 29
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md, final regression run",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/LogDistanceRulesTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/LogEventProcessorTest.kt",
+          "status": "modified"
+        }
+      ],
+      "unattributed_commits": [],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "9165821917fe",
+        "tree": "3dbd8e6f43a6"
+      },
+      "openspec_known_failures": [
+        "change/add-event-pictures"
+      ]
+    },
+    {
+      "change": "odometer-leading-zero-prefix",
+      "proposal_commit": "14419d04d037",
+      "base": "14419d04d037",
+      "reference": "536a0eacc074",
+      "archive_dir": "openspec/changes/archive/2026-09-20-odometer-leading-zero-prefix",
+      "size": {
+        "files": 4,
+        "added": 570,
+        "deleted": 13
+      },
+      "proposal_edits": {
+        "files": 1,
+        "added": 4,
+        "deleted": 2
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md's build and test commands (no final regression run yet)",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/add/AddVehicleProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/input/OdometerEntryZeroPrefixTest.kt",
+          "status": "added"
+        }
+      ],
+      "unattributed_commits": [
+        {
+          "commit": "bd801b0298af",
+          "subject": "Test the odometer zero prefix through the add screen processor",
+          "files": 1
+        }
+      ],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "26a707e61750",
+        "tree": "953d6363b466"
+      },
+      "openspec_known_failures": []
+    },
+    {
+      "change": "add-landing-screen",
+      "proposal_commit": "4e20bbcc0927",
+      "base": "4e20bbcc0927",
+      "reference": "49653ee0c818",
+      "archive_dir": "openspec/changes/archive/2026-09-22-add-landing-screen",
+      "size": {
+        "files": 33,
+        "added": 638,
+        "deleted": 20
+      },
+      "proposal_edits": {
+        "files": 4,
+        "added": 42,
+        "deleted": 31
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md, final regression run",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/VehicleNavKeysTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/landing/LandingProcessorTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/ui/LandingIconsTest.kt",
+          "status": "added"
+        }
+      ],
+      "unattributed_commits": [],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "d90f53f685b7",
+        "tree": "0c857e147f60"
+      },
+      "openspec_known_failures": []
+    },
+    {
+      "change": "petroleum-color-theme",
+      "proposal_commit": "4260ca71da19",
+      "base": "4260ca71da19",
+      "reference": "9a4754929afc",
+      "archive_dir": "openspec/changes/archive/2026-09-21-petroleum-color-theme",
+      "size": {
+        "files": 25,
+        "added": 824,
+        "deleted": 63
+      },
+      "proposal_edits": {
+        "files": 1,
+        "added": 1,
+        "deleted": 1
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md's build and test commands (no final regression run yet)",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/ui/theme/ThemeColorsTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/ui/theme/ThemeTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/format/EventRowContentTest.kt",
+          "status": "modified"
+        }
+      ],
+      "unattributed_commits": [],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "c5da18e00dfa",
+        "tree": "16410c805cc6"
+      },
+      "openspec_known_failures": []
+    },
+    {
+      "change": "add-direct-logging",
+      "proposal_commit": "4e20bbcc0927",
+      "base": "49653ee0c818",
+      "reference": "fe54c1f90704",
+      "archive_dir": "openspec/changes/archive/2026-09-22-add-direct-logging",
+      "size": {
+        "files": 22,
+        "added": 700,
+        "deleted": 88
+      },
+      "proposal_edits": {
+        "files": 4,
+        "added": 12,
+        "deleted": 12
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md, final regression run",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/VehicleNavKeysTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/data/VehicleMigrationJvmTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/landing/LandingProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/FakeVehicleRepository.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/data/SqlDelightVehicleRepositoryTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/LogDistanceProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/domain/VehicleOrderTest.kt",
+          "status": "added"
+        }
+      ],
+      "unattributed_commits": [],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "60a8d580baf2",
+        "tree": "22114b7d89a2"
+      },
+      "openspec_known_failures": []
+    },
+    {
+      "change": "add-vehicle-color",
+      "proposal_commit": "d3dbec1b97af",
+      "base": "d3dbec1b97af",
+      "reference": "bbe18fef6b69",
+      "archive_dir": "openspec/changes/archive/2026-09-21-add-vehicle-color",
+      "size": {
+        "files": 77,
+        "added": 2768,
+        "deleted": 143
+      },
+      "proposal_edits": {
+        "files": 4,
+        "added": 89,
+        "deleted": 46
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md's build and test commands (no final regression run yet)",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/color/RealPhotoColorJvmTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/data/VehicleMigrationJvmTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/data/VehicleStorageJvmTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/ui/color/ColorLibrarySmokeTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/ui/color/LerpHctTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/ui/color/VehicleTonesTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/FakeVehicleRepository.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/add/AddVehicleProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/color/ColorChoiceTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/color/ColorExtractorTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/color/FakeColorExtractor.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/data/SqlDelightVehicleRepositoryTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/details/VehicleDetailsProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/domain/VehicleColorsTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/edit/EditVehicleProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/list/VehicleListProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/picture/FakeImageCodec.kt",
+          "status": "modified"
+        }
+      ],
+      "unattributed_commits": [
+        {
+          "commit": "8d00f354b1cb",
+          "subject": "Maestro: self-contained flows with the test photos in the repository",
+          "files": 23
+        }
+      ],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "3f418b29a826",
+        "tree": "3ae79cf825f4"
+      },
+      "openspec_known_failures": []
+    },
+    {
+      "change": "add-distance-logging",
+      "proposal_commit": "0ed59b935e75",
+      "base": "0ed59b935e75",
+      "reference": "32a2142e210f",
+      "archive_dir": "openspec/changes/archive/2026-09-20-add-distance-logging",
+      "size": {
+        "files": 60,
+        "added": 4381,
+        "deleted": 96
+      },
+      "proposal_edits": {
+        "files": 5,
+        "added": 207,
+        "deleted": 39
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md's build and test commands (no final regression run yet)",
+      "supply": [],
+      "reference_tests": [
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/locale/SystemDeviceLocaleTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/VehicleNavKeysTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/data/VehicleMigrationJvmTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/data/VehicleStorageJvmTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/androidHostTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/PlatformTimeZonesTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/locale/FakeDeviceLocale.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/FakeVehicleRepository.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/data/SqlDelightVehicleRepositoryTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/details/VehicleDetailsProcessorTest.kt",
+          "status": "modified"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/EntryMomentTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/LogDistanceProcessorTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/LogDistanceRulesTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/distance/TimeZoneChoicesTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/domain/KnownOdometerTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/domain/ZonedMomentTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/format/EventRowContentTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/format/FormatMomentTest.kt",
+          "status": "added"
+        },
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/vehicle/format/FormatTimeTest.kt",
+          "status": "added"
+        }
+      ],
+      "unattributed_commits": [
+        {
+          "commit": "0858a55e3428",
+          "subject": "Move color-palette.md to docs",
+          "files": 2
+        }
+      ],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "c33a84542210",
+        "tree": "010b7c7ed440"
+      },
+      "openspec_known_failures": []
+    },
+    {
+      "change": "clean-up-lint-baselines",
+      "proposal_commit": "500c2e52ccd1",
+      "base": "500c2e52ccd1",
+      "reference": "08a4e661bd28",
+      "archive_dir": "openspec/changes/archive/2026-10-03-clean-up-lint-baselines",
+      "size": {
+        "files": 70,
+        "added": 1967,
+        "deleted": 1791
+      },
+      "proposal_edits": {
+        "files": 5,
+        "added": 121,
+        "deleted": 12
+      },
+      "gate": [
+        "./gradlew :shared:allTests :androidApp:assembleDebug codeQuality",
+        "openspec validate --all --strict"
+      ],
+      "gate_source": "CLAUDE.md, final regression run",
+      "supply": [
+        {
+          "path": "androidApp/src/production/google-services.json",
+          "from": "ec9d1aa09a82:.github/ci/google-services.placeholder.json"
+        }
+      ],
+      "reference_tests": [
+        {
+          "path": "shared/src/commonTest/kotlin/com/mikonoma/drivinglog/util/UndoOnFailureTest.kt",
+          "status": "added"
+        }
+      ],
+      "unattributed_commits": [],
+      "foreign_commits": [],
+      "snapshot": {
+        "commit": "59e889e7f0c7",
+        "tree": "d46a554e3348"
+      },
+      "openspec_known_failures": []
+    }
+  ]
+}
