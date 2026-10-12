@@ -181,11 +181,12 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
    - **The gate** runs in a fresh worker on a clone of the result branch, with the run's known OpenSpec failures.
    - **The tamper check** compares the result with its base snapshot (not with anything in the result's own history,
      which the agent controls), outside `openspec/`, and fails on any of these the
-     reference change didn't also do: a deleted test file or Maestro flow; fewer `@Test` functions in a package; a
-     changed file that configures the checks (`gradle.properties`, `.editorconfig`, `lint.xml`, `config/`, a lint
-     baseline, the Gradle wrapper); an added skip or suppression marker (`@Ignore`, `@Disabled`, `assume…(`,
+     reference change didn't also do: a test file or Maestro flow deleted, moved out of the tests and flows, or
+     emptied; fewer `@Test` functions in a package; a changed file that configures the checks (`gradle.properties`,
+     `.editorconfig`, `lint.xml`, `config/`, a lint baseline, the Gradle wrapper, `buildSrc/`, an init script); an added skip or suppression marker (`@Ignore`, `@Disabled`, `assume…(`,
      `@Suppress(…)`, `ktlint-disable`, `noinspection`) in source; or an added or removed build-script line that touches
-     a check (a baseline, lint, detekt, warnings as errors, test filters, a disabled task). Other build-script changes,
+     a check (a baseline, lint, detekt, warnings as errors, test filters, a disabled task) or tasks and the task graph
+     (`tasks`, `dependsOn`, `doFirst`, `afterEvaluate`…), which could turn a gate task into one that does nothing. Other build-script changes,
      such as a new dependency, are listed but pass. Each flag carries its file and line, for the spot check.
    - **The reference tests** are copied in over the result and `:shared:allTests` runs. A copied file that doesn't
      compile is dropped and the tests run again; when the errors are only in the result's own files, the copied files
