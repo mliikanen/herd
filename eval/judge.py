@@ -321,7 +321,8 @@ def blind_source(entry, run, directory):
     sh("git", "clone", "-q", "--bare", "--no-local", str(WORK / "snapshots" / f"{entry['change']}.git"), str(source))
     git = ["git", "-C", str(source)]
     sh(*git, "fetch", "-q", str(WORK / "results.git"), f"refs/heads/{run['run']}:refs/result")
-    trusted = lambda entry: entry.split("\t", 1)[1].startswith("openspec/") or \
+    # `openspec` itself too: a result could make it a symlink, which would clash with the base's openspec/ files.
+    trusted = lambda entry: re.match(r"openspec(/|$)", entry.split("\t", 1)[1]) or \
         CLAUDE_CONTROL.search(entry.split("\t", 1)[1])
     files = lambda rev: sh(*git, "ls-tree", "-r", "-z", rev).stdout.split("\0")[:-1]
     entries = [e for e in files("refs/result") if not trusted(e)] + [e for e in files("main") if trusted(e)]
