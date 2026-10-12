@@ -111,7 +111,8 @@ stripped.
 
 1. **The gate**, rerun on a fresh clone of the result. Failing it fails the run.
 2. **The tamper check.** Deleted or emptied tests, added skip markers, or changed lint baselines and build files are
-   compared with the base. Any of these fails the run unless the proposal asks for it.
+   compared with the base. Any of these fails the run unless the proposal asks for it, which the check reads as: the
+   reference change did the same.
 3. **The reference tests.** The tests the original change added are copied in and run against the result. Many depend
    on internal names and won't compile, so this is recorded for information only: how many compiled, how many passed.
 4. **Holistic review** by Opus 5.5, from the proposal, the specs and the result's diff. It gives an accept or revise
@@ -121,8 +122,8 @@ stripped.
    blind, picked at random from those that passed steps 1–4, in about 15 minutes each. For each setup's best result on a
    change, you also run the area's Maestro flows on an emulator. This is the only human time the evaluation needs.
 
-A run is **accepted** when it passes the gate and the tamper check and gets an accept with no High findings in the
-holistic review. A run you reject in the spot check, or whose Maestro flows fail, becomes not accepted. If you reject
+A run is **accepted** when it passes the gate and the tamper check and the holistic review gives a readable verdict
+with no High findings. A run you reject in the spot check, or whose Maestro flows fail, becomes not accepted. If you reject
 more than one in five of the runs you check, the holistic judging isn't trusted: the spot check widens to every
 accepted run of the setups the decision depends on before anything is decided.
 
@@ -173,7 +174,34 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
      ignored) files, is discarded and counted, and the supplied files are copied in again; a guard test an implementer
      changes is restored and counted;
    - sessions have the design's `wall` timeouts; the `quiet` timeout isn't enforced.
-3. **The judge** (`eval/judge.py`): steps 1–4 above, written to `eval/results/<run>.json`.
+3. **The judge** (`eval/judge.py [run ...]`): steps 1–4 above for every run not judged yet, in random order, written
+   to `eval/results/<run>.json` (judgments made with the stub, or of stub runs, go to `eval/work/judgments/`). A run
+   that ended early (a parked task, the cost limit, an error) made no change to merge and isn't accepted. For the
+   others:
+   - **The gate** runs in a fresh worker on a clone of the result branch, with the run's known OpenSpec failures.
+   - **The tamper check** compares the result with its base snapshot (not with anything in the result's own history,
+     which the agent controls), outside `openspec/`, and fails on any of these the
+     reference change didn't also do: a test file or Maestro flow deleted, replaced by another kind of entry (a
+     symlink), moved anywhere but another flow or a test source set that already held tests, or emptied (for a flow:
+     no commands left); fewer `@Test` functions in a package; a file that configures the checks (`gradle.properties`,
+     `.editorconfig`, `lint.xml`, `config/`, a lint baseline, the Gradle wrapper, `buildSrc/`, an init script) left
+     in any state but the reference's; an added skip or suppression marker (`@Ignore`, `@Disabled`, `assume…(`,
+     `@Suppress(…)` over any number of lines, `ktlint-disable`, `noinspection`, `tools:ignore`) in source or XML; or an added or removed build-script line that touches
+     a check (a baseline, lint, detekt, warnings as errors, test filters, a disabled task) or tasks and the task graph
+     (`tasks`, `dependsOn`, `doFirst`, `afterEvaluate`…), which could turn a gate task into one that does nothing. Other build-script changes,
+     such as a new dependency, are listed but pass. Each flag carries its file and line, for the spot check.
+   - **The reference tests** are copied in over the result and `:shared:allTests` runs. A copied file that doesn't
+     compile is dropped and the tests run again; when the errors are only in the result's own files, the copied files
+     that replaced one of them (a shared fake, say) are dropped instead. The record lists what compiled, what was
+     dropped, and the tests that ran, passed and failed in the copied files.
+   - **The holistic review** runs only when the gate and the tamper check pass, since the run fails otherwise. It
+     happens in another fresh worker, under a random name, holding two commits: the base snapshot with the original
+     proposal, and the result squashed into one commit with its `openspec/` reset to the base's, which hides ticked
+     tasks and Thin spec's cut-down proposal. The files Claude Code loads as instructions or settings (`CLAUDE.md`,
+     `.claude/`, `.mcp.json`) are reset to the base's too, so a result can't instruct its judge; the tamper record
+     lists the ones the result changed. The worker has no gate: the review reads the code. The run passes this
+     step when the verdict is readable and lists no High finding; a revise without one contradicts the prompt, which
+     accepts it, so it counts as an accept.
 4. **Pilot.** Run all five setups once each on the two pilot changes. Fix the harness, then estimate the full run's cost
    from the pilot before going on.
 5. **Phase 1.** Run every setup twice on every change in the corpus. The two runs show how much results vary between

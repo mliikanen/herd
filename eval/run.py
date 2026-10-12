@@ -43,7 +43,7 @@ REVIEWER = OPUS
 
 # The design's unit timeouts (docs/design.md, unit kinds), in seconds. The guard writes code like an implementer.
 TIMEOUT = {"apply": 4 * 3600, "thin": 4 * 3600, "implement": 3600, "guard": 3600, "fix": 3600, "review": 1200,
-           "holistic": 1800}
+           "holistic": 1800, "judge": 1800}
 GATE_TIMEOUT = 3600
 
 # Driving Log's egress (.herd/project.yaml) plus the model API.
@@ -78,8 +78,9 @@ def prompt(name, **values):
     return fill((EVAL / "prompts" / f"{name}.md").read_text(), environment=environment, **values)
 
 
-def verdict(text):
-    """The last `VERDICT: {...}` line of a review. A review without one counts as a revise."""
+def verdict(text, blocking=("high", "medium")):
+    """The last `VERDICT: {...}` line of a review. A review without one counts as a revise, and so does an accept that
+    lists a finding of a `blocking` severity."""
     for line in reversed(text.splitlines()):
         if line.strip().startswith("VERDICT:"):
             try:
@@ -88,8 +89,8 @@ def verdict(text):
                 if found.get("verdict") in ("accept", "revise") and isinstance(findings, list) \
                         and all(isinstance(f, dict) for f in findings):
                     # An accept that lists blocking findings contradicts itself: the prompt makes them a revise.
-                    blocking = any(str(f.get("severity", "")).lower() in ("high", "medium") for f in findings)
-                    if found["verdict"] == "accept" and blocking:
+                    blocked = any(str(f.get("severity", "")).lower() in blocking for f in findings)
+                    if found["verdict"] == "accept" and blocked:
                         return {"verdict": "revise", "findings": findings, "contradictory_accept": True}
                     return {"verdict": found["verdict"], "findings": findings}
             except (json.JSONDecodeError, AttributeError):
@@ -126,77 +127,48 @@ def thin_proposal(text):
     return "\n".join(out).rstrip() + "\n"
 
 
-class Run:
-    def __init__(self, args, entry):
-        self.args, self.entry = args, entry
-        self.setup = SETUPS[args.setup]
-        self.change = entry["change"]
-        self.id = f"{args.setup}-{self.change}-{args.rep}"
-        self.dir = WORK / "runs" / self.id
-        self.container = f"eval-{self.id}"
+def commit_tree(source, tree, message, *parents):
+    """A commit of `tree` in the bare repository `source`, with a fixed identity and date, so nothing in it tells
+    one run from another."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "herd eval", "GIT_AUTHOR_EMAIL": "eval@herd.invalid",
+           "GIT_COMMITTER_NAME": "herd eval", "GIT_COMMITTER_EMAIL": "eval@herd.invalid",
+           "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}
+    parent_args = [arg for parent in parents for arg in ("-p", parent)]
+    return subprocess.run(["git", "-C", str(source), "commit-tree", tree, *parent_args, "-m", message], env=env,
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+def write_config(directory, entry, repo, known=(), fake_gate=False):
+    """The read-only files the gate reads (/eval-run): its commands, the known OpenSpec failures and the supplied
+    files."""
+    (directory / "supply").mkdir(parents=True)
+    (directory / "gate-commands").write_text("\n".join(entry["gate"]) + "\n")
+    (directory / "known-failures").write_text("".join(f"{item}\n" for item in known))
+    if fake_gate:
+        (directory / "fake-gate").write_text("")
+    for item in entry["supply"]:
+        commit, path = item["from"].split(":", 1)
+        content = sh("git", "-C", repo, "show", f"{commit}:{path}").stdout
+        target = directory / "supply" / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    return directory
+
+
+class Worker:
+    """A worker container under the worker contract, with a clone of one source repository at /work/repo, and the
+    `claude -p` sessions and gate calls made in it. Its records go to `directory`."""
+
+    def __init__(self, args, name, change, directory):
+        self.args, self.change, self.dir = args, change, directory
+        self.real = args.real  # the real Claude Code CLI and the API key, or the stub
+        self.container = f"eval-{name}"
         self.network = f"{self.container}-net"
         self.gate_calls = 0
-        self.volumes = {f"{self.container}-{name}": path
-                        for name, path in (("work", "/work"), ("home", "/home/agent"), ("tmp", "/tmp"))}
+        self.volumes = {f"{self.container}-{volume}": path
+                        for volume, path in (("work", "/work"), ("home", "/home/agent"), ("tmp", "/tmp"))}
         self.sessions, self.cost, self.started = [], 0.0, time.time()
-        self.record = {"run": self.id, "setup": args.setup, "change": self.change, "rep": args.rep,
-                       "claude": "real" if args.real else "stub", "fake_gate": args.fake_gate,
-                       "base": entry["base"], "image": args.image}
-
-    # --- the source repository and the container ---
-
-    def source(self):
-        """A bare repository with the run's single starting commit: the snapshot, or for Thin spec, the snapshot with
-        the change cut down to its proposal's Why and What Changes. Built from objects, so nothing of the full
-        proposal reaches the run's repository."""
-        snapshot = WORK / "snapshots" / f"{self.change}.git"
-        if not snapshot.exists():
-            raise RuntimeError(f"no snapshot at {snapshot}: run eval/corpus.py first")
-        source = self.dir / "source.git"
-        sh("git", "clone", "-q", "--bare", "--no-local", str(snapshot), str(source))
-        if self.setup.get("prompt") != "thin":
-            return source
-        git = ["git", "-C", str(source)]
-        target = f"openspec/changes/{self.change}"
-        proposal = sh(*git, "show", f"main:{target}/proposal.md").stdout
-        with tempfile.TemporaryDirectory() as tmp:
-            env = {**os.environ, "GIT_INDEX_FILE": f"{tmp}/index"}
-            run = lambda *a, **k: subprocess.run([*git, *a], env=env, check=True, capture_output=True, text=True, **k)
-            run("read-tree", "main")
-            run("rm", "-r", "--cached", "--quiet", target)
-            blob = run("hash-object", "-w", "--stdin", input=thin_proposal(proposal)).stdout.strip()
-            run("update-index", "--add", "--cacheinfo", f"100644,{blob},{target}/proposal.md")
-            meta = f"{target}/.openspec.yaml"
-            if sh(*git, "cat-file", "-e", f"main:{meta}", check=False).returncode == 0:
-                run("update-index", "--add", "--cacheinfo",
-                    f"100644,{sh(*git, 'rev-parse', f'main:{meta}').stdout.strip()},{meta}")
-            tree = run("write-tree").stdout.strip()
-        ident = {k: v for k, v in os.environ.items()}
-        ident.update({"GIT_AUTHOR_NAME": "herd eval", "GIT_AUTHOR_EMAIL": "eval@herd.invalid",
-                      "GIT_COMMITTER_NAME": "herd eval", "GIT_COMMITTER_EMAIL": "eval@herd.invalid",
-                      "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"})
-        commit = subprocess.run([*git, "commit-tree", tree, "-m", "Base snapshot"], env=ident, check=True,
-                                capture_output=True, text=True).stdout.strip()
-        sh(*git, "update-ref", "refs/heads/main", commit)
-        sh(*git, "reflog", "expire", "--expire=now", "--all")
-        sh(*git, "gc", "-q", "--prune=now")
-        return source
-
-    def config(self):
-        """The read-only files the gate reads: its commands, the supplied files, and (after setup) known failures."""
-        config = self.dir / "config"
-        (config / "supply").mkdir(parents=True)
-        (config / "gate-commands").write_text("\n".join(self.entry["gate"]) + "\n")
-        (config / "known-failures").write_text("")
-        if self.args.fake_gate:
-            (config / "fake-gate").write_text("")
-        for item in self.entry["supply"]:
-            commit, path = item["from"].split(":", 1)
-            content = sh("git", "-C", self.args.repo, "show", f"{commit}:{path}").stdout
-            target = config / "supply" / item["path"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
-        return config
+        self.spent_before = 0.0  # what earlier workers spent against the same --max-cost
 
     def proxy(self):
         """The shared egress proxy, plus this run's own internal network holding only the worker and the proxy, so
@@ -217,12 +189,12 @@ class Run:
                "/proxy.py")
         sh("podman", "network", "connect", self.network, PROXY)
 
-    def start(self):
-        self.dir.mkdir(parents=True)
+    def start(self, source, config, branch=None, gate=True):
+        """Start the container and clone `source`, a bare repository (its `branch`, or its HEAD), into /work/repo.
+        Without `gate`, /eval/gate isn't mounted."""
         (self.dir / "log").mkdir()
         (self.dir / "log").chmod(0o777)  # the container's agent is a sub-UID on the host
         (self.dir / "sessions").mkdir()
-        source, config = self.source(), self.config()
         self.proxy()
         for volume in self.volumes:
             sh("podman", "volume", "create", volume)
@@ -245,36 +217,24 @@ class Run:
                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_AUTOUPDATER": "1", "DO_NOT_TRACK": "1",
                "OPENSPEC_TELEMETRY": "0"}
         stub = []
-        if not self.args.real:
+        if not self.real:
             stub = ["-v", f"{EVAL / 'container' / 'stub'}:/eval-stub:ro,z"]
             env["PATH"] = "/eval-stub:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:" \
                           "/opt/java/openjdk/bin"
         env_args = [arg for key, value in env.items() for arg in ("-e", f"{key}={value}")]
-        if self.args.real:
+        if self.real:
             env_args += ["-e", "ANTHROPIC_API_KEY"]  # passed from the runner's environment, never on the command line
+        gate_mount = ["-v", f"{EVAL / 'container' / 'gate'}:/eval/gate:ro,z"] if gate else []
         sh("podman", "run", "-d", "--name", self.container, "--network", self.network, "--read-only",
-           "--read-only-tmpfs=false", *LIMITS, "--cap-drop=all", *mounts, *caches, *stub,
-           "-v", f"{EVAL / 'container' / 'gate'}:/eval/gate:ro,z", "-v", f"{config}:/eval-run:ro,z",
+           "--read-only-tmpfs=false", *LIMITS, "--cap-drop=all", *mounts, *caches, *stub, *gate_mount,
+           "-v", f"{config}:/eval-run:ro,z",
            "-v", f"{self.dir / 'log'}:/eval-log:z", "-v", f"{source}:/source:ro,z", *env_args, "-w", "/work",
            self.args.image, "sleep", "infinity")
         self.exec("git config --global user.name agent && git config --global user.email agent@herd.invalid"
-                  " && git config --global --add safe.directory '*' && git clone -q /source /work/repo"
-                  " && cd /work/repo && git remote remove origin"
-                  )
+                  " && git config --global --add safe.directory '*'"
+                  f" && git clone -q {'--single-branch -b ' + branch + ' ' if branch else ''}/source /work/repo"
+                  " && cd /work/repo && git remote remove origin")
         self.supply()
-        self.base = self.git("rev-parse", "HEAD")
-        # Known failures: what the strict validation fails on before any work. For every setup but Thin spec that's
-        # the corpus record; Thin spec's cut-down change fails it too.
-        output = self.exec("cd /work/repo && openspec validate --all --strict --no-interactive 2>&1", check=False).stdout
-        known = re.findall(r"^✗ (\S+)$", output, re.MULTILINE)
-        if self.setup.get("prompt") != "thin":
-            if f"change/{self.change}" in known:
-                raise RuntimeError(f"the change's own proposal fails validation at the start")
-            if set(known) != set(self.entry["openspec_known_failures"]):
-                print(f"  warning: validation at the start fails on {known}, the corpus records "
-                      f"{self.entry['openspec_known_failures']}")
-        (config / "known-failures").write_text("".join(f"{item}\n" for item in known))
-        self.record["openspec_known_failures"] = known
 
     def exec(self, script, env=None, input=None, timeout=None, check=True):
         env_args = [arg for key, value in (env or {}).items() for arg in ("-e", f"{key}={value}")]
@@ -303,7 +263,7 @@ class Run:
         (self.dir / "sessions" / f"{name}.prompt.md").write_text(text)
         started = time.time()
         env = {"EVAL_ROLE": role, "EVAL_CHANGE": self.change, **{k: str(v) for k, v in env.items()}}
-        for key in ("STUB_REVISE", "STUB_GATE", "STUB_TAMPER"):
+        for key in ("STUB_REVISE", "STUB_GATE", "STUB_TAMPER", "STUB_JUDGE"):
             if os.environ.get(key):
                 env[key] = os.environ[key]
         # TERM at the wall timeout, KILL 30 s later if the CLI ignores it: inside the outer 60 s margin, so nothing of
@@ -330,7 +290,7 @@ class Run:
         self.cost += summary["cost_usd"] or 0.0
         print(f"  {name}: {model}, {summary['seconds']} s, ${summary['cost_usd']:.4f}"
               + (" TIMED OUT" + (" (killed)" if code == 137 else "") if summary["timed_out"] else "") + (" ERROR" if summary["is_error"] else ""))
-        if self.args.max_cost and self.cost > self.args.max_cost:
+        if self.args.max_cost and self.spent_before + self.cost > self.args.max_cost:
             raise Budget()
         return output.get("result", "")
 
@@ -339,6 +299,71 @@ class Run:
         result = self.exec("/eval/gate", env={"GATE_CALLER": "runner"}, timeout=GATE_TIMEOUT + 60, check=False)
         print(f"  gate: {'passed' if result.returncode == 0 else 'failed'}")
         return result.returncode == 0, (result.stdout + result.stderr)[-6000:]
+
+    def supply(self):
+        """Copy the supplied files (gitignored inputs such as google-services.json) into the repository."""
+        self.exec("cd /eval-run/supply && find . -type f -exec cp --parents {} /work/repo/ \\;")
+
+
+class Run(Worker):
+    """One setup's run on one change."""
+
+    def __init__(self, args, entry):
+        self.entry, self.setup = entry, SETUPS[args.setup]
+        self.id = f"{args.setup}-{entry['change']}-{args.rep}"
+        super().__init__(args, self.id, entry["change"], WORK / "runs" / self.id)
+        self.record = {"run": self.id, "setup": args.setup, "change": self.change, "rep": args.rep,
+                       "claude": "real" if args.real else "stub", "fake_gate": args.fake_gate,
+                       "base": entry["base"], "image": args.image}
+
+    def source(self):
+        """A bare repository with the run's single starting commit: the snapshot, or for Thin spec, the snapshot with
+        the change cut down to its proposal's Why and What Changes. Built from objects, so nothing of the full
+        proposal reaches the run's repository."""
+        snapshot = WORK / "snapshots" / f"{self.change}.git"
+        if not snapshot.exists():
+            raise RuntimeError(f"no snapshot at {snapshot}: run eval/corpus.py first")
+        source = self.dir / "source.git"
+        sh("git", "clone", "-q", "--bare", "--no-local", str(snapshot), str(source))
+        if self.setup.get("prompt") != "thin":
+            return source
+        git = ["git", "-C", str(source)]
+        target = f"openspec/changes/{self.change}"
+        proposal = sh(*git, "show", f"main:{target}/proposal.md").stdout
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "GIT_INDEX_FILE": f"{tmp}/index"}
+            run = lambda *a, **k: subprocess.run([*git, *a], env=env, check=True, capture_output=True, text=True, **k)
+            run("read-tree", "main")
+            run("rm", "-r", "--cached", "--quiet", target)
+            blob = run("hash-object", "-w", "--stdin", input=thin_proposal(proposal)).stdout.strip()
+            run("update-index", "--add", "--cacheinfo", f"100644,{blob},{target}/proposal.md")
+            meta = f"{target}/.openspec.yaml"
+            if sh(*git, "cat-file", "-e", f"main:{meta}", check=False).returncode == 0:
+                run("update-index", "--add", "--cacheinfo",
+                    f"100644,{sh(*git, 'rev-parse', f'main:{meta}').stdout.strip()},{meta}")
+            tree = run("write-tree").stdout.strip()
+        sh(*git, "update-ref", "refs/heads/main", commit_tree(source, tree, "Base snapshot"))
+        sh(*git, "reflog", "expire", "--expire=now", "--all")
+        sh(*git, "gc", "-q", "--prune=now")
+        return source
+
+    def start(self):
+        self.dir.mkdir(parents=True)
+        config = write_config(self.dir / "config", self.entry, self.args.repo, fake_gate=self.args.fake_gate)
+        super().start(self.source(), config)
+        self.base = self.git("rev-parse", "HEAD")
+        # Known failures: what the strict validation fails on before any work. For every setup but Thin spec that's
+        # the corpus record; Thin spec's cut-down change fails it too.
+        output = self.exec("cd /work/repo && openspec validate --all --strict --no-interactive 2>&1", check=False).stdout
+        known = re.findall(r"^✗ (\S+)$", output, re.MULTILINE)
+        if self.setup.get("prompt") != "thin":
+            if f"change/{self.change}" in known:
+                raise RuntimeError(f"the change's own proposal fails validation at the start")
+            if set(known) != set(self.entry["openspec_known_failures"]):
+                print(f"  warning: validation at the start fails on {known}, the corpus records "
+                      f"{self.entry['openspec_known_failures']}")
+        (self.dir / "config" / "known-failures").write_text("".join(f"{item}\n" for item in known))
+        self.record["openspec_known_failures"] = known
 
     def review(self, text, **env):
         """A review session. Reviewers don't change files: anything one commits, or leaves changed or added among the
@@ -352,10 +377,6 @@ class Run:
                 self.exec(f"cd /work/repo && git reset -q --hard {head} && git clean -qfd")
                 self.record["reviewer_edits_discarded"] = self.record.get("reviewer_edits_discarded", 0) + 1
             self.supply()  # gitignored, so the checks above don't see an edit to a supplied file
-
-    def supply(self):
-        """Copy the supplied files (gitignored inputs such as google-services.json) into the repository."""
-        self.exec("cd /eval-run/supply && find . -type f -exec cp --parents {} /work/repo/ \\;")
 
     def commit_leftovers(self, message):
         """Commit what a session left uncommitted, so every change is in the result."""

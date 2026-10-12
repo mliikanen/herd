@@ -3,7 +3,8 @@
 # from stdin and acts by EVAL_ROLE, which the runner sets on every session:
 #   apply, thin, implement, fix   append a line to STUB.md, tick EVAL_TASK in tasks.md if set, commit
 #   guard                   commit a placeholder guard file for EVAL_TASK
-#   review, holistic        answer with a verdict: accept, or revise on round 1 when STUB_REVISE=first
+#   review, holistic, judge answer with a verdict: accept, or revise on round 1 when STUB_REVISE=first, or a judge's
+#                           revise with a High finding when STUB_JUDGE=revise
 # STUB_GATE=1 makes the working roles run /eval/gate as an agent would; STUB_TAMPER=1 makes the guard write outside
 # test sources, implementers edit the guard's tests and reviewers edit files, all of which the runner must undo. Costs are made up, per model.
 model=unknown
@@ -30,9 +31,12 @@ case "$EVAL_ROLE" in
     [ "$STUB_TAMPER" = 1 ] && echo "guard outside tests" >> STUB.md
     git add -A && git commit -qm "guard $EVAL_TASK: stub tests"
     ;;
-  review|holistic)
+  review|holistic|judge)
     [ "$STUB_TAMPER" = 1 ] && echo "reviewer edit" >> STUB.md
-    if [ "$STUB_REVISE" = first ] && [ "${EVAL_ROUND:-1}" = 1 ]; then
+    if [ "$EVAL_ROLE" = judge ] && [ "$STUB_JUDGE" = revise ]; then
+      result='Stub judgment.
+VERDICT: {"verdict": "revise", "findings": [{"severity": "High", "text": "stub high finding"}]}'
+    elif [ "$EVAL_ROLE" != judge ] && [ "$STUB_REVISE" = first ] && [ "${EVAL_ROUND:-1}" = 1 ]; then
       result='Stub review.
 VERDICT: {"verdict": "revise", "findings": [{"severity": "Medium", "text": "stub finding"}]}'
     else
