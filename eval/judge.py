@@ -23,6 +23,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
@@ -47,6 +48,8 @@ SKIP_MARKER = re.compile(r"@(?:file:)?(?:kotlin\.test\.|org\.junit\.(?:jupiter\.
                          r"ktlint-disable[\w:,-]*|noinspection\s+\w+|detekt:disable[\w:,-]*")
 SOURCE = re.compile(r"\.(kt|kts|java)$")
 MAESTRO = re.compile(r"^maestro/")
+# Files Claude Code loads as instructions or settings: the judge gets the base's, never the result's.
+CLAUDE_CONTROL = re.compile(r"(^|/)(CLAUDE(\.local)?\.md$|\.claude/|\.mcp\.json$)")
 KOTLIN_ROOT = re.compile(r"^.*?/src/\w+/kotlin/")  # what's left is the package directory
 
 TESTS = "./gradlew :shared:allTests --continue --console=plain"
@@ -102,9 +105,12 @@ def marker(text):
 def tamper(entry, branch, repo):
     """Compare the result with its base, and allow what the reference change also did: deleted tests or flows,
     fewer tests in a package, changed check configuration, skip or suppression markers, and build-script lines that
-    touch a check."""
+    touch a check. The base is the trusted snapshot, not anything in the result's history, which the agent could
+    rewrite. Thin spec's starting commit differs from it only under openspec/, which the check leaves out."""
     results = WORK / "results.git"
-    root = sh("git", "-C", str(results), "rev-list", "--max-parents=0", branch).stdout.split()[0]
+    root = f"refs/snapshots/{entry['change']}"
+    sh("git", "-C", str(results), "fetch", "-q", str(WORK / "snapshots" / f"{entry['change']}.git"),
+       f"+refs/heads/main:{root}")
     base, reference = entry["base"], entry["reference"]
     flags = []
     ours, theirs = list(name_status(results, root, branch)), list(name_status(repo, base, reference))
@@ -143,7 +149,9 @@ def tamper(entry, branch, repo):
                 build_changed.add(path)
                 if CHECK_LINE.search(text) and (path, sign, text) not in their_build:
                     flags.append({"kind": "build_check_line", "path": path, "change": sign, "line": text})
-    return {"passed": not flags, "flags": flags, "build_scripts_changed": sorted(build_changed)}
+    claude_files = sorted({path for _, old, new in ours for path in (old, new) if CLAUDE_CONTROL.search(path)})
+    return {"passed": not flags, "flags": flags, "build_scripts_changed": sorted(build_changed),
+            "claude_files_changed": claude_files}
 
 
 # --- steps 1 and 3: the gate and the reference tests, in a worker with the result ---
@@ -248,15 +256,23 @@ def check(args, entry, run, directory, name):
 def blind_source(entry, run, directory):
     """A bare repository with two commits: the change's base snapshot, holding the original proposal, and the
     result's code changes squashed into one commit. The result's own openspec/ (ticked tasks, Thin spec's cut-down
-    proposal) is replaced with the base's, so the judge sees every setup's work against the same documents."""
+    proposal) is replaced with the base's, so the judge sees every setup's work against the same documents, and so
+    are the files Claude Code loads as instructions or settings (CLAUDE.md, .claude/), so a result can't instruct
+    its judge."""
     source = directory / "judge.git"
     sh("git", "clone", "-q", "--bare", "--no-local", str(WORK / "snapshots" / f"{entry['change']}.git"), str(source))
     git = ["git", "-C", str(source)]
     sh(*git, "fetch", "-q", str(WORK / "results.git"), f"refs/heads/{run['run']}:refs/result")
-    openspec = sh(*git, "rev-parse", "main:openspec").stdout.strip()
-    entries = [f"040000 tree {openspec}\topenspec" if line.endswith("\topenspec") else line
-               for line in sh(*git, "ls-tree", "refs/result").stdout.splitlines()]
-    tree = sh(*git, "mktree", input="\n".join(entries) + "\n").stdout.strip()
+    trusted = lambda entry: entry.split("\t", 1)[1].startswith("openspec/") or \
+        CLAUDE_CONTROL.search(entry.split("\t", 1)[1])
+    files = lambda rev: sh(*git, "ls-tree", "-r", "-z", rev).stdout.split("\0")[:-1]
+    entries = [e for e in files("refs/result") if not trusted(e)] + [e for e in files("main") if trusted(e)]
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, "GIT_INDEX_FILE": f"{tmp}/index"}
+        subprocess.run([*git, "update-index", "-z", "--index-info"], input="".join(e + "\0" for e in entries),
+                       env=env, check=True, capture_output=True, text=True)
+        tree = subprocess.run([*git, "write-tree"], env=env, check=True, capture_output=True,
+                              text=True).stdout.strip()
     base = sh(*git, "rev-parse", "main").stdout.strip()
     sh(*git, "update-ref", "refs/heads/main", commit_tree(source, tree, "Implementation", base))
     sh(*git, "update-ref", "-d", "refs/result")

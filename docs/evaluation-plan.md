@@ -122,8 +122,8 @@ stripped.
    blind, picked at random from those that passed steps 1–4, in about 15 minutes each. For each setup's best result on a
    change, you also run the area's Maestro flows on an emulator. This is the only human time the evaluation needs.
 
-A run is **accepted** when it passes the gate and the tamper check and gets an accept with no High findings in the
-holistic review. A run you reject in the spot check, or whose Maestro flows fail, becomes not accepted. If you reject
+A run is **accepted** when it passes the gate and the tamper check and the holistic review gives a readable verdict
+with no High findings. A run you reject in the spot check, or whose Maestro flows fail, becomes not accepted. If you reject
 more than one in five of the runs you check, the holistic judging isn't trusted: the spot check widens to every
 accepted run of the setups the decision depends on before anything is decided.
 
@@ -179,7 +179,8 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
    that ended early (a parked task, the cost limit, an error) made no change to merge and isn't accepted. For the
    others:
    - **The gate** runs in a fresh worker on a clone of the result branch, with the run's known OpenSpec failures.
-   - **The tamper check** compares the result with its base, outside `openspec/`, and fails on any of these the
+   - **The tamper check** compares the result with its base snapshot (not with anything in the result's own history,
+     which the agent controls), outside `openspec/`, and fails on any of these the
      reference change didn't also do: a deleted test file or Maestro flow; fewer `@Test` functions in a package; a
      changed file that configures the checks (`gradle.properties`, `.editorconfig`, `lint.xml`, `config/`, a lint
      baseline, the Gradle wrapper); an added skip or suppression marker (`@Ignore`, `@Disabled`, `assume…(`,
@@ -193,7 +194,9 @@ Per setup, counting every run (each setup runs each change twice in phase 1, and
    - **The holistic review** runs only when the gate and the tamper check pass, since the run fails otherwise. It
      happens in another fresh worker, under a random name, holding two commits: the base snapshot with the original
      proposal, and the result squashed into one commit with its `openspec/` reset to the base's, which hides ticked
-     tasks and Thin spec's cut-down proposal. The worker has no gate: the review reads the code. The run passes this
+     tasks and Thin spec's cut-down proposal. The files Claude Code loads as instructions or settings (`CLAUDE.md`,
+     `.claude/`, `.mcp.json`) are reset to the base's too, so a result can't instruct its judge; the tamper record
+     lists the ones the result changed. The worker has no gate: the review reads the code. The run passes this
      step when the verdict is readable and lists no High finding; a revise without one contradicts the prompt, which
      accepts it, so it counts as an accept.
 4. **Pilot.** Run all five setups once each on the two pilot changes. Fix the harness, then estimate the full run's cost
